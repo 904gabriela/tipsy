@@ -186,9 +186,12 @@ export function buildPrompt({
         weekday: now.toLocaleDateString(undefined, { weekday: 'long' }),
 
         // The card, field by field, for a preset that wants tighter control
-        // than the whole-sheet blob gives it.
-        description: lead?.description || '',
-        personality: lead?.personality || '',
+        // than the whole-sheet blob gives it. Core slots a card may carry
+        // beyond the CharaCard fields ride inside the field they belong
+        // with, so a preset written against these macros alone still sends
+        // them, once, and a card without them reads exactly as before.
+        description: [lead?.description, lead?.appearance && `## Appearance\n${lead.appearance}`].filter(Boolean).join('\n\n'),
+        personality: [lead?.personality, lead?.behavior && `## Behaviour\n${lead.behavior}`, lead?.speech_style && `## Voice\n${lead.speech_style}`].filter(Boolean).join('\n\n'),
         scenario: lead?.scenario || '',
         charFirstMessage: lead?.first_message || '',
         mesExamples: examples(lead?.example_dialogue),

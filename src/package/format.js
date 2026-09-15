@@ -34,11 +34,12 @@ export const FORMAT = 'nexus-package';
 export const VERSION = 1;
 
 const REF = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const DOMAIN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const MAX_TEXT = 1_000_000;
 const MAX_ENTRIES = 20_000;
-const ENTITY_CATEGORIES = [...PERSON_CATEGORIES, 'profile'];
-const POLICIES = ['always', 'keywords', 'advanced'];
-const RESERVED_VISIBILITY = ['visibility', 'knownBy', 'knowers', 'hiddenFrom', 'private'];
+export const ENTITY_CATEGORIES = [...PERSON_CATEGORIES, 'profile'];
+export const POLICIES = ['always', 'keywords', 'advanced'];
+export const RESERVED_VISIBILITY = ['visibility', 'knownBy', 'knowers', 'hiddenFrom', 'private'];
 
 export const CHARACTER_CORE = ['identity', 'appearance', 'personality', 'behavior', 'speechStyle', 'speechExamples', 'systemInstructions', 'postHistoryInstructions', 'depthPrompt'];
 export const PERSONA_CORE = ['identity', 'appearance', 'personality', 'behavior', 'speechStyle'];
@@ -92,6 +93,17 @@ export function validatePackage(pkg) {
       }
     }
   };
+  // Domains are tags, written the way Nexus stores them, so a round trip cannot change them.
+  const domains = (v, path) => {
+    if (v === undefined) return;
+    if (!Array.isArray(v)) { err(path, 'must be a list of tags.'); return; }
+    const seen = new Set();
+    v.forEach((d, i) => {
+      if (typeof d !== 'string' || !DOMAIN.test(d)) err(`${path}[${i}]`, 'must be a lower-case tag: letters and digits, words joined by "-" (for example "first-aid").');
+      else if (seen.has(d)) err(`${path}[${i}]`, `"${d}" is listed twice.`);
+      seen.add(d);
+    });
+  };
   const extensions = (v, path) => { if (v !== undefined && !isObj(v)) err(path, 'must be an object.'); };
   const refOf = (v, path) => {
     if (typeof v !== 'string' || !REF.test(v)) { err(path, 'must be a ref: letters, digits, ".", "_" or "-", starting with a letter or digit.'); return false; }
@@ -130,7 +142,7 @@ export function validatePackage(pkg) {
     str(p.id, 'package.id', { required: true, max: 200 });
     str(p.title, 'package.title', { required: true, max: 500 });
     if (!PACKAGE_ROLES.includes(p.role)) err('package.role', `must be one of ${PACKAGE_ROLES.join(', ')}.`);
-    strList(p.domains, 'package.domains');
+    domains(p.domains, 'package.domains');
     extensions(p.extensions, 'package.extensions');
   }
 
@@ -218,7 +230,7 @@ export function validatePackage(pkg) {
     str(s.name, `${path}.name`, { required: true, max: 500 });
     str(s.description, `${path}.description`);
     if (!PACKAGE_ROLES.includes(s.role)) err(`${path}.role`, `must be one of ${PACKAGE_ROLES.join(', ')}.`);
-    strList(s.domains, `${path}.domains`);
+    domains(s.domains, `${path}.domains`);
     if (s.subject !== undefined) entityRef(s.subject, `${path}.subject`);
     if (s.story !== undefined && refOf(s.story, `${path}.story`)) {
       if (!storyRefs.has(s.story)) err(`${path}.story`, `"${s.story}" is not a story in this package.`);

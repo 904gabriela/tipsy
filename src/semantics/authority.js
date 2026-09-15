@@ -23,7 +23,7 @@ export const PERSON_CATEGORIES = ['identity', 'appearance', 'personality', 'spee
 // direction: how to narrate. reference: specialised knowledge to draw on when relevant.
 export const WORLD_CATEGORIES = ['background', 'rule', 'event', 'item', 'direction', 'reference', 'other'];
 export const ENTITY_TYPES = ['person', 'place', 'faction', 'item', 'event', 'concept'];
-export const PACKAGE_ROLES = ['character-material', 'world', 'scenario', 'story-package', 'narrative-framework', 'reference-pack', 'mixed'];
+export const PACKAGE_ROLES = ['entity-material', 'world', 'scenario', 'story-package', 'narrative-framework', 'reference-pack', 'mixed'];
 
 /**
  * A source's role, as far as it can be relied on.

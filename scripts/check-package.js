@@ -12,14 +12,19 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { open } from '../src/db/index.js';
-import { validatePackage, canonicalPackage } from '../src/package/format.js';
+import {
+  validatePackage, canonicalPackage, FORMAT, VERSION, POLICIES, RESERVED_VISIBILITY, ENTITY_CATEGORIES, CHARACTER_CORE, PERSONA_CORE, ACTIVATION_DEFAULTS,
+} from '../src/package/format.js';
+import { PACKAGE_ROLES, ENTITY_TYPES, WORLD_CATEGORIES } from '../src/semantics/authority.js';
 import { inspectPackage, importPackage } from '../src/package/import.js';
 import { exportStory, exportSources } from '../src/package/export.js';
-import { createEntity, setEntrySemantics, semanticViews } from '../src/semantics/store.js';
+import { createEntity, setEntrySemantics, semanticViews, setSourceRole } from '../src/semantics/store.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const FIXTURE = JSON.parse(readFileSync(join(here, 'fixtures', 'nexus-package-v1-saint-like.json'), 'utf8'));
+const FIXTURE = JSON.parse(readFileSync(join(here, '..', 'examples', 'nexus-package-v1.example.json'), 'utf8'));
 const STORY = 'a-saint-like-story';
+const SECOND = JSON.parse(readFileSync(join(here, '..', 'examples', 'nexus-package-v1.frameworks-and-reference.example.json'), 'utf8'));
+const DOC = readFileSync(join(here, '..', 'docs', 'NEXUS_PACKAGE_V1.md'), 'utf8');
 
 let pass = 0; let fail = 0;
 const ok = (n, c, d = '') => {
@@ -66,6 +71,11 @@ console.log('A  validation');
   ok('a displayPath is a short list of names', refused((p) => { entries(p, 'reiko-knowledge')[0].semantics.displayPath = []; }, /one to eight/)
     && refused((p) => { entries(p, 'reiko-knowledge')[0].semantics.displayPath = ['Quirk', '']; }, /one to eight/));
   ok('a newer version is named as newer', refused((p) => { p.version = 2; }, /this Nexus reads version 1/));
+  ok('the identifier is frozen as nexus-package v1', FORMAT === 'nexus-package' && VERSION === 1 && refused((p) => { p.format = 'nexus-story-package'; }, /must be "nexus-package"/));
+  ok('the role vocabulary is exactly the frozen seven', JSON.stringify(PACKAGE_ROLES) === JSON.stringify(['entity-material', 'world', 'scenario', 'story-package', 'narrative-framework', 'reference-pack', 'mixed']));
+  ok('the old resource-specific role names are refused', refused((p) => { p.sources[0].role = 'character-material'; }, /must be one of/)
+    && refused((p) => { p.sources[0].role = 'persona-material'; }, /must be one of/));
+  ok('domains are tags as stored, so a round trip cannot change them', refused((p) => { p.sources[0].domains = ['First Aid']; }, /lower-case tag/) && refused((p) => { p.sources[0].domains = ['medical', 'medical']; }, /listed twice/));
   ok('exclusions must point into attached sources', refused((p) => { p.stories[0].exclusions = [{ source: 'patrick-knowledge', entry: 'nope' }]; }, /is not an entry/));
 }
 
@@ -113,6 +123,14 @@ const res = importPackage(db, FIXTURE, { decisions: allCreate });
   ok('the story knows which card is which person', db.raw.prepare('SELECT character_id FROM story_entity_cards WHERE story_id=? AND entity_id=?').get(story.id, patrick)?.character_id === card.id);
   ok('directions and premise are the story’s own', story.settings.directions === 'Keep the harbour cold and the stakes personal.' && story.settings.premise.startsWith('A hero student'));
   ok('the import is recorded with the package id', db.getImport(res.importId).analysis.packageId === 'fixture.saint-like.v1' && db.importOf('story', story.id) === res.importId);
+  {
+    const book = db.createLorebook('Old role name', '');
+    let storeRefused = false; let tableRefused = false;
+    try { setSourceRole(db, { lorebookId: book, role: 'character-material', origin: 'manual', status: 'approved' }); } catch { storeRefused = true; }
+    try { db.raw.prepare("INSERT INTO source_semantics (lorebook_id,package_role,origin,status,created_at,updated_at) VALUES (?,'character-material','manual','approved',1,1)").run(book); } catch (e) { tableRefused = /CHECK/.test(e.message); }
+    ok('the store and the table refuse character-material', storeRefused && tableRefused);
+    db.deleteLorebook(book);
+  }
   ok('no old-style links and no link evidence were written', count(db, 'entry_character_links') + count(db, 'entry_entry_links') + count(db, 'legacy_entry_links') === 0);
 }
 
@@ -135,7 +153,7 @@ const E1 = exportStory(db, res.stories[STORY]);
   ok('reusable ownership and story-only material survive', p.sources.find((s) => s.ref === 'reiko-knowledge').subject === 'reiko' && p.sources.find((s) => s.ref === 'saint-material').story === STORY);
   ok('subject / related / defines survive', JSON.stringify(entries(p, 'patrick-knowledge').find((x) => x.ref === 'salvatore').semantics) === '{"scope":"entity","category":"profile","defines":"salvatore","related":["patrick"],"displayPath":["Relationships"]}');
   ok('displayPath survives', JSON.stringify(entries(p, 'reiko-knowledge')[1].semantics.displayPath) === '["Quirk","Fluid Domain"]');
-  ok('extensions survive where v1 keeps them', p.package.extensions?.fixture && p.extensions?.fixture?.suite === 'check-package' && p.characters[0].extensions?.fixture?.cardVariant === 'a' && p.sources.find((s) => s.ref === 'patrick-knowledge').extensions?.fixture);
+  ok('extensions survive where v1 keeps them', p.package.extensions?.exampleApp && p.extensions?.exampleApp?.suite === 'check-package' && p.characters[0].extensions?.exampleApp?.cardVariant === 'a' && p.sources.find((s) => s.ref === 'patrick-knowledge').extensions?.exampleApp);
 
   const sourceOnly = exportSources(db, [res.sources['reiko-knowledge']]);
   ok('a reusable source exports on its own', sourceOnly.package.sources.length === 1 && sourceOnly.package.stories.length === 0 && sourceOnly.package.entities.map((x) => x.ref).join() === 'reiko');
@@ -157,7 +175,7 @@ console.log('\nD  decisions meet the library you already have');
   const sourceOnly = clone(FIXTURE);
   sourceOnly.stories = [];
   sourceOnly.sources = sourceOnly.sources.filter((s) => !s.story);
-  sourceOnly.package.role = 'character-material';
+  sourceOnly.package.role = 'entity-material';
   ok('a package without stories makes no card unless asked', inspectPackage(lib, sourceOnly).decisions.characters['patrick-card'].use === 'skip');
 
   const r = importPackage(lib, FIXTURE, { decisions: { personas: { 'reiko-ryuusui': { use: 'create' } } } });
@@ -203,6 +221,16 @@ console.log('\nE  export never launders a guess');
   const find = (s, ref) => entries(out.package, s).find((x) => x.ref === ref);
   ok('an entry changed since approval goes out unorganised, with a warning', !find('reiko-knowledge', 'fluid-domain-limits').semantics && out.warnings.some((w) => /needs a recheck/.test(w.message)));
   ok('proposed semantics go out unorganised, with a warning', !find('patrick-knowledge', 'childhood').semantics && out.warnings.some((w) => /only proposed/.test(w.message)));
+  const limitsOut = find('reiko-knowledge', 'fluid-domain-limits');
+  const childOut = find('patrick-knowledge', 'childhood');
+  ok('their content, activation and source membership still go out in full', limitsOut.content === 'Edited after approval.' && JSON.stringify(limitsOut.activation.keys) === '["Fluid Domain","limit"]'
+    && childOut.content.startsWith('Grew up above') && childOut.activation.caseSensitive === true && JSON.stringify(childOut.activation.secondaryKeys) === '["bakery"]'
+    && entries(out.package, 'patrick-knowledge').length === 4 && entries(out.package, 'reiko-knowledge').length === 3);
+  const back = fresh();
+  const again = importPackage(back, out.package, { decisions: allCreate });
+  const semOf = (id) => back.raw.prepare('SELECT status FROM entry_semantics WHERE entry_id=?').get(id);
+  ok('re-imported, those entries arrive unorganised, never freshly approved', !semOf(again.entries['reiko-knowledge']['fluid-domain-limits']) && !semOf(again.entries['patrick-knowledge'].childhood)
+    && back.raw.prepare('SELECT content FROM lore_entries WHERE id=?').get(again.entries['reiko-knowledge']['fluid-domain-limits']).content === 'Edited after approval.');
   const bare = lib.createLorebook('Unclassified notes', '');
   lib.setStoryLorebooks(r.stories[STORY], [...lib.getStory(r.stories[STORY]).lorebookIds, bare]);
   let blocked = null;
@@ -267,6 +295,27 @@ console.log('\nG  through the server: no classifier, no model, Core reaches the 
     ok('the always-on framework direction is in', all.includes('Never summarise what happens next'));
     ok('no request reached the model provider afterwards either', providerCalls === 0);
 
+    // Core through each prompt path: plain, a script using {{character}}/{{persona}} (how all
+    // fourteen real presets are written), and a script using the individual field macros.
+    const P = (p, body) => fetch(B + p, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const markers = ['Tall, dark coat', 'Listens longer than he talks', 'Short sentences. Italian', 'A soft-spoken fixer', 'thin tattoo of a wave', 'Switches to Spanish'];
+    const counts = async () => {
+      const r = await G(`/api/stories/${sid}/prompt`);
+      const text = r.body.messages.map((m) => m.content).join('\n');
+      return markers.map((m) => text.split(m).length - 1);
+    };
+    const plain = await counts();
+    ok('plain prompt: every Core slot exactly once', plain.every((n) => n === 1), plain.join(','));
+    const base = (await G(`/api/stories/${sid}`)).body.settings;
+    const script = (items) => ({ name: 'Test script', items: items.map((content, i) => ({ name: `Item ${i}`, role: 'system', content, enabled: true })), controls: [], sections: [], bundles: [] });
+    await P(`/api/stories/${sid}`, { settings: { ...base, script: script(['<story_bible>\n<character>\n{{character}}\n</character>\n<protagonist>\n{{persona}}\n</protagonist>\n<world_info>\n{{lorebook}}\n</world_info>\n</story_bible>', '{{chatHistory}}']) } });
+    const aggregate = await counts();
+    ok('script with {{character}}/{{persona}}: every Core slot exactly once', aggregate.every((n) => n === 1), aggregate.join(','));
+    await P(`/api/stories/${sid}`, { settings: { ...base, script: script(['<char>\n{{description}}\n\n{{personality}}\n</char>\n<you>\n{{persona}}\n</you>', '{{chatHistory}}']) } });
+    const fields = await counts();
+    ok('script with {{description}}/{{personality}}: every Core slot exactly once', fields.every((n) => n === 1), fields.join(','));
+    await P(`/api/stories/${sid}`, { settings: base });
+
     const toSource = (await G('/api/library')).body;
     ok('the library still lists everything', Array.isArray(toSource.lorebooks) && toSource.lorebooks.length === 4);
   } finally {
@@ -292,6 +341,56 @@ console.log('\nH  displayPath is presentation only; nothing heuristic is importe
   const imports = readdirSync(pkgDir).flatMap((f) => [...readFileSync(join(pkgDir, f), 'utf8').matchAll(/from '([^']+)'/g)].map((m) => `${f}: ${m[1]}`));
   const forbidden = imports.filter((i) => /import\/|llm\/|builder\/|classify|compose|plan/.test(i));
   ok('the package modules import no classifier, composer, builder or provider', forbidden.length === 0, forbidden.join('; ') || imports.map((i) => i.split(': ')[1]).join(', '));
+}
+
+// ---------------------------------------------------------------- I
+console.log('\nI  the specification says what the validator does');
+{
+  const block = (name) => {
+    const m = DOC.match(new RegExp(`<!-- check:${name} -->([\\s\\S]*?)<!-- /check -->`));
+    if (!m) throw new Error(`docs: no check block "${name}"`);
+    return m[1];
+  };
+  const firstColumn = (text) => [...text.matchAll(/^\| `([^`]+)` \|/gm)].map((m) => m[1]);
+  const ticks = (text) => [...text.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+  const same = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+  ok('roles in the spec = roles in the code', same(firstColumn(block('roles')), PACKAGE_ROLES), firstColumn(block('roles')).join(','));
+  ok('entity types in the spec = the code', same(ticks(block('entity-types')), ENTITY_TYPES));
+  ok('Character Core slots in the spec = the code', same(firstColumn(block('character-core')), CHARACTER_CORE));
+  ok('Persona Core slots in the spec = the code', same(firstColumn(block('persona-core')), PERSONA_CORE));
+  ok('activation policies in the spec = the code', same(firstColumn(block('policies')), POLICIES));
+  ok('entity categories in the spec = the code', same(ticks(block('entity-categories')), ENTITY_CATEGORIES));
+  ok('world categories in the spec = the code', same(ticks(block('world-categories')), WORLD_CATEGORIES));
+  const rows = [...block('activation').matchAll(/^\| `([^`]+)` \| `([^`]+)` \|/gm)].map((m) => [m[1], m[2]]);
+  ok('activation fields and defaults in the spec = the code', same(rows.map((r) => r[0]), Object.keys(ACTIVATION_DEFAULTS))
+    && rows.every(([k, v]) => JSON.stringify(JSON.parse(v)) === JSON.stringify(ACTIVATION_DEFAULTS[k])));
+  ok('every reserved visibility word is named in the spec and refused', RESERVED_VISIBILITY.every((w) => DOC.includes('`' + w + '`'))
+    && RESERVED_VISIBILITY.every((w) => refused((p) => { entries(p, 'reiko-knowledge')[0][w] = true; }, /reserved/)));
+  const err = block('error-example');
+  const example = JSON.parse(err.match(/```json\n([\s\S]*?)```/)[1]);
+  const expected = err.match(/```text\n([\s\S]*?)\n```/)[1];
+  const actual = validatePackage(example).errors.map((e) => `${e.path}: ${e.message}`);
+  ok("the spec's error example gives exactly the error it shows", actual.length === 1 && actual[0] === expected, actual.join(' | '));
+  ok('the spec never mentions the old role name', !DOC.includes('character-material'));
+  ok('both examples are valid', validatePackage(FIXTURE).ok && validatePackage(SECOND).ok, JSON.stringify(validatePackage(SECOND).errors.slice(0, 2)));
+}
+
+// ---------------------------------------------------------------- J
+console.log('\nJ  entity-material is not about characters: a place carries Knowledge too');
+{
+  const lib = fresh();
+  const inspected = inspectPackage(lib, SECOND);
+  const r = importPackage(lib, SECOND);
+  const harbour = r.entities['black-harbour'];
+  const role = (ref) => lib.raw.prepare('SELECT * FROM source_semantics WHERE lorebook_id=?').get(r.sources[ref]);
+  ok('a place is the subject of its own reusable material', role('black-harbour-knowledge').package_role === 'entity-material' && role('black-harbour-knowledge').subject_entity_id === harbour
+    && lib.raw.prepare('SELECT type FROM lore_entities WHERE id=?').get(harbour).type === 'place');
+  ok('no card or persona is involved', count(lib, 'characters') === 0 && count(lib, 'personas') === 0 && inspected.ok);
+  ok('a reference pack and a framework arrive with their roles and domains', role('field-medicine').package_role === 'reference-pack' && role('field-medicine').domains === '["medical","first-aid"]'
+    && role('living-scene').package_role === 'narrative-framework');
+  ok('reference entries stay conditional', lib.listEntries(r.sources['field-medicine']).every((e) => !e.constant));
+  const out = exportSources(lib, Object.values(r.sources));
+  ok('the second example round-trips byte for byte', JSON.stringify(out.package) === JSON.stringify(canonicalPackage(SECOND)) && out.warnings.length === 0);
 }
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);

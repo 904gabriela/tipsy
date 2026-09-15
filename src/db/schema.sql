@@ -531,7 +531,10 @@ CREATE TABLE IF NOT EXISTS entity_distinctions (
 
 -- What a source as a whole is FOR, as opposed to what its entries mean.
 --
---   character-material  material about people (a card's lore, a person's history)
+--   entity-material     reusable knowledge that travels with one entity — a person
+--                       used as a Character or a Persona, later a place or faction.
+--                       Which entity: subject_entity_id. Shown in context as
+--                       "Character Knowledge", "Persona Knowledge", …
 --   world               a setting: places, factions, rules, history
 --   scenario            a situation ready to start
 --   story-package       a complete story: cast, world and opening together
@@ -550,7 +553,7 @@ CREATE TABLE IF NOT EXISTS entity_distinctions (
 CREATE TABLE IF NOT EXISTS source_semantics (
   lorebook_id  TEXT PRIMARY KEY REFERENCES lorebooks(id) ON DELETE CASCADE,
   package_role TEXT NOT NULL CHECK (package_role IN
-                 ('character-material','world','scenario','story-package','narrative-framework','reference-pack','mixed')),
+                 ('entity-material','world','scenario','story-package','narrative-framework','reference-pack','mixed')),
   domains      TEXT NOT NULL DEFAULT '[]',
   -- The entity this reusable source is primarily material about, so it can
   -- travel with that person into new stories. Not a claim about each entry:

@@ -6,7 +6,7 @@
     "title": "A Saint-Like Story",
     "role": "story-package",
     "domains": [],
-    "extensions": { "fixture": { "note": "Synthetic test content. Not taken from any real library." } }
+    "extensions": { "exampleApp": { "note": "Synthetic example content. Vendor data like this is kept on round trips and never interpreted." } }
   },
   "entities": [
     { "ref": "patrick", "type": "person", "name": "Patrick Moretti", "aliases": ["The Saint"] },
@@ -37,7 +37,7 @@
       },
       "creatorNotes": "Synthetic character for the package round-trip test.",
       "tags": ["synthetic", "harbour"],
-      "extensions": { "fixture": { "cardVariant": "a" } }
+      "extensions": { "exampleApp": { "cardVariant": "a" } }
     }
   ],
   "personas": [
@@ -59,7 +59,7 @@
       "ref": "patrick-knowledge",
       "name": "Patrick Moretti — Knowledge",
       "description": "Reusable material about Patrick.",
-      "role": "character-material",
+      "role": "entity-material",
       "domains": [],
       "subject": "patrick",
       "settings": { "scanDepth": null, "tokenBudget": null, "recursive": true },
@@ -101,13 +101,13 @@
           "semantics": { "scope": "entity", "category": "backstory", "subject": "patrick", "related": [], "displayPath": ["Backstory"] }
         }
       ],
-      "extensions": { "fixture": { "shelf": "people" } }
+      "extensions": { "exampleApp": { "shelf": "people" } }
     },
     {
       "ref": "reiko-knowledge",
       "name": "Reiko Ryuusui — Knowledge",
       "description": "",
-      "role": "character-material",
+      "role": "entity-material",
       "domains": [],
       "subject": "reiko",
       "settings": { "scanDepth": 4, "tokenBudget": 1500, "recursive": false },
@@ -216,5 +216,5 @@
       "premise": "A hero student and a fixer share a debt neither will name."
     }
   ],
-  "extensions": { "fixture": { "suite": "check-package" } }
+  "extensions": { "exampleApp": { "suite": "check-package" } }
 }

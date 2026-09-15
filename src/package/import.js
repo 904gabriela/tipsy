@@ -109,6 +109,8 @@ export function importPackage(db, pkg, { decisions = {}, baseSettings = {}, file
         const found = d.id ? currentEntity(db, d.id) : null;
         if (!found) { fail(`entities.${e.ref}`, 'The existing entity chosen for this does not exist.'); continue; }
         if (found.type !== e.type) { fail(`entities.${e.ref}`, `The existing entity chosen is a ${found.type}, not a ${e.type}.`); continue; }
+        const twice = Object.entries(out.entities).find(([, id]) => id === found.id);
+        if (twice) { fail(`entities.${e.ref}`, `"${twice[0]}" is already that existing entity. Two refs in one package cannot be one entity.`); continue; }
         out.entities[e.ref] = found.id;
       } else if (d.use === 'new') {
         out.entities[e.ref] = createEntity(db, { type: e.type, name: e.name, aliases: e.aliases || [] });
@@ -286,6 +288,9 @@ export function importPackage(db, pkg, { decisions = {}, baseSettings = {}, file
         ...(pkg.package.extensions ? { extensions: pkg.package.extensions } : {}),
         ...(pkg.extensions ? { rootExtensions: pkg.extensions } : {}),
         decisions: chosen,
+        // Which ref each thing had here, so an export can give it back even where
+        // the row has nowhere of its own to keep one (personas, stories).
+        refs: Object.fromEntries(['entities', 'personas', 'stories'].map((k) => [k, Object.fromEntries(Object.entries(out[k]).map(([ref, id]) => [id, ref]))])),
       },
       original: JSON.stringify(pkg), hash: packageHash(pkg),
     });

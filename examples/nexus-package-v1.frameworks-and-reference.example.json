@@ -1,0 +1,104 @@
+{
+  "format": "nexus-package",
+  "version": 1,
+  "package": {
+    "id": "example.frameworks-and-reference.v1",
+    "title": "Frameworks and Reference (example)",
+    "role": "mixed",
+    "domains": ["medical"]
+  },
+  "entities": [
+    { "ref": "black-harbour", "type": "place", "name": "The Black Harbour", "aliases": ["the harbour"] },
+    { "ref": "harbour-watch", "type": "faction", "name": "The Harbour Watch", "aliases": ["the Watch"] }
+  ],
+  "characters": [],
+  "personas": [],
+  "sources": [
+    {
+      "ref": "living-scene",
+      "name": "Living Scene",
+      "description": "How to narrate: immersion and continuity rules for any story.",
+      "role": "narrative-framework",
+      "domains": [],
+      "settings": { "scanDepth": null, "tokenBudget": null, "recursive": true },
+      "entries": [
+        {
+          "ref": "stay-in-scene",
+          "title": "Stay in the scene",
+          "content": "Never summarise what happens next. Let each scene end on something the other person can answer.",
+          "enabled": true,
+          "summary": "",
+          "activation": { "policy": "always" },
+          "semantics": { "scope": "world", "category": "direction", "related": [] }
+        },
+        {
+          "ref": "injuries-persist",
+          "title": "Injuries persist",
+          "content": "Wounds do not heal between scenes. Carry pain, stiffness and bandages forward until time has passed.",
+          "enabled": true,
+          "summary": "",
+          "activation": { "policy": "keywords", "keys": ["wound", "injured", "bleeding"] },
+          "semantics": { "scope": "world", "category": "direction", "related": [] }
+        }
+      ]
+    },
+    {
+      "ref": "field-medicine",
+      "name": "Field Medicine",
+      "description": "Specialised knowledge, available when a scene turns medical. Never always-on.",
+      "role": "reference-pack",
+      "domains": ["medical", "first-aid"],
+      "settings": { "scanDepth": 2, "tokenBudget": 800, "recursive": false },
+      "entries": [
+        {
+          "ref": "tourniquet",
+          "title": "Tourniquets",
+          "content": "Two to three inches above the wound, never over a joint; tighten until the bleeding stops and note the time.",
+          "enabled": true,
+          "summary": "",
+          "activation": { "policy": "keywords", "keys": ["tourniquet", "arterial", "bleeding out"] },
+          "semantics": { "scope": "world", "category": "reference", "related": [] }
+        },
+        {
+          "ref": "shock",
+          "title": "Shock",
+          "content": "Pale, cold, clammy skin and a fast weak pulse: lay them flat, raise the legs, keep them warm, nothing to drink.",
+          "enabled": true,
+          "summary": "",
+          "activation": { "policy": "advanced", "constant": false, "keys": ["shock", "pale", "clammy"], "secondaryKeys": ["injured", "wound"], "selectiveLogic": 0, "probability": 100 },
+          "semantics": { "scope": "world", "category": "reference", "related": [] }
+        }
+      ]
+    },
+    {
+      "ref": "black-harbour-knowledge",
+      "name": "The Black Harbour",
+      "description": "Reusable knowledge that travels with a place: shown as Location Knowledge.",
+      "role": "entity-material",
+      "domains": [],
+      "subject": "black-harbour",
+      "settings": { "scanDepth": null, "tokenBudget": null, "recursive": true },
+      "entries": [
+        {
+          "ref": "harbour-profile",
+          "title": "The Black Harbour",
+          "content": "A deep-water port where the fog never fully lifts; the old cranes are lit red at night.",
+          "enabled": true,
+          "summary": "",
+          "activation": { "policy": "keywords", "keys": ["Black Harbour", "harbour"] },
+          "semantics": { "scope": "entity", "category": "profile", "defines": "black-harbour", "related": [], "displayPath": ["Overview"] }
+        },
+        {
+          "ref": "the-watch",
+          "title": "The Harbour Watch",
+          "content": "The Watch patrols the piers in pairs and takes bribes in cigarettes, never cash.",
+          "enabled": true,
+          "summary": "",
+          "activation": { "policy": "keywords", "keys": ["the Watch", "Harbour Watch"] },
+          "semantics": { "scope": "entity", "category": "profile", "defines": "harbour-watch", "related": ["black-harbour"], "displayPath": ["Who Holds Power"] }
+        }
+      ]
+    }
+  ],
+  "stories": []
+}

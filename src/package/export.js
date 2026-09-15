@@ -25,6 +25,7 @@ export function exportStory(db, storyId) {
   const story = db.getStory(storyId);
   if (!story) throw Object.assign(new PackageError('No such story.'), { status: 404 });
   const x = new Exporter(db);
+  x.learn('story', storyId);
 
   const attached = db.storyLorebookSettings(storyId);
   for (const a of attached) x.addSource(a.lorebook_id, { storyId });
@@ -39,7 +40,7 @@ export function exportStory(db, storyId) {
   });
   const persona = story.persona_id ? x.addPersona(story.persona_id) : null;
 
-  const storyRef = x.refs.stories(null, story.title);
+  const storyRef = x.refs.stories(x.hints.stories.get(storyId), story.title);
   for (const s of x.sources) if (s.ownerStoryId === storyId) s.out.story = storyRef;
 
   const inExport = (entryId) => x.entryLocation.get(entryId);
@@ -109,6 +110,19 @@ class Exporter {
     this.sources = [];
     this.sourceRef = new Map();
     this.entryLocation = new Map();      // entry id → { source, entry }
+    // Refs a package import remembered for rows that cannot hold one themselves.
+    this.hints = { entities: new Map(), personas: new Map(), stories: new Map() };
+    this.learned = new Set();
+  }
+
+  learn(kind, id) {
+    const importId = this.db.importOf(kind, id);
+    if (!importId || this.learned.has(importId)) return;
+    this.learned.add(importId);
+    const refs = this.db.getImport(importId)?.analysis?.refs || {};
+    for (const k of Object.keys(this.hints)) {
+      for (const [rowId, ref] of Object.entries(refs[k] || {})) if (!this.hints[k].has(rowId)) this.hints[k].set(rowId, ref);
+    }
   }
 
   warn(path, message) { this.warnings.push({ path, message }); }
@@ -132,6 +146,7 @@ class Exporter {
   addCharacter(id) {
     if (this.characters.has(id)) return this.characters.get(id).ref;
     const c = this.db.getCharacter(id);
+    this.learn('character', id);
     const nexus = parse(c.original, null)?.nexus;
     const entity = c.entity_id ? currentEntity(this.db, c.entity_id)?.id : null;
     if (entity) this.characterEntity.set(id, entity);
@@ -158,9 +173,10 @@ class Exporter {
   addPersona(id) {
     const p = this.db.getPersona(id);
     if (!p) return null;
+    this.learn('persona', id);
     const entity = p.entity_id ? currentEntity(this.db, p.entity_id)?.id : null;
     const out = {
-      ref: this.refs.personas(null, p.name),
+      ref: this.refs.personas(this.hints.personas.get(id), p.name),
       name: p.name,
       ...(entity ? { entity: this.entityRef(entity) } : {}),
       core: { identity: p.description || '', appearance: p.appearance || '', personality: p.personality || '', behavior: p.behavior || '', speechStyle: p.speech_style || '' },
@@ -173,6 +189,7 @@ class Exporter {
     const db = this.db;
     const book = db.raw.prepare('SELECT * FROM lorebooks WHERE id=?').get(lorebookId);
     if (!book) return;
+    this.learn('lorebook', lorebookId);
     const role = db.raw.prepare('SELECT * FROM source_semantics WHERE lorebook_id=?').get(lorebookId);
     if (!role || role.status !== 'approved') {
       this.blocked.push(`"${book.name}" has no approved package role yet`);
@@ -285,15 +302,17 @@ class Exporter {
     }
   }
 
+  wantedEntityRef(id) { return this.preferredEntityRef.get(id) || this.hints.entities.get(id) || null; }
+
   collections() {
     // Refs for entities are handed out last, once every use is known, so the
     // same library always gives the same names.
     const ordered = [...this.entities.values()].sort((a, b) => {
-      const ka = this.preferredEntityRef.get(a.row.id) || a.row.canonical_name;
-      const kb = this.preferredEntityRef.get(b.row.id) || b.row.canonical_name;
+      const ka = this.wantedEntityRef(a.row.id) || a.row.canonical_name;
+      const kb = this.wantedEntityRef(b.row.id) || b.row.canonical_name;
       return ka < kb ? -1 : ka > kb ? 1 : a.row.id < b.row.id ? -1 : 1;
     });
-    for (const e of ordered) e.ref = this.refs.entities(this.preferredEntityRef.get(e.row.id), e.row.canonical_name);
+    for (const e of ordered) e.ref = this.refs.entities(this.wantedEntityRef(e.row.id), e.row.canonical_name);
     return {
       entities: ordered.map((e) => ({ ref: e.ref, type: e.row.type, name: e.row.canonical_name, aliases: e.row.aliases || [] })),
       characters: [...this.characters.values()],

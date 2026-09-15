@@ -666,10 +666,23 @@ never approved.
   Keep knowledge as separate entries so it can be filtered later
   (`entry_semantics.visibility`, `entry_knowers` — future).
 
-**P2 — Nexus Story Package v1** (`src/package/`): format and validator
-(`format.js`, spec in its header), trusted import (`import.js`), export
-(`export.js`). Routes: `POST /api/packages/inspect`, `POST /api/packages/import`,
-`GET /api/stories/:id/package`, `POST /api/packages/export`. No UI yet.
+**P2 — Nexus Package v1** (`src/package/`): format and validator (`format.js`),
+trusted import (`import.js`), export (`export.js`). Routes: `POST /api/packages/inspect`,
+`POST /api/packages/import`, `GET /api/stories/:id/package`, `POST /api/packages/export`.
+No UI yet.
+- **Contract frozen:** `"format": "nexus-package"`, `"version": 1`. Do not rename.
+  The authoritative spec is **`docs/NEXUS_PACKAGE_V1.md`**; the test suite checks
+  that it agrees with the validator. Examples: `examples/nexus-package-v1.example.json`
+  (Patrick + Reiko + story) and `examples/nexus-package-v1.frameworks-and-reference.example.json`.
+- **Roles (frozen):** `entity-material`, `world`, `scenario`, `story-package`,
+  `narrative-framework`, `reference-pack`, `mixed`. `entity-material` is
+  resource-neutral: reusable knowledge that travels with the source's subject
+  entity, shown in context as Character / Persona / Location Knowledge. There is
+  no `character-material` or `persona-material`.
+- Domains must already be lower-case hyphenated tags, so a round trip cannot change them.
+- Core slots reach every prompt path once: the plain cast block, script
+  `{{character}}` / `{{persona}}` (all 14 real presets), and the field macros
+  (`{{description}}` carries appearance; `{{personality}}` carries behaviour and voice).
 - Native semantics import as approved, origin `native`. No classifier, composer,
   builder or model is used (checked statically and with a counting provider).
 - Decisions at import: entities default new; a card/persona is created unless
@@ -679,8 +692,9 @@ never approved.
 - Export includes only approved, current semantics; proposed or NEEDS RECHECK
   entries go out unorganised with a warning. A source with no approved role
   blocks export — legacy stories (The Saint) are not exportable until organised.
-- Tests: `scripts/check-package.js` with the synthetic fixture
-  `scripts/fixtures/nexus-package-v1-saint-like.json` (fixture → export is
+- Export never drops the lore itself: an entry whose organisation is left off
+  still carries its content, activation and source membership.
+- Tests: `scripts/check-package.js` uses both examples (example → export is
   byte-identical to its canonical form; export → import → export is byte-identical).
 
 ---
