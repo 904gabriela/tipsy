@@ -19,7 +19,7 @@ import { planFor, applyPlan, startFromScenario } from './src/import/plan.js';
 import { composeSource, nameFromTitle, personFromEntry, normalizeRole, CAST_ROLES } from './src/import/compose.js';
 import { fromComposition, checkDraft, HARD as BUILDER_HARD, MODES as BUILDER_MODES, DEPTHS as BUILDER_DEPTHS } from './src/builder/contract.js';
 import { buildDraft, regenerate } from './src/builder/index.js';
-import { planGenerated, writeGenerated, createLeadCard } from './src/builder/apply.js';
+import { planGenerated, writeGenerated, createLeadCard, storyPackage } from './src/builder/apply.js';
 import {
   planComposition, writeComposition, applyToStory, sourceRemovalPreview, removeSource,
 } from './src/import/compose-apply.js';
@@ -1914,6 +1914,8 @@ route('GET', '/api/stories/:id/bible', async (req, res, { id }) => {
       id: b.id, name: b.name, entries: b.entries.length,
       recursion: pol?.recursion || 'default',
       from: b.from_character ? (db.getCharacter(b.from_character)?.name || null) : null,
+      // This story's own package from the Story Builder, shown as such rather than by its book name.
+      madeForThisStory: storyPackage(db, id)?.id === b.id,
     };
   }).filter(Boolean);
   // Books the story does NOT use but that plainly belong to the same material:
@@ -2137,11 +2139,20 @@ function baseDraft({ storyId = null, lorebookIds = [], characterIds = [], premis
   return base;
 }
 
-/** People the builder proposed who share a name with a card in the library. Said, never swapped in. */
+/**
+ * The last word on a draft before it leaves the server.
+ *
+ * No draft the builder hands out ever carries a promotion: whatever a model
+ * said, and whatever a client sent back in, `promote` is false here and only
+ * a person's explicit choice at Apply can make a card. People the builder
+ * proposed who share a name with a card in the library are noted, never
+ * swapped in.
+ */
 function noteLibraryCards(draft) {
   const cards = db.listCharacters();
   const norm = (s) => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
   for (const r of draft.casting) {
+    if ('promote' in r) r.promote = false;
     if (r.origin !== 'generated') continue;
     const card = cards.find((c) => norm(c.name) === norm(r.name));
     if (card) {
@@ -2178,6 +2189,27 @@ route('POST', '/api/builder/draft', async (req) => {
     callModel: mode === 'organize' ? null : builderModel(),
   });
   return noteLibraryCards(draft);
+});
+
+/**
+ * Help fill the gaps in a draft that is already being reviewed.
+ *
+ * Works on the draft as the person has it, edits and removals included, and
+ * asks only for what that draft is missing. Nothing is written.
+ *
+ * { draft, depth?, instruction? }
+ */
+route('POST', '/api/builder/fill', async (req) => {
+  const b = await readJson(req);
+  const draft = checkDraft(b.draft);
+  if (b.depth !== undefined && !BUILDER_DEPTHS.includes(b.depth)) throw new HttpError(400, 'Depth is light, standard or deep.');
+  const text = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+  const out = await buildDraft({
+    mode: 'fill', depth: b.depth || draft.generation?.depth, base: draft,
+    instruction: text(b.instruction, 1000), callModel: builderModel(),
+  });
+  // Filling in keeps the draft what it was: an idea stays an idea.
+  return noteLibraryCards({ ...out, mode: draft.mode || out.mode });
 });
 
 /**

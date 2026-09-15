@@ -125,12 +125,35 @@ export function createLeadCard(db, lead, { opening = '' } = {}) {
 }
 
 /**
+ * The one package a story's own material lives in, if it has one.
+ *
+ * Marked on the book itself (`lorebooks.original = {"generatedFor": storyId}`),
+ * so it is found again whether or not the story still reads it: taking it out
+ * of the story and building again reconnects the same book instead of making a
+ * second one.
+ */
+export function storyPackage(db, storyId) {
+  return db.raw.prepare(
+    `SELECT id, name, import_id FROM lorebooks
+     WHERE json_valid(original) AND json_extract(original, '$.generatedFor') = ?
+     ORDER BY created_at LIMIT 1`,
+  ).get(storyId) || null;
+}
+
+/**
  * Write a checked plan. Call inside db.transaction, after the story exists.
  *
- * @returns {{ bookId, importId, entryIds: Object<draftId, entryId> }}
+ * Each story has one package for material made for it, created the first time
+ * and appended to afterwards. Every apply that includes generated material
+ * gets its own import record — generation provenance — but they all feed the
+ * same package. Nothing already in the package is overwritten: a proposal
+ * with the same kind and name as something already accepted is skipped and
+ * reported, so accepting the same draft twice does not duplicate it.
+ *
+ * @returns {{ bookId, importId, entryIds: Object<draftId, entryId>, skipped: string[], created: boolean }}
  */
 export function writeGenerated(db, storyId, plan, { title = 'Story', builder = {}, leadCardId = null } = {}) {
-  if (!plan.any) return { bookId: null, importId: null, entryIds: {} };
+  if (!plan.any) return { bookId: null, importId: null, entryIds: {}, skipped: [], created: false };
 
   const importId = plan.generated
     ? db.recordImport({
@@ -148,22 +171,33 @@ export function writeGenerated(db, storyId, plan, { title = 'Story', builder = {
     })
     : null;
 
-  const bookId = db.createLorebook(
-    plan.generated ? `${title} — Story Builder` : `${title} — written for this story`,
-    plan.generated ? 'Proposed by the Nexus Story Builder for this story, and accepted in review.' : 'Written in review for this story.',
-  );
-  if (importId) db.raw.prepare(`UPDATE lorebooks SET import_id=? WHERE id=?`).run(importId, bookId);
+  let pkg = storyPackage(db, storyId);
+  const created = !pkg;
+  if (!pkg) {
+    const id = db.createLorebook(`${title} — Story Builder`, 'Made for this story with the Nexus Story Builder, and accepted in review.');
+    db.raw.prepare(`UPDATE lorebooks SET original=? WHERE id=?`).run(JSON.stringify({ generatedFor: storyId }), id);
+    pkg = { id, import_id: null };
+  }
+  const bookId = pkg.id;
+  // The book points at the record that first filled it; every later record
+  // lists the book among what it produced.
+  if (importId && !pkg.import_id) db.raw.prepare(`UPDATE lorebooks SET import_id=? WHERE id=?`).run(importId, bookId);
   if (importId && leadCardId) db.raw.prepare(`UPDATE characters SET import_id=? WHERE id=?`).run(importId, leadCardId);
   db.raw.prepare(`INSERT OR IGNORE INTO story_lorebooks (story_id,lorebook_id) VALUES (?,?)`).run(storyId, bookId);
 
+  const existing = new Map(db.listEntries(bookId).map((e) => [`${e.kind}|${norm(e.title)}`, e.id]));
   const entryIds = {};
+  const skipped = [];
   const provenance = (x) => ({ origin: x.origin, draftId: x.draftId, edited: x.edited, builder: importId });
 
   for (const p of plan.people) {
+    const already = existing.get(`character|${norm(p.name)}`);
+    if (already) { entryIds[p.draftId] = already; skipped.push(p.name); continue; }
     const id = db.saveEntry(bookId, {
       kind: 'character', title: p.name, content: p.content, summary: p.summary, keys: p.keys,
       order: 100, constant: false, enabled: true, original: provenance(p),
     });
+    existing.set(`character|${norm(p.name)}`, id);
     entryIds[p.draftId] = id;
     if (NPC_ROLES.includes(p.role)) {
       // The same guard every cast member passes, however they got here.
@@ -173,10 +207,15 @@ export function writeGenerated(db, storyId, plan, { title = 'Story', builder = {
     }
   }
   for (const e of plan.entries) {
-    entryIds[e.draftId] = db.saveEntry(bookId, {
+    const key = `${e.kind}|${norm(e.title)}`;
+    const already = existing.get(key);
+    if (already) { entryIds[e.draftId] = already; skipped.push(e.title); continue; }
+    const id = db.saveEntry(bookId, {
       kind: e.kind, title: e.title, content: e.content, summary: e.summary, keys: e.keys,
       order: 100, constant: e.alwaysOn, enabled: true, original: provenance(e),
     });
+    existing.set(key, id);
+    entryIds[e.draftId] = id;
   }
   // A lead who became a card is linked to as that card.
   if (plan.lead && leadCardId) entryIds[plan.lead.draftId] = null;
@@ -197,7 +236,7 @@ export function writeGenerated(db, storyId, plan, { title = 'Story', builder = {
       ...(leadCardId ? [{ kind: 'character', id: leadCardId, part: 'piece' }] : []),
     ]);
   }
-  return { bookId, importId, entryIds };
+  return { bookId, importId, entryIds, skipped, created };
 }
 
 /**
@@ -207,14 +246,18 @@ export function writeGenerated(db, storyId, plan, { title = 'Story', builder = {
  * item whose draftId is in `accept` (or all of them, if accept is omitted)
  * becomes an item; generated links go with them when both ends are accepted.
  * Roles, sections, titles and text are taken from the draft as edited.
+ *
+ * Promotion is never read from the draft. A draft is something a model helped
+ * write; making someone a card is the person's decision, passed separately as
+ * the draftIds they chose.
  */
-export function acceptedFromDraft(draft, accept = null) {
+export function acceptedFromDraft(draft, accept = null, promote = []) {
   const ok = (id) => !accept || accept.includes(id);
   const items = [];
   for (const r of draft.casting) {
     if (!['generated', 'manual'].includes(r.origin) || !ok(r.draftId)) continue;
     if (r.suggested === 'excluded') continue;
-    items.push({ type: 'person', draftId: r.draftId, origin: r.origin, name: r.name, role: r.suggested, content: r.content, summary: r.summary, keys: r.keys, promote: r.promote === true, edited: r.edited === true });
+    items.push({ type: 'person', draftId: r.draftId, origin: r.origin, name: r.name, role: r.suggested, content: r.content, summary: r.summary, keys: r.keys, promote: promote.includes(r.draftId), edited: r.edited === true });
   }
   for (const s of draft.sections) {
     for (const i of s.items) {

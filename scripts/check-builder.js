@@ -229,6 +229,49 @@ console.log('\nG  partial regeneration touches only its scope');
   ok('the target itself is not rewritten', JSON.stringify(d4.sections.find((s) => s.id === 'factions').items.find((i) => i.entryId === crane.entryId)) === JSON.stringify(crane));
 }
 
+console.log('\nG2 the model can never make a character card');
+{
+  const d = await buildDraft({ mode: 'build', idea: 'x', base: emptyBase(), callModel: model({
+    people: [{ id: 'boss', name: 'Rhea Stone', role: 'lead', content: 'Rhea Stone runs the port.', promote: true, promotionSuggested: true }],
+  }) });
+  const rhea = d.casting.find((r) => r.name === 'Rhea Stone');
+  ok('a model-authored promote is ignored', rhea.promote === false);
+  ok('and it is said', d.generation.warnings.some((w) => /cannot make anyone a character card/.test(w)));
+  ok('its advice survives as advice', rhea.promotionSuggested === true);
+  const forged = structuredClone(d);
+  forged.casting[0].promote = true;   // a draft tampered with, or a model that learned the field name
+  const { items } = acceptedFromDraft(forged);
+  ok('a promote inside a draft is not read at Apply', items[0].promote === false);
+  ok('so a lead with no card is refused', (() => { try { planGenerated(null, { items, allowLead: true }); return false; } catch (e) { return /no character card/.test(e.message); } })());
+  ok('only the person’s explicit choice promotes', acceptedFromDraft(d, null, [rhea.draftId]).items[0].promote === true);
+}
+
+console.log('\nG3 reuse is by kind and name, or by explicit reference');
+{
+  const pkg = [
+    E({ kind: 'place', title: 'Black Lotus', keys: ['Black Lotus'], content: 'A club on the harbour.' }),
+    E({ kind: 'character', title: 'Mira Castell', keys: ['Mira Castell'], content: 'Mira Castell keeps the lighthouse.' }),
+    E({ kind: 'faction', title: 'Crane Syndicate', keys: ['Crane'], content: 'Loud and careless.' }),
+  ];
+  const base = fromComposition(composeSource(pkg, { leadCards: [LEAD], opening: LEAD.first_message }), { mode: 'build' });
+  const canon = canonOf(base);
+  const refOf = (title) => [...canon.refs.entries()].find(([, v]) => v.name === title)[0];
+  const v = validateGeneration({
+    people: [{ id: 'p1', name: 'Black Lotus', role: 'background', content: 'A singer who took the club’s name.' }],
+    entries: [
+      { id: 'e1', section: 'places', title: 'Mira Castell', content: 'A ship named after her.' },
+      { id: 'e2', section: 'places', title: 'black lotus', content: 'The club again.' },
+      { id: 'e3', section: 'places', title: 'The Old Club', content: 'Also the club.', same: refOf('Black Lotus') },
+      { id: 'e4', section: 'factions', title: 'Lotus Crew', content: 'Says it is the club.', same: refOf('Black Lotus') },
+    ],
+  }, { draft: base, depth: 'deep', allowed: new Set(['people', 'places', 'factions']), canon });
+  ok('same name, different kind: a person is not the place', v.people.some((p) => p.name === 'Black Lotus') && !v.reused.some((r) => r.kind === 'person'));
+  ok('same name, different kind: a place is not the person', v.entries.some((e) => e.title === 'Mira Castell'));
+  ok('same kind and same normalised name: reused', v.reused.some((r) => r.name === 'black lotus' && r.kind === 'place' && r.how === 'name' && r.existing.entryId));
+  ok('explicit reference to the same kind: reused, whatever the name', v.reused.some((r) => r.name === 'The Old Club' && r.how === 'reference'));
+  ok('explicit reference to a different kind: kept as a proposal, and said', v.entries.some((e) => e.title === 'Lotus Crew') && v.warnings.some((w) => /different kind of thing \(place\)/.test(w)));
+}
+
 // ------------------------------------------------------- database and routes
 const dir = mkdtempSync(join(tmpdir(), 'tipsy-builder-'));
 const dbPath = join(dir, 'builder.db');
@@ -398,7 +441,8 @@ try {
   const cardRec = y.raw.prepare('SELECT source FROM imports WHERE id=(SELECT import_id FROM characters WHERE id=?)').get(card.id);
   ok('exactly one new card, leading the story', dbCounts().characters === beforeLead.characters + 1 && card.name === 'Nico Vale' && card.story_role === 'lead');
   ok('the card knows it came from the Story Builder', cardRec?.source === 'builder');
-  ok('the reviewed opening opens the story', y.pathTo(story.head_id).map((m) => m.content).join() === 'The tide goes out and leaves you on the rocks.');
+  ok('the reviewed opening opens the story, exactly once', y.raw.prepare('SELECT COUNT(*) n FROM messages WHERE story_id=?').get(withCard.body.id).n === 1
+    && y.pathTo(story.head_id).map((m) => m.content).join() === 'The tide goes out and leaves you on the rocks.');
   ok('the generated title is used', story.title === 'Salt and Iron');
   ok('an entry about the generated lead links to the card', y.loreAboutCharacter(card.id).some((e) => e.title === 'The Wreck'));
   y.close();
@@ -407,15 +451,88 @@ try {
   const existing = await J(`/api/stories/${sid}/compose`, { generated: { items: [{ type: 'entry', draftId: 'lamp', origin: 'manual', section: 'items', title: 'The Storm Lamp', content: 'Kept lit for the ferry.' }], links: [] } });
   ok('accepts generated or hand-written additions', existing.status === 200 && existing.body.generatedEntries === 1, JSON.stringify(existing.body));
   const z = open(dbPath);
-  const handBook = z.raw.prepare("SELECT l.name, l.import_id FROM lorebooks l JOIN story_lorebooks sl ON sl.lorebook_id=l.id WHERE sl.story_id=? AND l.name LIKE '%written for this story'").get(sid);
-  ok('hand-written material has no Story Builder record', !!handBook && handBook.import_id === null);
+  // Hand-written additions join the story's one package, marked as written by hand.
+  const packages = z.raw.prepare("SELECT l.id FROM lorebooks l WHERE json_valid(l.original) AND json_extract(l.original,'$.generatedFor')=?").all(sid);
+  const lamp = z.raw.prepare("SELECT lorebook_id, original FROM lore_entries WHERE title='The Storm Lamp'").get();
+  ok('hand-written material joins the same package, not a new one', packages.length === 1 && lamp.lorebook_id === packages[0].id);
+  ok('and says it was written by hand, with no Story Builder record of its own', JSON.parse(lamp.original).origin === 'manual' && JSON.parse(lamp.original).builder === null);
   z.close();
   const lead2 = await J(`/api/stories/${sid}/compose`, { generated: { items: [{ ...nico, name: 'Other Lead', promote: true }], links: [] } });
   ok('cannot take a new lead', lead2.status === 400 && /already has its lead/.test(lead2.body?.error || ''));
   const opening2 = await J(`/api/stories/${sid}/compose`, { opening: { text: 'A new beginning' } });
   ok('cannot replace its opening', opening2.status === 400);
+  console.log('\nM  one package per story, however often material is accepted');
+  const pkgOf = (dd, storyId) => dd.raw.prepare("SELECT id, name, import_id FROM lorebooks WHERE json_valid(original) AND json_extract(original,'$.generatedFor')=?").all(storyId);
+  let w = open(dbPath);
+  const firstPkg = pkgOf(w, sid);
+  const importsBefore = w.raw.prepare("SELECT COUNT(*) n FROM imports WHERE source='builder'").get().n;
+  const quayBefore = w.raw.prepare("SELECT content FROM lore_entries WHERE title='The Quay'").get().content;
+  const producedBefore = w.raw.prepare("SELECT COUNT(*) n FROM import_resources WHERE kind='lorebook' AND resource_id=?").get(firstPkg[0].id).n;
+  w.close();
+  const again = await J(`/api/stories/${sid}/compose`, { builder: { mode: 'fill' }, generated: { items: [
+    { type: 'entry', draftId: 'q2', origin: 'generated', section: 'places', title: 'The Quay', content: 'A different quay that should not overwrite.' },
+    { type: 'entry', draftId: 'gull', origin: 'generated', section: 'places', title: 'Gull Rock', content: 'Where the birds nest.', edited: true },
+  ], links: [] } });
+  ok('a second accepted generation applies', again.status === 200, JSON.stringify(again.body));
+  w = open(dbPath);
+  const secondPkg = pkgOf(w, sid);
+  ok('still exactly one package, the same one', firstPkg.length === 1 && secondPkg.length === 1 && secondPkg[0].id === firstPkg[0].id);
+  ok('its name did not change', secondPkg[0].name === firstPkg[0].name);
+  ok('the generation got its own provenance record', w.raw.prepare("SELECT COUNT(*) n FROM imports WHERE source='builder'").get().n === importsBefore + 1);
+  ok('and that record lists the same package', w.raw.prepare("SELECT COUNT(*) n FROM import_resources WHERE kind='lorebook' AND resource_id=?").get(firstPkg[0].id).n === producedBefore + 1);
+  ok('an accepted entry is not overwritten by a later one with the same kind and name', w.raw.prepare("SELECT content FROM lore_entries WHERE title='The Quay'").get().content === quayBefore
+    && w.raw.prepare("SELECT COUNT(*) n FROM lore_entries WHERE title='The Quay'").get().n === 1);
+  const gull = w.raw.prepare("SELECT lorebook_id, original FROM lore_entries WHERE title='Gull Rock'").get();
+  ok('an edited generated entry persists with edited provenance', gull.lorebook_id === firstPkg[0].id && JSON.parse(gull.original).edited === true && JSON.parse(gull.original).origin === 'generated');
+  w.close();
+  const twice = await J(`/api/stories/${sid}/compose`, { generated: { items: [{ type: 'entry', draftId: 'gull', origin: 'generated', section: 'places', title: 'Gull Rock', content: 'Where the birds nest.' }], links: [] } });
+  w = open(dbPath);
+  ok('accepting the same thing twice does not duplicate it', twice.status === 200 && w.raw.prepare("SELECT COUNT(*) n FROM lore_entries WHERE title='Gull Rock'").get().n === 1);
+  w.close();
+  await J(`/api/stories/${sid}/sources/${firstPkg[0].id}`, null, 'DELETE');
+  const reconnect = await J(`/api/stories/${sid}/compose`, { generated: { items: [{ type: 'entry', draftId: 'buoy', origin: 'generated', section: 'items', title: 'Red Buoy', content: 'Marks the channel.' }], links: [] } });
+  w = open(dbPath);
+  ok('after removing the package from the story, the next apply reconnects the same package', reconnect.status === 200 && pkgOf(w, sid).length === 1
+    && w.raw.prepare('SELECT COUNT(*) n FROM story_lorebooks WHERE story_id=? AND lorebook_id=?').get(sid, firstPkg[0].id).n === 1);
+  w.close();
+  const bibleM = (await J(`/api/stories/${sid}/bible`, null, 'GET')).body;
+  ok('the Story Bible marks it as made for this story', bibleM.sources.connected.some((s) => s.id === firstPkg[0].id && s.madeForThisStory === true));
+  const libM = (await J('/api/library', null, 'GET')).body;
+  ok('the library knows which story it was made for', libM.lorebooks.some((l) => l.id === firstPkg[0].id && l.generated_for === sid));
+
+  console.log('\nN  one review contract, whichever way a draft starts');
+  const viaCompose = (await J('/api/compose', { lorebookIds: [book], characterIds: [dario] })).body;
+  const viaOrganize = (await J('/api/builder/draft', { mode: 'organize', lorebookIds: [book], characterIds: [dario] })).body;
+  reply({ story: { title: 'T', premise: 'P.' }, opening: { text: 'O.' }, people: [{ id: 'z', name: 'Zed Ash', role: 'lead', content: 'Zed Ash.' }], entries: [] });
+  const viaIdea = (await J('/api/builder/draft', { mode: 'build', idea: 'a plain idea' })).body;
+  const shape = (x) => ['version', 'mode', 'context', 'story', 'casting', 'sections', 'links', 'reused', 'generation', 'invented'].every((k) => k in x);
+  ok('an imported source and an idea produce the same draft shape', shape(viaOrganize) && shape(viaIdea));
+  ok('organize reads a source exactly as the composer does', JSON.stringify(viaOrganize.casting.map((r) => [r.name, r.suggested])) === JSON.stringify(viaCompose.casting.map((r) => [r.name, r.suggested]))
+    && JSON.stringify(viaOrganize.sections.map((s) => s.count)) === JSON.stringify(viaCompose.sections.map((s) => s.count)));
+  ok('the same eight sections in both', JSON.stringify(viaOrganize.sections.map((s) => s.id)) === JSON.stringify(viaIdea.sections.map((s) => s.id)));
+  const manualDraft = structuredClone(viaOrganize);
+  manualDraft.sections.find((s) => s.id === 'items').items.push({ origin: 'manual', draftId: 'hand', title: 'A Letter', content: 'Unopened.', keys: [], kind: 'item' });
+  const manualItems = acceptedFromDraft(manualDraft);
+  ok('a hand-written item goes through the same apply path', manualItems.items.length === 1 && manualItems.items[0].origin === 'manual');
+
+  console.log('\nO  filling the gaps of a draft being reviewed');
+  const edited = structuredClone(build.body);
+  const keptPlace = edited.sections.find((s) => s.id === 'places').items.find((i) => i.origin === 'generated');
+  keptPlace.content = 'Edited by the person.'; keptPlace.edited = true;
+  edited.sections.find((s) => s.id === 'events').items = [];   // the person removed the events
+  edited.sections.find((s) => s.id === 'events').count = 0;
+  const hitsBefore = seen.length;
+  reply({ entries: [{ id: 'new-ev', section: 'events', title: 'A Knock at Night', content: 'Someone at the door.' }, { id: 'no', section: 'places', title: 'Not Asked', content: 'x' }] });
+  const beforeFill = dbCounts();
+  const filled = await J('/api/builder/fill', { draft: edited });
+  const asked = seen[hitsBefore].body.messages[1].content.split('WRITE:')[1];
+  ok('asks only for what the reviewed draft is missing', filled.status === 200 && /events/.test(asked) && !/"places"/.test(asked), asked.trim().replace(/\n/g, ' '));
+  ok('keeps the person’s edit', filled.body.sections.find((s) => s.id === 'places').items.some((i) => i.content === 'Edited by the person.' && i.edited === true));
+  ok('fills the gap', filled.body.sections.find((s) => s.id === 'events').items.some((i) => i.title === 'A Knock at Night'));
+  ok('writes nothing', JSON.stringify(dbCounts()) === JSON.stringify(beforeFill));
+
   const draftExisting = await J('/api/builder/draft', { mode: 'organize', storyId: sid });
-  ok('an existing story’s own draft shows its generated people as source now', draftExisting.status === 200 && draftExisting.body.context === 'existing' && draftExisting.body.casting.some((r) => r.name === 'Tamsin Reed' && r.origin === 'source' && r.current === 'background'));
+  ok('an existing story’s own draft shows its accepted generated people as source material now', draftExisting.status === 200 && draftExisting.body.context === 'existing' && draftExisting.body.casting.some((r) => r.name === 'Tamsin Reed' && r.origin === 'source'));
 } finally {
   server.kill();
   fake.close();

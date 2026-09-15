@@ -21,7 +21,7 @@ Format: return one JSON object and nothing else.
 {
   "story":   { "title": string, "premise": string },          // only if asked
   "opening": { "text": string },                                // only if asked: the first scene, written in second or third person as instructed, ending at a moment the player can answer
-  "people":  [ { "id": string, "name": string, "role": ${GENERATED_ROLES.map((r) => `"${r}"`).join(' | ')}, "summary": string, "content": string, "keys": [string], "about": [ref] } ],
+  "people":  [ { "id": string, "name": string, "role": ${GENERATED_ROLES.map((r) => `"${r}"`).join(' | ')}, "summary": string, "content": string, "keys": [string], "about": [ref], "promotionSuggested": boolean } ],
   "entries": [ { "id": string, "section": ${BUILDER_SECTIONS.map((s) => `"${s}"`).join(' | ')}, "title": string, "summary": string, "content": string, "keys": [string], "alwaysOn": boolean, "about": [ref] } ]
 }
 
@@ -32,6 +32,8 @@ Format: return one JSON object and nothing else.
 - "about": refs to CANON (C1, S3) or to ids of your own items this is about. Only real refs.
 - "alwaysOn": true only for something the story must always know. Rarely.
 - "role": "lead" only if WRITE says a lead is needed. Otherwise main, supporting, background, or known (exists, not in the cast).
+- "promotionSuggested": true only for someone important enough that the author might want them as a reusable character. It is advice; the author decides.
+- Do not return anything that already exists in CANON. If you must refer to it, use its ref in "about". If an item you are describing IS a CANON item, add "same": its ref, and it will be treated as that item rather than a new one.
 - Sections: places = locations; factions = families, gangs, organisations; backstory = background and premise facts; rules = how this world works; directions = how the story should be written; events = hooks and things that happen or happened; items = objects that matter; other = anything else.`;
 
 const DEPTH_WORDS = {
@@ -107,6 +109,7 @@ export const RESPONSE_SCHEMA = {
           id: { type: 'string' }, name: { type: 'string' }, role: { type: 'string', enum: GENERATED_ROLES },
           summary: { type: 'string' }, content: { type: 'string' },
           keys: { type: 'array', items: { type: 'string' } }, about: { type: 'array', items: { type: 'string' } },
+          same: { type: 'string' }, promotionSuggested: { type: 'boolean' },
         },
         required: ['id', 'name', 'role', 'content'],
       },
@@ -118,7 +121,7 @@ export const RESPONSE_SCHEMA = {
         properties: {
           id: { type: 'string' }, section: { type: 'string', enum: BUILDER_SECTIONS }, title: { type: 'string' },
           summary: { type: 'string' }, content: { type: 'string' }, keys: { type: 'array', items: { type: 'string' } },
-          alwaysOn: { type: 'boolean' }, about: { type: 'array', items: { type: 'string' } },
+          alwaysOn: { type: 'boolean' }, about: { type: 'array', items: { type: 'string' } }, same: { type: 'string' },
         },
         required: ['id', 'section', 'title', 'content'],
       },

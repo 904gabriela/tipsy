@@ -173,7 +173,10 @@ export function canonOf(draft, { maxItems = 150, snippet = 160 } = {}) {
   const cut = (s, k) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, k);
   for (const r of draft.casting) {
     const ref = `C${++n}`;
-    refs.set(ref, r.characterId ? { characterId: r.characterId, name: r.name, section: 'people' } : { entryId: r.entryId, name: r.name, section: 'people' });
+    refs.set(ref, {
+      ...(r.characterId ? { characterId: r.characterId } : r.entryId ? { entryId: r.entryId } : { draftId: r.draftId }),
+      name: r.name, section: 'people', kind: 'person',
+    });
     lines.push({ ref, section: 'people', name: r.name, role: r.suggested, text: cut(r.content || r.why?.join('; '), snippet) });
   }
   let m = 0;
@@ -181,7 +184,10 @@ export function canonOf(draft, { maxItems = 150, snippet = 160 } = {}) {
     for (const i of s.items) {
       if (m >= maxItems) break;
       const ref = `S${++m}`;
-      refs.set(ref, i.entryId ? { entryId: i.entryId, name: i.title, section: s.id } : { draftId: i.draftId, name: i.title, section: s.id });
+      refs.set(ref, {
+        ...(i.entryId ? { entryId: i.entryId } : { draftId: i.draftId }),
+        name: i.title, section: s.id, kind: i.kind || SECTION_KIND[s.id],
+      });
       lines.push({ ref, section: s.id, name: i.title, text: cut(i.content || i.summary || (i.keys || []).join(', '), snippet) });
     }
   }
@@ -245,11 +251,37 @@ export function validateGeneration(raw, ctx) {
   if (errors.length) throw new DraftError('The Story Builder broke the draft rules, so nothing it proposed was used.', errors);
 
   // ------------------------------------------------------------ trimming
-  const canonPeople = new Set(draft.casting.map((r) => norm(r.name)));
-  const canonTitles = new Map();
-  for (const s of draft.sections) canonTitles.set(s.id, new Set(s.items.map((i) => norm(i.title))));
+  //
+  // Reuse is decided conservatively. A proposal is the same thing as
+  // something that already exists only when
+  //   - it says so by reference ("same": "S4") and the reference is the same
+  //     kind of thing, or
+  //   - it is the same kind of thing AND has the same normalised name.
+  // A person called "Black Lotus" is not the club called "Black Lotus". A
+  // false merge loses a proposal silently; a missed one is just a duplicate the
+  // person can see and remove.
+  const canonByKind = new Map();
+  for (const [ref, v] of canon.refs) {
+    const k = `${v.kind}|${norm(v.name)}`;
+    if (!canonByKind.has(k)) canonByKind.set(k, { ref, ...v });
+  }
   const reused = [];
-  const refFor = (name, list) => list.find((l) => norm(l.name) === norm(name));
+  const existingOf = (v) => ({ ...(v.characterId ? { characterId: v.characterId } : {}), ...(v.entryId ? { entryId: v.entryId } : {}), ...(v.draftId ? { draftId: v.draftId } : {}) });
+  const sameAs = (item, kind, name, who) => {
+    const said = str(item.same);
+    if (said) {
+      const v = canon.refs.get(said);
+      if (v && v.kind === kind) return { ref: said, ...v, how: 'reference' };
+      warnings.push(`${who} said it was ${said.slice(0, 20)}, which is ${v ? `a different kind of thing (${v.kind})` : 'not in the draft'}; it was kept as a new proposal`);
+      return null;
+    }
+    const hit = canonByKind.get(`${kind}|${norm(name)}`);
+    return hit ? { ...hit, how: 'name' } : null;
+  };
+  // The model does not decide who becomes a character card. Anything it says
+  // about that is advice for the person, never an instruction.
+  const promotionIgnored = [...people].some((p) => p && typeof p === 'object' && 'promote' in p);
+  if (promotionIgnored) warnings.push('the Story Builder cannot make anyone a character card; that stays your decision');
 
   const clip = (value, max, what) => {
     const s = str(value);
@@ -281,9 +313,9 @@ export function validateGeneration(raw, ctx) {
       if (!name || !content) { if (name && !content) warnings.push(`${name} had no description and was left out`); continue; }
       // Somebody who already exists is recognised however the model spelled
       // or capitalised them, before anything else is judged.
-      if (canonPeople.has(norm(name))) {
-        const existing = refFor(name, [...canon.refs.values()].filter((x) => x.section === 'people'));
-        reused.push({ name, section: 'people', existing: existing ? { characterId: existing.characterId, entryId: existing.entryId } : null, why: 'already in the story; the existing one is used' });
+      const same = sameAs(p, 'person', name, name);
+      if (same) {
+        reused.push({ name, section: 'people', kind: 'person', existing: existingOf(same), how: same.how, why: 'already in the story; the existing one is used' });
         continue;
       }
       if (!nameFromTitle(name).name) { warnings.push(`"${name}" is not a person's name and was left out`); continue; }
@@ -293,6 +325,8 @@ export function validateGeneration(raw, ctx) {
         draftId: str(p.id), name, role: p.role,
         summary: clip(p.summary, HARD.summaryChars, `${name}'s summary`) || '',
         content, keys: keysOf(p.keys, name), about: refsOf(p.about, name),
+        // Advice only: shown to the person, never acted on.
+        promotionSuggested: p.promotionSuggested === true,
       });
     }
   }
@@ -304,9 +338,9 @@ export function validateGeneration(raw, ctx) {
     const title = clip(e.title, HARD.titleChars, 'a title');
     const content = clip(e.content, HARD.contentChars, `"${e.title}"`);
     if (!title || !content) continue;
-    if (canonTitles.get(e.section)?.has(norm(title))) {
-      const existing = [...canon.refs.values()].find((x) => x.section === e.section && norm(x.name) === norm(title));
-      reused.push({ name: title, section: e.section, existing: existing ? { entryId: existing.entryId, draftId: existing.draftId } : null, why: 'already in the story; the existing one is used' });
+    const same = sameAs(e, SECTION_KIND[e.section], title, `"${title}"`);
+    if (same) {
+      reused.push({ name: title, section: e.section, kind: SECTION_KIND[e.section], existing: existingOf(same), how: same.how, why: 'already in the story; the existing one is used' });
       continue;
     }
     if (outEntries.some((x) => x.section === e.section && norm(x.title) === norm(title))) { warnings.push(`"${title}" was proposed twice; the second was left out`); continue; }
@@ -399,7 +433,10 @@ export function mergeGenerated(draft, gen, scope) {
   for (const p of gen.people) {
     out.casting.push({
       key: `gen:${p.draftId}`, origin: 'generated', draftId: p.draftId, characterId: null, entryId: null, entryIds: [],
-      name: p.name, backing: 'generated', canLead: p.role === 'lead', suggested: p.role, promote: false,
+      // Any generated person may be made lead in review, but only the person
+      // can decide they become a card: promote starts false, always.
+      name: p.name, backing: 'generated', canLead: true, suggested: p.role, promote: false,
+      promotionSuggested: p.promotionSuggested === true,
       why: ['proposed by the Story Builder'], content: p.content, summary: p.summary, keys: p.keys,
     });
   }

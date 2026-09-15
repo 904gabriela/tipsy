@@ -435,7 +435,9 @@ function wrap(db) {
                     c.name AS character_name,
                     (SELECT COUNT(*) FROM lore_entries e WHERE e.lorebook_id=b.id) AS entry_count,
                     (SELECT COUNT(*) FROM lore_entries e WHERE e.lorebook_id=b.id AND e.constant=1 AND e.enabled=1) AS always_on,
-                    (SELECT COALESCE(SUM(length(e.content)),0) FROM lore_entries e WHERE e.lorebook_id=b.id AND e.constant=1 AND e.enabled=1) AS always_on_chars
+                    (SELECT COALESCE(SUM(length(e.content)),0) FROM lore_entries e WHERE e.lorebook_id=b.id AND e.constant=1 AND e.enabled=1) AS always_on_chars,
+                    -- The story a book was made for, when it is a story's own Story Builder package.
+                    CASE WHEN json_valid(b.original) THEN json_extract(b.original, '$.generatedFor') END AS generated_for
                   FROM lorebooks b LEFT JOIN characters c ON c.id=b.from_character
                   ORDER BY b.name COLLATE NOCASE`);
     },
