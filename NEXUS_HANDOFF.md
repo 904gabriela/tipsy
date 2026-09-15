@@ -571,6 +571,28 @@ images, per-item "expand" in the UI (engine supports it).
 
 ---
 
+## 21. Pending visual/product decisions
+
+Open questions, deliberately **not decided**. The Story Builder branch is a test
+candidate awaiting her manual review on the phone. Do not resolve these, and do
+not add Builder functionality, until she has looked at the product herself.
+
+1. **Package label.** Story-specific generated and hand-written material share
+   one stable package per story. It is shown as "Nexus Story Builder · Made for
+   this story". Consider whether the user-facing label should be broader,
+   because accepted hand-written material may live there too.
+
+2. **Generated lead and promotion.** A generated lead currently blocks Start
+   until the person turns on "Make this a full character". Evaluate whether this
+   is intuitive, or whether accepting a generated lead should make promotion
+   feel automatic and non-technical while still requiring explicit approval.
+
+3. **Control density in Review.** Review can now show many Edit / Remove /
+   Suggest again controls. Real mobile visual approval is needed before adding
+   more controls or functionality.
+
+---
+
 ## NEXT AGENT INSTRUCTIONS
 
 1. Read this file.
