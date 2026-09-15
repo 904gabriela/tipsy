@@ -497,61 +497,77 @@ metadata stays exactly as it was underneath.
 
 ---
 
-## 20. Story Builder engine (branch `feature/ai-story-builder`)
+## 20. Story Builder (branch `feature/ai-story-builder`)
 
 **Depends on `feature/story-composition-review`** (branched from it; merge that
-first). Engine and contract only — there is no Builder UI yet.
+first). Engine, contract and a first UI. Not merged; awaiting her visual approval.
 
-**One draft.** `src/builder/contract.js` documents the Story Composition Draft
-v1: composeSource's draft plus `story {title, premise, opening}`, `origin` on
-every person/item/link (`source` supplied by the person · `generated` by the
-builder · `inferred` by the composer · `manual` by the person in review),
-`reused[]`, `generation`, `invented`. Imported, deterministic, generated and
-manual material live in the same arrays.
+**One draft, one Review.** `src/builder/contract.js` documents the Story
+Composition Draft v1: composeSource's draft plus `story {title, premise, opening}`,
+`origin` on every person/item/link (`source` · `generated` · `inferred` ·
+`manual`), `reused[]`, `generation`, `invented`. Every UI path now gets its draft
+from `POST /api/builder/draft` — imports and additions with `mode: organize`, an
+idea with `mode: build` — and opens the same Review (`openReview` in
+`public/app.js`), which Starts or Applies through the same routes.
 
-**Modes** (`src/builder/index.js`, model injected, no DB access):
-organize = composer only, never calls a model · fill = `gapsOf()` decides the
-parts asked for; completed sections are not asked for · build = idea → parts
-across the story, around any canon. `regenerate()` scopes: `{part}`,
-`{item: draftId}` (generated only), `{expand: draftId | {entryId} | {characterId}}`
-(adds material about the target, never rewrites it). Source/manual material is
-never replaced.
+**Modes** (`src/builder/index.js`, model injected, no DB access): organize =
+composer only, never calls a model · fill = `gapsOf()` decides what is asked
+for · build = idea → the whole story around any canon. `regenerate()` scopes:
+`{part}`, `{item}` (generated only), `{expand}` (adds, never rewrites). Asking
+for a whole part again replaces only *unedited* suggestions; asking for one
+item replaces it. Source and manual material is never replaced.
+`POST /api/builder/fill` fills the gaps of a draft already in review.
 
 **Prompt** `src/builder/prompt.js` — its own; the roleplay prompt never sees it.
-Canon is shown with refs (`C#` people, `S#` entries) so the model points at
-existing things instead of re-describing them.
 
-**Validation** (`validateGeneration`): contract breaches refuse the whole reply
-(not an object, unknown section/role, duplicate or unusable ids, two leads, a
-lead when one exists). Overreach is trimmed with warnings (depth counts from
-`LIMITS`, lengths from `HARD`, unknown refs, not-asked-for parts). Existing
-people/entries — matched by normalised name — go to `reused[]`, never duplicated.
+**Validation.** Contract breaches refuse the whole reply (not JSON, unknown
+section/role, bad or duplicate ids, two leads, a lead when one exists);
+overreach is trimmed with warnings (depth counts, lengths, unknown refs,
+not-asked-for parts). **Reuse rule:** a proposal is an existing thing only if it
+says so by reference (`same: "S4"`, and the ref is the same kind) or has the
+same kind AND the same normalised name. A person "Black Lotus" is never merged
+into a place "Black Lotus"; a mismatched reference stays a reviewable proposal.
 
-**Routes** (none write): `POST /api/builder/draft`, `POST /api/builder/regenerate`,
-`GET|PUT /api/builder/settings`. Builder model = `settings.builder.model`, else
-the story default model. `completeJson()` in `openrouter.js` never repairs a
-cut-off reply. `OPENROUTER_ENDPOINT` points the client at a fake in tests.
+**Promotion rule.** The model can never make a character card. A model-authored
+`promote` is ignored and reported; `promotionSuggested` is advice shown in
+Review. The server clears `promote` on every draft it returns, and
+`acceptedFromDraft` never reads it from a draft. Only the person's switch
+("Make this a full character", OFF by default) sends `promote: true` for a
+generated lead, which creates exactly one card. Without it Start is blocked and
+says why. Generated non-leads are lore-backed people, never cards.
 
-**Apply.** `composition.generated = {items, links}` on `POST /api/stories` and
-`POST /api/stories/:id/compose`, written in the same transaction as everything
-else (`src/builder/apply.js`). Accepted items become ordinary entries in one
-book per apply ("<title> — Story Builder"); unaccepted items are never written.
-Generated people are lore-backed (`story_npcs`), never cards. A generated lead
-is refused unless `promote: true`, which creates exactly one card. Existing
-stories cannot take a generated lead or a new opening.
+**One package per story.** Accepted generated or hand-written material goes
+into the story's single Story Builder book, marked
+`lorebooks.original = {"generatedFor": storyId}` (`storyPackage()` in
+`src/builder/apply.js`). Created once, appended to afterwards, reconnected if it
+was removed from the story. An entry with the same kind and name as one already
+in it is skipped, never overwritten. Each generation still gets its own
+`imports` record (`source='builder'`) listing the package in `import_resources`;
+entries keep `lore_entries.original = {origin, draftId, edited, builder}`.
+Library rows carry `generated_for`; the Story Bible and story sheet show it as
+"Nexus Story Builder · Made for this story", never as import internals.
 
-**Provenance, no new columns:** `imports.source = 'builder'` (+ `import_resources`)
-for generated material; `lorebooks.import_id` and `characters.import_id` point at
-it; `lore_entries.original = {origin, draftId, edited, builder}`. Imported files
-have `source` `file`/`url`; hand-written material has no import record.
+**UI (first version).** Create → **Start with an idea**: one idea field; tone,
+point of view, depth (Light/Standard/Deep) folded away; optional characters and
+sources to build around. Building shows plain progress words; failure or
+timeout keeps the idea with **Try again**. Review adds Story (title, premise)
+and Opening (edit, remove, suggest another; written only at Start). Suggestions
+say "Suggested by Nexus" (· edited) and have Edit / Remove / move-to-section;
+source entries keep the read-only engine view. "Suggest … again" per section,
+for people and for one item (inside its editor). "Help me fill the gaps" sits on
+the Review root. No technical vocabulary in the flow.
 
-**Tests:** `npm run builder:check` — 112 deterministic checks with a mocked model
-and a fake provider. One live smoke (synthetic idea, grok-4.20, light depth):
-valid draft, ~$0.005, nothing written.
+**Tests.** `npm run builder:check` — 145 deterministic checks with a mocked
+model and a fake provider (promotion, type-safe reuse, one package, repeated
+apply, edit provenance, removal, fill over a reviewed draft, one review
+contract, opening once, rollback). Headless Chrome with a fake provider at 390px
+(library lead, forced failure → Try again) and 320px (generated lead, explicit
+promotion) passed; so did the §17 composition regression. One live UI run
+(synthetic idea, light depth, grok-4.20): Review in 15.6s, nothing written.
 
-**Not built:** the Create/Builder UI (the review UI cannot yet show generated
-items or send `generated` on Apply), AI classification of ambiguous source
-material, depth weighting, NPC promotion, covers.
+**Not built:** AI classification of ambiguous source material, UI to exclude
+non-person material, depth weighting, NPC promotion outside a lead, covers and
+images, per-item "expand" in the UI (engine supports it).
 
 ---
 
