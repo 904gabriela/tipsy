@@ -497,6 +497,64 @@ metadata stays exactly as it was underneath.
 
 ---
 
+## 20. Story Builder engine (branch `feature/ai-story-builder`)
+
+**Depends on `feature/story-composition-review`** (branched from it; merge that
+first). Engine and contract only — there is no Builder UI yet.
+
+**One draft.** `src/builder/contract.js` documents the Story Composition Draft
+v1: composeSource's draft plus `story {title, premise, opening}`, `origin` on
+every person/item/link (`source` supplied by the person · `generated` by the
+builder · `inferred` by the composer · `manual` by the person in review),
+`reused[]`, `generation`, `invented`. Imported, deterministic, generated and
+manual material live in the same arrays.
+
+**Modes** (`src/builder/index.js`, model injected, no DB access):
+organize = composer only, never calls a model · fill = `gapsOf()` decides the
+parts asked for; completed sections are not asked for · build = idea → parts
+across the story, around any canon. `regenerate()` scopes: `{part}`,
+`{item: draftId}` (generated only), `{expand: draftId | {entryId} | {characterId}}`
+(adds material about the target, never rewrites it). Source/manual material is
+never replaced.
+
+**Prompt** `src/builder/prompt.js` — its own; the roleplay prompt never sees it.
+Canon is shown with refs (`C#` people, `S#` entries) so the model points at
+existing things instead of re-describing them.
+
+**Validation** (`validateGeneration`): contract breaches refuse the whole reply
+(not an object, unknown section/role, duplicate or unusable ids, two leads, a
+lead when one exists). Overreach is trimmed with warnings (depth counts from
+`LIMITS`, lengths from `HARD`, unknown refs, not-asked-for parts). Existing
+people/entries — matched by normalised name — go to `reused[]`, never duplicated.
+
+**Routes** (none write): `POST /api/builder/draft`, `POST /api/builder/regenerate`,
+`GET|PUT /api/builder/settings`. Builder model = `settings.builder.model`, else
+the story default model. `completeJson()` in `openrouter.js` never repairs a
+cut-off reply. `OPENROUTER_ENDPOINT` points the client at a fake in tests.
+
+**Apply.** `composition.generated = {items, links}` on `POST /api/stories` and
+`POST /api/stories/:id/compose`, written in the same transaction as everything
+else (`src/builder/apply.js`). Accepted items become ordinary entries in one
+book per apply ("<title> — Story Builder"); unaccepted items are never written.
+Generated people are lore-backed (`story_npcs`), never cards. A generated lead
+is refused unless `promote: true`, which creates exactly one card. Existing
+stories cannot take a generated lead or a new opening.
+
+**Provenance, no new columns:** `imports.source = 'builder'` (+ `import_resources`)
+for generated material; `lorebooks.import_id` and `characters.import_id` point at
+it; `lore_entries.original = {origin, draftId, edited, builder}`. Imported files
+have `source` `file`/`url`; hand-written material has no import record.
+
+**Tests:** `npm run builder:check` — 112 deterministic checks with a mocked model
+and a fake provider. One live smoke (synthetic idea, grok-4.20, light depth):
+valid draft, ~$0.005, nothing written.
+
+**Not built:** the Create/Builder UI (the review UI cannot yet show generated
+items or send `generated` on Apply), AI classification of ambiguous source
+material, depth weighting, NPC promotion, covers.
+
+---
+
 ## NEXT AGENT INSTRUCTIONS
 
 1. Read this file.
