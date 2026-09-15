@@ -9,6 +9,8 @@
 // card is created, and nothing here touches messages, memory or story state.
 
 import { personFromEntry, nameFromTitle, normalizeRole, NPC_ROLES, SECTIONS } from './compose.js';
+import { personVerdict } from '../semantics/authority.js';
+import { semanticViews, resolveNpcEntity, recordLinkEvidence } from '../semantics/store.js';
 
 export class CompositionError extends Error {
   constructor(message, status = 400) {
@@ -85,8 +87,9 @@ export function planComposition(db, {
     includes.push(...ids);
 
     // Checked here and not only in the draft, so nothing that calls this can
-    // put "Vancetti Family" in the cast however the request was made.
-    const verdict = personFromEntry(entry);
+    // put "Vancetti Family" in the cast however the request was made. Approved
+    // semantics decide first; the legacy reading only where there are none.
+    const verdict = personVerdict(entry, semanticViews(db, [entry]).get(entry.id), personFromEntry);
     if (!verdict.person) {
       throw new CompositionError(`"${entry.title}" is not a person, so it cannot be in the cast. It stays in the story's material.`);
     }
@@ -147,7 +150,8 @@ export function writeComposition(db, storyId, plan) {
     db.raw.prepare(`INSERT OR IGNORE INTO story_lorebooks (story_id,lorebook_id) VALUES (?,?)`).run(storyId, id);
     if (plan.policies[id]) db.setStoryLorebookRecursion(storyId, id, plan.policies[id]);
   }
-  for (const n of plan.npcs) db.setStoryNpc(storyId, n.entryId, n.role);
+  // The person each cast member IS, only where that is certain. Otherwise NULL.
+  for (const n of plan.npcs) db.setStoryNpc(storyId, n.entryId, n.role, resolveNpcEntity(db, n.entryId));
   for (const id of plan.drop) db.removeStoryNpc(storyId, id);
   for (const id of plan.includes || []) db.includeEntry(storyId, id);
   for (const id of plan.excludes || []) {
@@ -155,9 +159,11 @@ export function writeComposition(db, storyId, plan) {
     db.removeStoryNpc(storyId, id);
     db.excludeEntry(storyId, id);
   }
+  // Links ticked in review were suggestions a person left ticked, not decisions
+  // about what an entry is about. They are kept as evidence for later
+  // organisation and never written as semantics.
   for (const l of plan.links) {
-    if (l.characterId) db.linkEntryToCharacter(l.entryId, l.characterId);
-    else db.linkEntryToEntry(l.entryId, l.aboutId);
+    recordLinkEvidence(db, { source: 'composition-review', entryId: l.entryId, characterId: l.characterId || null, aboutId: l.aboutId || null });
   }
 }
 

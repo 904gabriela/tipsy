@@ -49,7 +49,41 @@ const LATER_COLUMNS = [
   // from the imported file. Fifteen of the books already say 0 there, and
   // honouring it now would quietly change two stories nobody asked about.
   ['story_lorebooks', 'recursion', 'TEXT'],
+  // The person a lore-backed cast member IS (P1 of the semantic model).
+  // NULL until it can be resolved without guessing; entry_id stays as it was.
+  ['story_npcs', 'entity_id', 'TEXT REFERENCES lore_entities(id) ON DELETE RESTRICT'],
 ];
+
+/**
+ * Semantic-model steps that need the later columns. Every statement is
+ * idempotent, so opening the same database again changes nothing.
+ */
+function migrateSemanticModel(db) {
+  // A person is cast once per story, however many entries describe them.
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_npc_entity
+             ON story_npcs(story_id, entity_id) WHERE entity_id IS NOT NULL`);
+
+  // The old "about" links become evidence. Copied, not moved: the tables stay
+  // exactly as they are until a later, approved cleanup. Nothing copied here is
+  // approved, or even proposed, as semantics.
+  const origin = `CASE WHEN json_valid(e.original) THEN json_extract(e.original,'$.origin') END`;
+  const derived = `CASE WHEN ${origin} IN ('generated','manual') THEN 'builder-accepted' ELSE 'composer-inferred' END`;
+  const now = `CAST(strftime('%s','now') AS INTEGER) * 1000`;
+  db.exec(`INSERT OR IGNORE INTO legacy_entry_links
+             (source, entry_id, target_kind, target_id, entry_title, entry_book_id, entry_origin, target_name, derived_origin, recorded_at)
+           SELECT 'entry_character_links', l.entry_id, 'character', l.character_id, e.title, e.lorebook_id, ${origin},
+                  COALESCE(c.name, ''), ${derived}, ${now}
+             FROM entry_character_links l
+             JOIN lore_entries e ON e.id = l.entry_id
+             LEFT JOIN characters c ON c.id = l.character_id`);
+  db.exec(`INSERT OR IGNORE INTO legacy_entry_links
+             (source, entry_id, target_kind, target_id, entry_title, entry_book_id, entry_origin, target_name, derived_origin, recorded_at)
+           SELECT 'entry_entry_links', l.entry_id, 'entry', l.about_id, e.title, e.lorebook_id, ${origin},
+                  COALESCE(a.title, ''), ${derived}, ${now}
+             FROM entry_entry_links l
+             JOIN lore_entries e ON e.id = l.entry_id
+             LEFT JOIN lore_entries a ON a.id = l.about_id`);
+}
 
 export function open(path = 'data/tipsy.db') {
   if (!existsSync(dirname(path))) mkdirSync(dirname(path), { recursive: true });
@@ -63,6 +97,7 @@ export function open(path = 'data/tipsy.db') {
       if (!/duplicate column/i.test(String(e.message))) throw e;
     }
   }
+  migrateSemanticModel(db);
   return wrap(db);
 }
 
@@ -506,22 +541,36 @@ function wrap(db) {
       return rows.length;
     },
 
-    /** One person's part, leaving everyone else where they were. */
-    setStoryNpc(storyId, entryId, role) {
+    /**
+     * One person's part, leaving everyone else where they were.
+     *
+     * `entityId` is the person this cast member IS, when that is known without
+     * guessing (see resolveNpcEntity). When the same person is already cast
+     * through another of their entries, that row is the one updated: one
+     * person, one place in the cast.
+     */
+    setStoryNpc(storyId, entryId, role, entityId = null) {
       const had = get(`SELECT ord FROM story_npcs WHERE story_id=? AND entry_id=?`, storyId, entryId);
       if (had) {
-        run(`UPDATE story_npcs SET role=? WHERE story_id=? AND entry_id=?`, role, storyId, entryId);
+        run(`UPDATE story_npcs SET role=?, entity_id=COALESCE(?, entity_id) WHERE story_id=? AND entry_id=?`, role, entityId, storyId, entryId);
         return;
       }
+      if (entityId) {
+        const same = get(`SELECT entry_id FROM story_npcs WHERE story_id=? AND entity_id=?`, storyId, entityId);
+        if (same) {
+          run(`UPDATE story_npcs SET role=? WHERE story_id=? AND entry_id=?`, role, storyId, same.entry_id);
+          return;
+        }
+      }
       const next = get(`SELECT COALESCE(MAX(ord),-1)+1 AS n FROM story_npcs WHERE story_id=?`, storyId).n;
-      run(`INSERT INTO story_npcs (story_id,entry_id,role,ord) VALUES (?,?,?,?)`, storyId, entryId, role, next);
+      run(`INSERT INTO story_npcs (story_id,entry_id,role,ord,entity_id) VALUES (?,?,?,?,?)`, storyId, entryId, role, next, entityId);
     },
     removeStoryNpc(storyId, entryId) {
       run(`DELETE FROM story_npcs WHERE story_id=? AND entry_id=?`, storyId, entryId);
     },
 
     storyNpcs(storyId) {
-      return all(`SELECT n.entry_id, n.role, n.ord, e.title, e.summary, e.image,
+      return all(`SELECT n.entry_id, n.entity_id, n.role, n.ord, e.title, e.summary, e.image,
                     e.lorebook_id, length(e.content) AS chars
                   FROM story_npcs n JOIN lore_entries e ON e.id = n.entry_id
                   WHERE n.story_id=? ORDER BY n.ord`, storyId);

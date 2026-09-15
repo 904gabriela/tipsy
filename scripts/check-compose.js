@@ -190,8 +190,14 @@ console.log('\nF  applying a reviewed composition');
     && npcs.find((x) => x.entry_id === ids['Mira Castell'])?.role === 'main'
     && npcs.find((x) => x.entry_id === ids['Oren Hale: The Ferryman'])?.role === 'supporting');
   ok('Known, Excluded and "out" are not stored as cast', !npcs.some((x) => [ids['Tobias Crane'], ids.Pell, ids['Silas Grey']].includes(x.entry_id)));
-  ok('approved links are stored', db.loreAboutCharacter(dario).some((x) => x.id === ids['Dario’s Warehouse'])
-    && db.loreAboutEntry(ids['Mira Castell']).some((x) => x.id === ids['The Lighthouse']));
+  // Since the semantic model (P1): links ticked in review are kept as evidence,
+  // never as semantics and never in the retired link tables.
+  const evidence = db.raw.prepare("SELECT entry_id, target_id, derived_origin, status FROM legacy_entry_links WHERE source='composition-review'").all();
+  ok('links ticked in review are kept as evidence', evidence.some((x) => x.entry_id === ids['Dario’s Warehouse'] && x.target_id === dario)
+    && evidence.some((x) => x.entry_id === ids['The Lighthouse'] && x.target_id === ids['Mira Castell']));
+  ok('as unconfirmed evidence, not semantics', evidence.every((x) => x.status === 'legacy' && x.derived_origin === 'composer-inferred')
+    && count('entry_relations') === 0 && count('entry_semantics') === 0);
+  ok('and nothing new is written to the retired link tables', count('entry_character_links') === 0 && count('entry_entry_links') === 0);
   ok('no entry was copied or changed', fingerprint() === before.fp && count('lore_entries') === before.entries);
   ok('no character card was created', count('characters') === before.characters);
   ok('the story’s messages are untouched', JSON.stringify(db.raw.prepare('SELECT id, content FROM messages WHERE story_id=?').all(sid)) === JSON.stringify(msgsBefore));
@@ -217,8 +223,10 @@ console.log('\nF  applying a reviewed composition');
   const sid2 = db.createStory({ title: 'Rollback', characterIds: [dario] });
   const plan = planComposition(db, { lorebookIds: [bookA], casting: [{ entryId: ids.Pell, role: 'background' }] });
   let threw = false;
+  // The failure is a real foreign-key violation on the last write: a cast row
+  // for an entry that does not exist, after the source and cast are written.
   try {
-    db.transaction(() => writeComposition(db, sid2, { ...plan, links: [{ entryId: ids.Pell, characterId: 'no-such-character' }] }));
+    db.transaction(() => writeComposition(db, sid2, { ...plan, npcs: [...plan.npcs, { entryId: 'no-such-entry', role: 'main' }] }));
   } catch { threw = true; }
   ok('the failing write threw', threw);
   ok('the source it had already connected was rolled back', db.getStory(sid2).lorebookIds.length === 0);
@@ -242,7 +250,7 @@ console.log('\nF  applying a reviewed composition');
   ok('and counts what the story would lose by section', preview.loses.some((l) => l.id === 'places' && l.count === 2) && preview.loses.some((l) => l.id === 'people' && l.count >= 4));
   ok('and says what it keeps', preview.keeps.some((k) => /message/.test(k)) && preview.keeps.some((k) => /Library/.test(k)));
   const fp = fingerprint();
-  const linksBefore = count('entry_character_links') + count('entry_entry_links');
+  const linksBefore = count('legacy_entry_links');
   const msgs = count('messages');
   removeSource(db, sid, bookA);
   ok('the story no longer reads the source', !db.getStory(sid).lorebookIds.includes(bookA));
@@ -250,7 +258,7 @@ console.log('\nF  applying a reviewed composition');
   ok('every entry is still there, unchanged', fingerprint() === fp);
   ok('cast from that source left the story', !db.storyNpcs(sid).some((x) => x.lorebook_id === bookA));
   ok('cast from other sources stayed', db.storyNpcs(sid).some((x) => x.entry_id === ids.war));
-  ok('links describing the material are kept', count('entry_character_links') + count('entry_entry_links') === linksBefore);
+  ok('link evidence about the material is kept', count('legacy_entry_links') === linksBefore);
   ok('no message was touched', count('messages') === msgs);
   ok('the other book keeps its recursion setting', db.storyLorebookSettings(sid).find((r) => r.lorebook_id === bookB)?.recursion === 'block');
   ok('removing a source the story does not have is refused', throws(() => removeSource(db, sid, bookA), /not part/));
@@ -312,7 +320,7 @@ console.log('\nF  applying a reviewed composition');
   const sid4 = db.createStory({ title: 'Rollback 2', characterIds: [dario], lorebookIds: [bookA] });
   const plan4 = planComposition(db, { existingBookIds: [bookA], casting: [{ entryId: ids.Pell, role: 'excluded' }] });
   let threw4 = false;
-  try { db.transaction(() => writeComposition(db, sid4, { ...plan4, links: [{ entryId: ids.Pell, characterId: 'no-such-character' }] })); } catch { threw4 = true; }
+  try { db.transaction(() => { writeComposition(db, sid4, plan4); db.setStoryNpc(sid4, 'no-such-entry', 'main'); }); } catch { threw4 = true; }
   ok('a failed apply leaves no exclusion behind', threw4 && db.storyExclusionIds(sid4).size === 0);
 
   const pvA = sourceRemovalPreview(db, sA, bookA, composeSource);

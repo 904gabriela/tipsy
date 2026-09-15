@@ -302,7 +302,8 @@ console.log('\nH  rollback: a failure while writing generated material leaves no
   const afterStory = counts(db);
   const plan = planGenerated(db, { items: [{ type: 'entry', draftId: 'a', origin: 'generated', section: 'places', title: 'Quay', content: 'Stone.' }], poolIds: new Set() });
   let threw = false;
-  try { db.transaction(() => writeGenerated(db, sid, { ...plan, links: [{ from: 'a', characterId: 'no-such-character' }] }, { title: 'Rollback' })); } catch { threw = true; }
+  // A real foreign-key violation right after everything generated is written.
+  try { db.transaction(() => { writeGenerated(db, sid, plan, { title: 'Rollback' }); db.setStoryNpc(sid, 'no-such-entry', 'main'); }); } catch { threw = true; }
   const after = counts(db);
   ok('the write failed', threw);
   ok('no import record, book or entry survived', after.imports === afterStory.imports && after.lorebooks === afterStory.lorebooks && after.lore_entries === afterStory.lore_entries);
@@ -415,7 +416,9 @@ try {
   ok('rejected material never persisted', q("SELECT COUNT(*) n FROM lore_entries WHERE title IN ('Lena Marsh','The Debt')")[0].n === 0);
   ok('the generated person is in the cast, lore-backed', q('SELECT n.role FROM story_npcs n JOIN lore_entries e ON e.id=n.entry_id WHERE n.story_id=? AND e.title=?', sid, 'Tamsin Reed')[0]?.role === 'background');
   ok('and did not become a global character', after.characters === before.characters);
-  ok('the approved link persisted', q('SELECT COUNT(*) n FROM entry_entry_links l JOIN lore_entries a ON a.id=l.entry_id JOIN lore_entries b ON b.id=l.about_id WHERE a.title=? AND b.title=?', 'The Quay', 'Tamsin Reed')[0].n === 1);
+  // Since the semantic model (P1): accepted links are evidence, not semantics.
+  ok('the accepted link is kept as evidence, not semantics', q("SELECT COUNT(*) n FROM legacy_entry_links WHERE source='builder-review' AND entry_title=? AND target_name=? AND derived_origin='builder-accepted' AND status='legacy'", 'The Quay', 'Tamsin Reed')[0].n === 1
+    && q('SELECT COUNT(*) n FROM entry_relations')[0].n === 0 && q('SELECT COUNT(*) n FROM entry_entry_links')[0].n === 0);
   ok('the generated premise was saved', JSON.parse(q('SELECT settings FROM stories WHERE id=?', sid)[0].settings).premise === d.story.premise.value);
   ok('source entries untouched', q('SELECT COUNT(*) n FROM lore_entries WHERE lorebook_id=?', book)[0].n === PACKAGE.length);
   x.close();
@@ -453,7 +456,7 @@ try {
   ok('the reviewed opening opens the story, exactly once', y.raw.prepare('SELECT COUNT(*) n FROM messages WHERE story_id=?').get(withCard.body.id).n === 1
     && y.pathTo(story.head_id).map((m) => m.content).join() === 'The tide goes out and leaves you on the rocks.');
   ok('the generated title is used', story.title === 'Salt and Iron');
-  ok('an entry about the generated lead links to the card', y.loreAboutCharacter(card.id).some((e) => e.title === 'The Wreck'));
+  ok('an entry about the generated lead is recorded as evidence pointing at the card', y.raw.prepare("SELECT COUNT(*) n FROM legacy_entry_links WHERE source='builder-review' AND entry_title='The Wreck' AND target_kind='character' AND target_id=?").get(card.id).n === 1);
   y.close();
 
   console.log('\nL  an existing story');

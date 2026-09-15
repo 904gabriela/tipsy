@@ -20,6 +20,8 @@ import { composeSource, nameFromTitle, personFromEntry, normalizeRole, CAST_ROLE
 import { fromComposition, checkDraft, HARD as BUILDER_HARD, MODES as BUILDER_MODES, DEPTHS as BUILDER_DEPTHS } from './src/builder/contract.js';
 import { buildDraft, regenerate } from './src/builder/index.js';
 import { planGenerated, writeGenerated, createLeadCard, storyPackage } from './src/builder/apply.js';
+import { isDirection, semanticSection } from './src/semantics/authority.js';
+import { semanticViews, sourceOrganization } from './src/semantics/store.js';
 import {
   planComposition, writeComposition, applyToStory, sourceRemovalPreview, removeSource,
 } from './src/import/compose-apply.js';
@@ -616,6 +618,16 @@ route('POST', '/api/lorebooks/:id/entries', async (req, res, { id }) => {
 });
 route('DELETE', '/api/entries/:id', async (req, res, { id }) => { db.deleteEntry(id); return { ok: true }; });
 
+/**
+ * How organised a source is: unorganized, partial, organized, and whether any
+ * approved entry has changed since review (needs_recheck, shown over the rest).
+ * Computed from what is stored every time; there is no flag to go stale.
+ */
+route('GET', '/api/lorebooks/:id/organization', async (req, res, { id }) => {
+  if (!db.getLorebook(id)) throw new HttpError(404, 'No such lorebook.');
+  return sourceOrganization(db, id);
+});
+
 /** A lorebook as the card view wants it: grouped, counted, costed. */
 route('GET', '/api/lorebooks/:id/cards', async (req, res, { id }) => {
   const b = db.getLorebook(id);
@@ -725,7 +737,10 @@ route('POST', '/api/stories/:id/absorb-directions', async (req, res, { id }) => 
  */
 route('GET', '/api/stories/:id/directions', async (req, res, { id }) => {
   const entries = db.entriesForStory(id);
-  const directions = entries.filter((e) => e.kind === 'direction');
+  // Approved semantics decide what counts as an instruction; kind only for
+  // entries nobody has organised. Absorbing still waits for the person.
+  const views = semanticViews(db, entries);
+  const directions = entries.filter((e) => isDirection(e, views.get(e.id)));
   const found = directions
     .filter((e) => e.constant)
     .map((e) => ({
@@ -1883,8 +1898,15 @@ route('GET', '/api/stories/:id/bible', async (req, res, { id }) => {
     summary: e.summary || '', always: !!e.constant,
     keys: (e.keys || []).slice(0, 4), tokens: estimateTokens(e.content),
   });
+  // Approved semantics place an entry; kind places the rest, as before.
+  const views = semanticViews(db, pool);
+  const sectionOf = (e) => {
+    const v = views.get(e.id);
+    if (v?.authoritative) return semanticSection(v);
+    return SECTIONS.find((s) => s.kinds.includes(e.kind))?.id || null;
+  };
   const sections = SECTIONS.map((s) => {
-    const list = pool.filter((e) => s.kinds.includes(e.kind));
+    const list = pool.filter((e) => sectionOf(e) === s.id);
     return {
       ...s,
       count: list.length,
@@ -1899,7 +1921,7 @@ route('GET', '/api/stories/:id/bible', async (req, res, { id }) => {
     id: c.id, name: c.name, role: c.story_role || 'cast', avatar: c.avatar,
     tokens: estimateTokens(`${c.description}${c.personality}${c.scenario}`),
   }));
-  const knownPeople = pool.filter((e) => e.kind === 'character');
+  const knownPeople = pool.filter((e) => (views.get(e.id)?.authoritative ? sectionOf(e) === 'casting' : e.kind === 'character'));
   // People in the cast who have no card: chosen in review, standing on an entry.
   const npcs = db.storyNpcs(id).map((n) => ({
     entryId: n.entry_id, name: nameFromTitle(n.title).name || n.title, role: n.role, lorebookId: n.lorebook_id,
@@ -2010,6 +2032,7 @@ route('POST', '/api/compose', async (req) => {
     opening: story ? '' : (chosen?.content || leadCards[0]?.first_message || ''),
     storyNpcs: story ? db.storyNpcs(story.id) : [],
     storyExclusions: story ? db.storyExclusionIds(story.id) : new Set(),
+    semantics: semanticViews(db, entries),
     mode,
   });
 
@@ -2116,7 +2139,8 @@ function baseDraft({ storyId = null, lorebookIds = [], characterIds = [], premis
   const leadCards = story ? [] : characterIds.map((cid) => db.getCharacter(cid)).filter(Boolean);
   if (leadCards.length !== (story ? 0 : characterIds.length)) throw new HttpError(404, 'One of those characters is no longer in the library.');
 
-  const draft = composeSource(books.flatMap((bk) => bk.entries), {
+  const pooled = books.flatMap((bk) => bk.entries);
+  const draft = composeSource(pooled, {
     characters: db.listCharacters(),
     storyCards: story ? story.characters : [],
     leadCards,
@@ -2125,6 +2149,7 @@ function baseDraft({ storyId = null, lorebookIds = [], characterIds = [], premis
     opening: story ? '' : (leadCards[0]?.first_message || ''),
     storyNpcs: story ? db.storyNpcs(story.id) : [],
     storyExclusions: story ? db.storyExclusionIds(story.id) : new Set(),
+    semantics: semanticViews(db, pooled),
   });
   // A story with no sources and no transcript still has its cards: the
   // composer only knows it is "existing" from those.

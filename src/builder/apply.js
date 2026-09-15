@@ -23,6 +23,7 @@
 import { nameFromTitle, personFromEntry, NPC_ROLES } from '../import/compose.js';
 import { CompositionError } from '../import/compose-apply.js';
 import { BUILDER_SECTIONS, SECTION_KIND, HARD } from './contract.js';
+import { resolveNpcEntity, recordLinkEvidence } from '../semantics/store.js';
 
 const ID = /^[A-Za-z0-9_-]{1,40}$/;
 const MAX_ITEMS = 60;
@@ -203,7 +204,8 @@ export function writeGenerated(db, storyId, plan, { title = 'Story', builder = {
       // The same guard every cast member passes, however they got here.
       const entry = db.listEntries(bookId).find((e) => e.id === id);
       if (!personFromEntry(entry).person) throw new CompositionError(`"${p.name}" could not be read back as a person.`);
-      db.setStoryNpc(storyId, id, p.role);
+      // A freshly generated person has no approved semantics yet, so this stays NULL.
+      db.setStoryNpc(storyId, id, p.role, resolveNpcEntity(db, id));
     }
   }
   for (const e of plan.entries) {
@@ -220,13 +222,16 @@ export function writeGenerated(db, storyId, plan, { title = 'Story', builder = {
   // A lead who became a card is linked to as that card.
   if (plan.lead && leadCardId) entryIds[plan.lead.draftId] = null;
 
+  // Links accepted with generated material are evidence, not semantics: the
+  // Story Builder proposed them and review left them ticked.
   for (const l of plan.links) {
     const from = entryIds[l.from];
     if (!from) continue;
-    if (l.toLead && leadCardId) db.linkEntryToCharacter(from, leadCardId);
-    else if (l.characterId) db.linkEntryToCharacter(from, l.characterId);
-    else if (l.aboutId) db.linkEntryToEntry(from, l.aboutId);
-    else if (l.aboutDraftId && entryIds[l.aboutDraftId]) db.linkEntryToEntry(from, entryIds[l.aboutDraftId]);
+    const evidence = { source: 'builder-review', entryId: from };
+    if (l.toLead && leadCardId) recordLinkEvidence(db, { ...evidence, characterId: leadCardId });
+    else if (l.characterId) recordLinkEvidence(db, { ...evidence, characterId: l.characterId });
+    else if (l.aboutId) recordLinkEvidence(db, { ...evidence, aboutId: l.aboutId });
+    else if (l.aboutDraftId && entryIds[l.aboutDraftId]) recordLinkEvidence(db, { ...evidence, aboutId: entryIds[l.aboutDraftId] });
   }
 
   if (importId) {

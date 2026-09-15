@@ -18,6 +18,13 @@
 // names, who the lead's own card talks about, how many other entries refer to
 // somebody. An existing story adds what its conversation says, as one more
 // kind of evidence rather than the only one.
+//
+// Approved semantics, where an entry has them, outrank everything here that is
+// read from `kind` and titles: who is a person, and which section an entry
+// belongs in (src/semantics/authority.js). Entries without approved semantics
+// are read exactly as before.
+
+import { personVerdict, semanticSection } from '../semantics/authority.js';
 
 /** The headings people use, over the types the engine stores. */
 export const SECTIONS = [
@@ -47,6 +54,7 @@ export const NPC_ROLES = ['main', 'supporting', 'background'];
 export const normalizeRole = (r) => (r === 'out' ? 'excluded' : ROLES.includes(r) ? r : null);
 
 const tokens = (s) => Math.ceil(String(s || '').length / 4);
+const semanticAbout = (v) => [v.subject?.canonical_name, ...(v.related || []).map((x) => x?.canonical_name)].filter(Boolean);
 const norm = (s) => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const keysOf = (e) => (Array.isArray(e.keys) ? e.keys : []).map(String);
@@ -263,6 +271,7 @@ function aboutness(entry, target) {
  *   opening      the greeting the story will open on
  *   storyNpcs    lore-backed people already in the story: [{entry_id, role}]
  *   storyExclusions  entry ids this story ignores (a Set or an array)
+ *   semantics    Map entryId → semanticView, for entries that have semantics
  *   mode         'organize' — invent nothing
  * @returns a draft: references and suggestions, nothing written
  */
@@ -277,7 +286,9 @@ export function composeSource(entries, ctx = {}) {
   const all = entries.map((e) => ({ ...e, enabled: !(e.enabled === 0 || e.enabled === false) }));
 
   // ---------------------------------------------------------------- people
-  const verdicts = new Map(all.map((e) => [e.id, personFromEntry(e)]));
+  const views = ctx.semantics instanceof Map ? ctx.semantics : new Map();
+  const authoritative = (e) => views.get(e.id)?.authoritative === true;
+  const verdicts = new Map(all.map((e) => [e.id, personVerdict(e, views.get(e.id), personFromEntry)]));
   const personEntries = all.filter((e) => verdicts.get(e.id).person);
 
   // Cards in play. In a new story, the ones chosen; in an existing one, the
@@ -294,7 +305,8 @@ export function composeSource(entries, ctx = {}) {
   const groups = new Map();
   for (const e of personEntries) {
     const name = verdicts.get(e.id).name;
-    const k = norm(name);
+    // An approved person is one person across all their entries, whatever each is titled.
+    const k = verdicts.get(e.id).entityId ? `entity:${verdicts.get(e.id).entityId}` : norm(name);
     if (!groups.has(k)) groups.set(k, { name, entries: [] });
     groups.get(k).entries.push(e);
   }
@@ -402,6 +414,10 @@ export function composeSource(entries, ctx = {}) {
       enabled: primary.enabled,
       keys: keysOf(primary).slice(0, 4),
       lorebookId: primary.lorebookId || primary.lorebook_id || null,
+      // Who says this is a person: approved semantics (possibly stale) or the legacy reading.
+      ...(verdicts.get(primary.id).authority === 'semantics'
+        ? { semantic: { entityId: verdicts.get(primary.id).entityId, stale: g.entries.some((e) => verdicts.get(e.id).stale) } }
+        : {}),
     });
   }
 
@@ -455,6 +471,8 @@ export function composeSource(entries, ctx = {}) {
     // People are people. What they are to each other is a relationship, and
     // relationships are not what this is for.
     if (peopleIds.has(e.id)) continue;
+    // What an organised entry is about was decided in review, and is not guessed again.
+    if (authoritative(e)) continue;
     const found = [];
     for (const t of targets) {
       if (t.entryIds && t.entryIds.has(e.id)) continue;
@@ -488,23 +506,26 @@ export function composeSource(entries, ctx = {}) {
     excluded: excludedIds.has(e.id),
     keys: keysOf(e).slice(0, 4),
     lorebookId: e.lorebookId || e.lorebook_id || null,
-    about: aboutOf(e.id),
+    about: authoritative(e) ? semanticAbout(views.get(e.id)) : aboutOf(e.id),
+    ...(views.has(e.id) ? { semantic: { state: views.get(e.id).state, scope: views.get(e.id).scope, category: views.get(e.id).category, stale: views.get(e.id).stale } } : {}),
     ...(note ? { note } : {}),
   });
 
-  const byKind = (kinds) => all.filter((e) => kinds.includes(e.kind) && !peopleIds.has(e.id));
+  // Organised entries go where their approved semantics put them; the rest by kind, as always.
+  const byKind = (kinds) => all.filter((e) => kinds.includes(e.kind) && !peopleIds.has(e.id) && !authoritative(e));
+  const bySemantics = (id) => all.filter((e) => !peopleIds.has(e.id) && authoritative(e) && semanticSection(views.get(e.id)) === id);
   const sections = SECTIONS.filter((s) => s.id !== 'casting').map((s) => {
-    let items = byKind(s.kinds).map((e) => brief(e));
+    let items = [...byKind(s.kinds), ...bySemantics(s.id)].map((e) => brief(e));
     if (s.id === 'backstory') {
       // A character entry that is not a person is a sheet about somebody —
       // "Core Identity", "Abandonment". It is background, not cast.
       items = [...items, ...all
-        .filter((e) => e.kind === 'character' && !peopleIds.has(e.id) && !verdicts.get(e.id).mismatch)
+        .filter((e) => e.kind === 'character' && !peopleIds.has(e.id) && !authoritative(e) && !verdicts.get(e.id).mismatch)
         .map((e) => brief(e, verdicts.get(e.id).reason))];
     }
     if (s.id === 'other') {
       items = [...items, ...all
-        .filter((e) => e.kind === 'character' && !peopleIds.has(e.id) && verdicts.get(e.id).mismatch)
+        .filter((e) => e.kind === 'character' && !peopleIds.has(e.id) && !authoritative(e) && verdicts.get(e.id).mismatch)
         .map((e) => brief(e, 'titled as a person, but the text is about someone else'))];
     }
     return { id: s.id, label: s.label, kinds: s.kinds, count: items.length, items };

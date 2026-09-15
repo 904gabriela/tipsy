@@ -50,15 +50,20 @@ function bookPrint(bookId) {
      FROM lore_entries WHERE lorebook_id=? ORDER BY display_index, title`, bookId)));
 }
 
-/** Whether anything at all points at a book or its entries. */
+/**
+ * Whether anything at all points at a book or its entries.
+ *
+ * Link evidence (legacy_entry_links, and the retired link tables it was copied
+ * from) never counts: evidence must not keep a resource alive. Organised
+ * semantics do count.
+ */
 function bookInUse(bookId) {
   const n = (sql) => one(sql, bookId).n;
   return n(`SELECT COUNT(*) n FROM story_lorebooks WHERE lorebook_id=?`)
     + n(`SELECT COUNT(*) n FROM resource_lorebooks WHERE lorebook_id=?`)
     + n(`SELECT COUNT(*) n FROM story_npcs WHERE entry_id IN (SELECT id FROM lore_entries WHERE lorebook_id=?)`)
-    + n(`SELECT COUNT(*) n FROM entry_character_links WHERE entry_id IN (SELECT id FROM lore_entries WHERE lorebook_id=?)`)
-    + n(`SELECT COUNT(*) n FROM entry_entry_links WHERE entry_id IN (SELECT id FROM lore_entries WHERE lorebook_id=?)`)
-    + n(`SELECT COUNT(*) n FROM entry_entry_links WHERE about_id IN (SELECT id FROM lore_entries WHERE lorebook_id=?)`)
+    + n(`SELECT COUNT(*) n FROM source_entities WHERE lorebook_id=?`)
+    + n(`SELECT COUNT(*) n FROM entry_semantics WHERE entry_id IN (SELECT id FROM lore_entries WHERE lorebook_id=?)`)
     + n(`SELECT COUNT(*) n FROM personas WHERE from_entry IN (SELECT id FROM lore_entries WHERE lorebook_id=?)`) > 0;
 }
 

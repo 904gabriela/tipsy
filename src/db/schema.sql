@@ -362,6 +362,12 @@ CREATE TABLE IF NOT EXISTS story_npcs (
 );
 CREATE INDEX IF NOT EXISTS idx_npc_story ON story_npcs(story_id, role);
 
+-- DEPRECATED (P1 of the semantic model). Kept intact and no longer written.
+-- These recorded "about" guesses with no origin, story or confirmation, so
+-- they are not semantic truth. Their rows are copied into legacy_entry_links
+-- as evidence; the tables themselves are removed only in a later, approved
+-- cleanup. Read them for nothing new.
+--
 -- What a piece of material is about. Real foreign keys in both directions,
 -- one table per target kind, because a polymorphic id column cannot cascade
 -- and a dangling link is worse than no link.
@@ -400,6 +406,175 @@ CREATE TABLE IF NOT EXISTS story_entry_exclusions (
   PRIMARY KEY (story_id, entry_id)
 );
 CREATE INDEX IF NOT EXISTS idx_exclusion_entry ON story_entry_exclusions(entry_id);
+
+-- ======================================================================
+--                      the semantic model (P1)
+-- ======================================================================
+--
+-- Four separate things, deliberately kept apart:
+--
+--   an ENTITY            who or what something is: Patrick Moretti, the Black Lotus
+--   a SOURCE DECLARATION a source saying it describes that entity
+--   a CHARACTER CARD     a reusable character resource (characters)
+--   a STORY BINDING      which card represents the entity in one story
+--
+-- An entity belongs to no lorebook and holds no card, so deleting one source
+-- never destroys an identity another source or a story still uses.
+--
+-- Nothing here changes what the engine activates or sends. `lore_entries.kind`
+-- is left exactly as imported; approved semantics outrank it only for
+-- organisation (casting, sections, the Directions tool, later the Builder).
+
+CREATE TABLE IF NOT EXISTS lore_entities (
+  id             TEXT PRIMARY KEY,
+  type           TEXT NOT NULL CHECK (type IN ('person','place','faction','item','event','concept')),
+  canonical_name TEXT NOT NULL,
+  aliases        TEXT NOT NULL DEFAULT '[]',
+  -- An entity approved as the same as another keeps pointing at it, so old
+  -- references and re-imports still resolve.
+  merged_into_id TEXT REFERENCES lore_entities(id) ON DELETE RESTRICT,
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL
+);
+
+-- A source declares an entity. Several sources may declare the same one, but
+-- only after explicit approval; by default each source's Patrick is its own.
+CREATE TABLE IF NOT EXISTS source_entities (
+  lorebook_id   TEXT NOT NULL REFERENCES lorebooks(id)     ON DELETE CASCADE,
+  entity_id     TEXT NOT NULL REFERENCES lore_entities(id) ON DELETE RESTRICT,
+  local_ref     TEXT NOT NULL,
+  local_name    TEXT NOT NULL DEFAULT '',
+  local_aliases TEXT NOT NULL DEFAULT '[]',
+  origin        TEXT NOT NULL CHECK (origin IN ('native','converted','manual','generated')),
+  status        TEXT NOT NULL CHECK (status IN ('proposed','approved')),
+  evidence      TEXT NOT NULL DEFAULT '{}',
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  PRIMARY KEY (lorebook_id, entity_id),
+  UNIQUE (lorebook_id, local_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_source_entities_entity ON source_entities(entity_id);
+
+-- What an entry is, as organised: its scope, its category, and whether it is
+-- the profile of an entity. One row per entry, or none (not organised yet).
+-- Categories are singular; headings in the UI may be plural.
+CREATE TABLE IF NOT EXISTS entry_semantics (
+  entry_id          TEXT PRIMARY KEY REFERENCES lore_entries(id) ON DELETE CASCADE,
+  scope             TEXT NOT NULL CHECK (scope IN ('entity','world','other')),
+  category          TEXT NOT NULL CHECK (category IN (
+                      'identity','appearance','personality','speech','behavior','backstory',
+                      'psychology','relationship','secret','goal',
+                      'background','rule','event','item','direction','reference',
+                      'profile','other')),
+  defines_entity_id TEXT REFERENCES lore_entities(id) ON DELETE RESTRICT,
+  origin            TEXT NOT NULL CHECK (origin IN ('native','converted','manual','generated','inferred')),
+  status            TEXT NOT NULL CHECK (status IN ('proposed','approved')),
+  confidence        TEXT CHECK (confidence IN ('high','medium','low')),
+  evidence          TEXT NOT NULL DEFAULT '{}',
+  -- Title, content and keys when approved. A different hash now means the
+  -- entry changed after review: NEEDS RECHECK.
+  content_hash      TEXT,
+  -- An authoring hint only; the engine reads the entry's own activation fields.
+  -- 'auto' is reserved and not used until it is designed.
+  activation_policy TEXT CHECK (activation_policy IN ('auto','always','keywords','advanced')),
+  reviewed_at       INTEGER,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_entry_semantics_defines ON entry_semantics(defines_entity_id);
+
+-- Who or what an entry is about. At most one APPROVED subject per entry;
+-- any number of related entities; proposals are never canon.
+CREATE TABLE IF NOT EXISTS entry_relations (
+  entry_id   TEXT NOT NULL REFERENCES lore_entries(id)  ON DELETE CASCADE,
+  entity_id  TEXT NOT NULL REFERENCES lore_entities(id) ON DELETE RESTRICT,
+  relation   TEXT NOT NULL CHECK (relation IN ('subject','related')),
+  origin     TEXT NOT NULL CHECK (origin IN ('native','converted','manual','generated','inferred')),
+  status     TEXT NOT NULL CHECK (status IN ('proposed','approved')),
+  confidence TEXT CHECK (confidence IN ('high','medium','low')),
+  evidence   TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (entry_id, entity_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_approved_subject
+  ON entry_relations(entry_id) WHERE relation = 'subject' AND status = 'approved';
+CREATE INDEX IF NOT EXISTS idx_entry_relations_entity ON entry_relations(entity_id);
+
+-- Which card represents an entity in one story. Never on the entity itself:
+-- Patrick is card 8a2be6d9 in one story, 6fcedc7a in another, and no card at all
+-- in a third.
+CREATE TABLE IF NOT EXISTS story_entity_cards (
+  story_id     TEXT NOT NULL REFERENCES stories(id)       ON DELETE CASCADE,
+  entity_id    TEXT NOT NULL REFERENCES lore_entities(id) ON DELETE RESTRICT,
+  character_id TEXT NOT NULL REFERENCES characters(id)    ON DELETE RESTRICT,
+  created_at   INTEGER NOT NULL,
+  PRIMARY KEY (story_id, entity_id)
+);
+
+-- "These two are NOT the same", decided once. Stored with the smaller id first,
+-- so A≠B and B≠A are one decision.
+CREATE TABLE IF NOT EXISTS entity_distinctions (
+  entity_a   TEXT NOT NULL REFERENCES lore_entities(id) ON DELETE CASCADE,
+  entity_b   TEXT NOT NULL REFERENCES lore_entities(id) ON DELETE CASCADE,
+  decided_at INTEGER NOT NULL,
+  PRIMARY KEY (entity_a, entity_b),
+  CHECK (entity_a < entity_b)
+);
+
+-- What a source as a whole is FOR, as opposed to what its entries mean.
+--
+--   character-material  material about people (a card's lore, a person's history)
+--   world               a setting: places, factions, rules, history
+--   scenario            a situation ready to start
+--   story-package       a complete story: cast, world and opening together
+--   narrative-framework HOW to narrate and behave: immersion, continuity, pacing
+--                       directives that apply to any story ("Living Scene")
+--   reference-pack      specialised KNOWLEDGE to draw on when a scene enters its
+--                       domain (medical, combat, etiquette, …); available to a
+--                       story, reaching a request only when its entries activate
+--   mixed               more than one of these
+--
+-- `domains` is plain tagging (["medical"], ["combat","survival"]), not
+-- structure. No row means nobody has said. Not the same thing as the
+-- `frameworks` table, which holds campaign worlds shown as "World". Neither a
+-- narrative framework nor a reference pack goes through casting or world
+-- extraction.
+CREATE TABLE IF NOT EXISTS source_semantics (
+  lorebook_id  TEXT PRIMARY KEY REFERENCES lorebooks(id) ON DELETE CASCADE,
+  package_role TEXT NOT NULL CHECK (package_role IN
+                 ('character-material','world','scenario','story-package','narrative-framework','reference-pack','mixed')),
+  domains      TEXT NOT NULL DEFAULT '[]',
+  origin       TEXT NOT NULL CHECK (origin IN ('native','converted','manual','inferred')),
+  status       TEXT NOT NULL CHECK (status IN ('proposed','approved')),
+  confidence   TEXT CHECK (confidence IN ('high','medium','low')),
+  evidence     TEXT NOT NULL DEFAULT '{}',
+  reviewed_at  INTEGER,
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
+
+-- Links recorded before the semantic model, and link suggestions accepted in
+-- review since: evidence of what someone once connected, never canon.
+--
+-- No foreign keys, on purpose. Evidence must never stop a card, an entry or a
+-- source being deleted, and it should still read sensibly after they are:
+-- titles and names are kept as they were when the link was recorded.
+CREATE TABLE IF NOT EXISTS legacy_entry_links (
+  source         TEXT NOT NULL CHECK (source IN ('entry_character_links','entry_entry_links','composition-review','builder-review')),
+  entry_id       TEXT NOT NULL,
+  target_kind    TEXT NOT NULL CHECK (target_kind IN ('character','entry')),
+  target_id      TEXT NOT NULL,
+  entry_title    TEXT NOT NULL DEFAULT '',
+  entry_book_id  TEXT,
+  entry_origin   TEXT,
+  target_name    TEXT NOT NULL DEFAULT '',
+  derived_origin TEXT NOT NULL CHECK (derived_origin IN ('composer-inferred','builder-accepted')),
+  status         TEXT NOT NULL DEFAULT 'legacy' CHECK (status = 'legacy'),
+  recorded_at    INTEGER NOT NULL,
+  UNIQUE (source, entry_id, target_kind, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_legacy_links_entry ON legacy_entry_links(entry_id);
 
 -- ------------------------------------------------------------------ assets
 -- Pictures that belong to a story: backgrounds, scene art. Kept out of the
