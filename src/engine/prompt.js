@@ -287,6 +287,12 @@ export function buildPrompt({
   // preset's.
   if (String(s.premise || '').trim()) stable.push(`# This story\n${subStable(s.premise.trim())}`);
 
+  // The applied preset's writing style, then the story's own directions: read
+  // later, the story's win where they disagree. Only without a script — a
+  // script preset writes its own instructions, and how those sit alongside
+  // directions is a separate question not settled here.
+  if (!script && String(s.presetInstructions || '').trim()) stable.push(`# Writing style\n${subStable(s.presetInstructions.trim())}`);
+
   if (s.directions.trim()) stable.push(`# How this story is written\n${subStable(s.directions.trim())}`);
 
   // The ladder belongs in the cached half: it is the same every message for

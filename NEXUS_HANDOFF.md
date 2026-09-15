@@ -593,6 +593,47 @@ not add Builder functionality, until she has looked at the product herself.
 
 ---
 
+## 22. Preset ownership (branch `fix/preset-directions-safety`)
+
+A safety patch, not the Preset redesign. Applying a preset used to overwrite a
+story's `settings.directions` (the built-ins all carried `directions`; one real
+story has 34,671 characters of them).
+
+- **Preset owns** model, samplers, context settings, script/dials/bundle, and
+  `presetInstructions` (its writing style). **Story owns** `directions`.
+- Every apply goes through `POST /api/stories/:id/use-preset` (`applyPreset` in
+  server.js), for saved and built-in presets; the Writing preset panel no longer
+  merges `p.settings` in the browser.
+- Apply never touches `directions`, and always sets `presetInstructions`
+  (cleared when the new preset has none). Presets saved before the split keep
+  their stored `directions`; applying reads it as `presetInstructions`.
+- Saving a preset from a story captures `presetInstructions`, never `directions`.
+- Prompt: `# Writing style` sits immediately before `# How this story is
+  written`, **only when no script** is active.
+- Tests: `scripts/check-preset-safety.js` (A–G), The Saint byte-identical on a
+  snapshot, headless panel check at 390/320.
+
+**Known issues — recorded, deliberately not fixed:**
+1. A script preset and story directions are both injected (the comment in
+   prompt.js says the script replaces directions; it does not).
+2. With a script, AT_DEPTH and author's-note lore can appear twice alongside
+   `{{lorebook}}`.
+3. WHERE THINGS STAND is `unshift`ed to the start of the volatile block; the
+   comment says it goes last.
+4. The prompt trace attributes lore only — no "What Nexus sees" per layer.
+5. Impersonate/continue do not pass topK, minP, topA, repetitionPenalty.
+6. Switching presets still leaves other stale keys (e.g. a previous script).
+   Only `presetInstructions` is guaranteed not to leak.
+7. Framework migration candidates, not migrated: MLRPE 23.0; the Standard
+   Chungus "Direction" item; continuity sections of Direct API Preset,
+   Storytelling Immersion RP and Ye; the continuity rules in Bakugo's directions.
+
+Target model for the redesign: Generation Preset (one per story) · Story
+Directions · Narrative Frameworks · Reference Packs · Lore/Memory/State — kept
+as separate layers.
+
+---
+
 ## NEXT AGENT INSTRUCTIONS
 
 1. Read this file.

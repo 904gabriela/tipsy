@@ -4571,13 +4571,13 @@ async function panelPreset(s) {
       A saved set of the writing dials, so you can move a feel you like from one story to the next.
       <br><br>
       <b style="color:var(--ink);font-weight:500">It carries:</b> which model writes, how loose and how long the writing is,
-      how much it keeps in view, and your standing instructions.
+      how much it keeps in view, and its own writing style.
       <br>
-      <b style="color:var(--ink);font-weight:500">It does not touch:</b> the stages, who is hard to reach, what stays hidden,
-      the picture behind the story, who you play, or the lore. Those belong to this story and stay put.
+      <b style="color:var(--ink);font-weight:500">It does not touch:</b> this story's directions, the stages, who is hard to reach,
+      what stays hidden, the picture behind the story, who you play, or the lore. Those belong to this story and stay put.
       <br><br>
-      Loading one just sets those dials. Anything you change afterwards is simply the newer value — there is no second
-      layer competing with it.
+      Loading one sets those dials and replaces the previous preset's writing style. Where that style and this story's
+      directions disagree, the story's directions win.
     </div>
     <div class="menu">
       ${presets.map((p) => `
@@ -4604,7 +4604,11 @@ async function panelPreset(s) {
       if (!load) return;
       const p = presets.find((x) => x.id === load.dataset.load);
       if (!p) return;
-      await applySettings(p.settings);
+      // Applied by the server, the one place that keeps this story's directions its own.
+      await post(`/api/stories/${state.story.id}/use-preset`, { presetId: p.id });
+      state.story = await get(`/api/stories/${state.story.id}`);
+      $('#btn-model').textContent = shortModel(state.story.settings.model);
+      refreshQuickbar();
       toast(`Now using "${p.name}".`, { kind: 'good' });
       closeSheet();
       openStorySettings();

@@ -95,11 +95,20 @@ const DEFAULTS = {
   },
 };
 
-/** Dials that belong to a preset. The cast and the lore belong to a story. */
+/**
+ * Dials that belong to a preset. The cast, the lore and the story's own
+ * directions belong to a story.
+ *
+ * `presetInstructions` is the preset's writing-style text, and applying a
+ * preset replaces it. `directions` is not here, on purpose: those are the
+ * story's, and no preset may write them. Presets saved before this split may
+ * still carry `directions`; that text is read as their presetInstructions
+ * when applied (see presetInstructionsOf) and never copied into the story's.
+ */
 const PRESET_KEYS = [
   'model', 'temperature', 'topP', 'frequencyPenalty', 'presencePenalty',
   'maxTokens', 'historyLimit', 'loreBudget', 'scanDepth', 'recursive',
-  'includeNames', 'directions',
+  'includeNames', 'presetInstructions',
   // Samplers other apps carry. Whether a given model honours them is up to
   // the provider; sending them costs nothing either way.
   'topK', 'minP', 'topA', 'repetitionPenalty',
@@ -123,7 +132,7 @@ const BUILTIN_PRESETS = [
     settings: {
       temperature: 0.92, maxTokens: 1400, historyLimit: 80, loreBudget: 6000,
       frequencyPenalty: 0.25, presencePenalty: 0.1,
-      directions: 'Take your time. A scene may end without resolving. Let silences sit, and let a question go unanswered if that is what would really happen. Do not have anyone say the thing they are avoiding unless the moment genuinely forces it out of them.',
+      presetInstructions: 'Take your time. A scene may end without resolving. Let silences sit, and let a question go unanswered if that is what would really happen. Do not have anyone say the thing they are avoiding unless the moment genuinely forces it out of them.',
     },
   },
   {
@@ -132,7 +141,7 @@ const BUILTIN_PRESETS = [
     settings: {
       temperature: 0.95, maxTokens: 2200, historyLimit: 60, loreBudget: 6000,
       frequencyPenalty: 0.3,
-      directions: 'Write at length, three or four full paragraphs. Ground every scene in physical detail: what the light is doing, what the room sounds like, what people do with their hands. Dialogue carries its weight but never arrives unattended.',
+      presetInstructions: 'Write at length, three or four full paragraphs. Ground every scene in physical detail: what the light is doing, what the room sounds like, what people do with their hands. Dialogue carries its weight but never arrives unattended.',
     },
   },
   {
@@ -141,10 +150,34 @@ const BUILTIN_PRESETS = [
     settings: {
       model: 'deepseek/deepseek-v4-flash',
       temperature: 0.9, maxTokens: 600, historyLimit: 30, loreBudget: 2500,
-      directions: 'Keep replies short and quick, a paragraph or two.',
+      presetInstructions: 'Keep replies short and quick, a paragraph or two.',
     },
   },
 ];
+
+/** A preset's writing-style text, reading the old `directions` field for presets saved before the split. */
+function presetInstructionsOf(presetSettings) {
+  if (typeof presetSettings.presetInstructions === 'string') return presetSettings.presetInstructions;
+  if (typeof presetSettings.directions === 'string') return presetSettings.directions;
+  return '';
+}
+
+/**
+ * A story's settings with a preset applied. The one place that happens.
+ *
+ * Never touches the story's own `directions`. Always sets presetInstructions,
+ * clearing it when the new preset has none, so one preset's style text cannot
+ * outlive the switch to another. Other keys still merge as they always have.
+ */
+function applyPreset(storySettings, presetSettings) {
+  const next = { ...storySettings };
+  for (const k of PRESET_KEYS) {
+    if (k === 'presetInstructions') continue;
+    if (presetSettings[k] !== undefined) next[k] = presetSettings[k];
+  }
+  next.presetInstructions = presetInstructionsOf(presetSettings);
+  return next;
+}
 
 // ---------------------------------------------------------------- plumbing
 
@@ -1543,6 +1576,7 @@ route('GET', '/api/presets', async () => {
 route('POST', '/api/presets', async (req) => {
   const { id, name, settings } = await readJson(req);
   if (!String(name || '').trim()) throw new HttpError(400, 'Give the preset a name.');
+  // Only what a preset owns. A story's own directions are never saved into one.
   const clean = {};
   for (const k of PRESET_KEYS) if (settings && settings[k] !== undefined) clean[k] = settings[k];
   return { id: db.savePreset({ id, name: name.trim(), settings: clean }) };
@@ -2339,7 +2373,8 @@ route('GET', '/api/defaults', async () => ({
 route('POST', '/api/defaults', async (req) => {
   const body = await readJson(req);
   const keep = {};
-  for (const k of [...PRESET_KEYS, 'authorNote', 'arc', 'secrets', 'memory']) {
+  // Defaults for a NEW story may include its starting directions, as before.
+  for (const k of [...PRESET_KEYS, 'directions', 'authorNote', 'arc', 'secrets', 'memory']) {
     if (body[k] !== undefined) keep[k] = body[k];
   }
   db.setSetting('story_defaults', keep);
@@ -2609,15 +2644,18 @@ route('POST', '/api/stories/:id/dials', async (req, res, { id }) => {
   return { ok: true, values, total: cost.total, cost: cost.perControl, changed: driftFrom(script, values, settings.bundle), bundle: settings.bundle || null };
 });
 
-/** Put a preset's prompt and controls onto this story. */
+/**
+ * Put a preset onto this story: saved or built-in, from either panel. Every
+ * preset is applied here, so the story's own directions are protected in one
+ * place.
+ */
 route('POST', '/api/stories/:id/use-preset', async (req, res, { id }) => {
   const story = db.getStory(id);
   if (!story) throw new HttpError(404, 'No such story.');
   const { presetId } = await readJson(req);
-  const preset = db.listPresets().find((p) => p.id === presetId);
+  const preset = db.listPresets().find((p) => p.id === presetId) || BUILTIN_PRESETS.find((b) => b.id === presetId);
   if (!preset) throw new HttpError(404, 'No such preset.');
-  const settings = { ...story.settings };
-  for (const k of PRESET_KEYS) if (preset.settings[k] !== undefined) settings[k] = preset.settings[k];
+  const settings = applyPreset(story.settings, preset.settings || {});
   db.updateStory(id, { settings });
   return { ok: true, name: preset.name };
 });
