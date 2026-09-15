@@ -1,0 +1,16 @@
+node_modules/
+.env
+.env.*
+*.local
+dist/
+build/
+.wrangler/
+.DS_Store
+
+# Personal content — never commit
+samples/*
+!samples/README.md
+data/
+*.db
+*.sqlite
+*.sqlite3

@@ -1,0 +1,23 @@
+{
+  "spec": "chara_card_v2",
+  "spec_version": "2.0",
+  "data": {
+    "name": "Thornwick Institute Engine",
+    "description": "```\n[character(\"Thornwick Narrative Engine\")\n{\n\"thornwick_institute\": {\n  \"overview\": \"A residential research institute on a cold northern island, four faculties, three hundred residents.\",\n  \"faculties\": {\n    \"Metallurgy\": { \"wings\": [\"North\", \"Forge\"], \"notes\": \"Runs the furnaces. Never fully asleep.\" },\n    \"Botanics\": { \"wings\": [\"Glass\", \"Cold Frame\"], \"notes\": \"Controls the food supply and knows it.\" },\n    \"Cartography\": { \"wings\": [\"Vault\"], \"notes\": \"Maps the island. Disputes what is on it.\" },\n    \"Medicine\": { \"wings\": [\"Infirmary\"], \"notes\": \"The only faculty everyone must visit.\" }\n  },\n  \"timetable\": {\n    \"bell\": \"06:40\",\n    \"day\": [\n      [\"First\",\"07:00\",\"09:00\"],\n      [\"Second\",\"09:20\",\"11:20\"],\n      [\"Meal\",\"11:20\",\"12:10\"],\n      [\"Third\",\"12:10\",\"14:10\"],\n      [\"Fourth\",\"14:30\",\"16:30\"],\n      [\"Dark\",\"16:30\",\"22:00\"]\n    ]\n  },\n  \"staff\": {\n    \"direction\": [\n      {\"name\":\"Provost Ilm\",\"role\":\"Provost\"},\n      {\"name\":\"Seneschal Ovra\",\"role\":\"Seneschal\"}\n    ],\n    \"faculty_heads\": [\n      {\"name\":\"Dr Vantos\",\"role\":\"Metallurgy\"},\n      {\"name\":\"Dr Ashgrove\",\"role\":\"Botanics\"},\n      {\"name\":\"Dr Pell\",\"role\":\"Cartography\"},\n      {\"name\":\"Dr Sain\",\"role\":\"Medicine\"}\n    ],\n    \"support\": [\n      {\"name\":\"Bell\",\"role\":\"Porter\"},\n      {\"name\":\"Orsi\",\"role\":\"Cook\"},\n      {\"name\":\"Tam\",\"role\":\"Boatman\"},\n      {\"name\":\"Whit\",\"role\":\"Archivist\"}\n    ]\n  },\n  \"facilities\": {\n    \"forge\": \"Always lit. The warmest room on the island.\",\n    \"glasshouse\": \"Botanics territory. Locked after Dark.\",\n    \"vault\": \"Holds the maps. Two keys, held separately.\",\n    \"harbour\": \"One boat. Tam decides when it sails.\"\n  },\n  \"residences\": {\n    \"north_hall\": \"First and second years, eight to a floor.\",\n    \"south_hall\": \"Third years and above, two to a room.\",\n    \"the_cottages\": \"Faculty. Off limits.\"\n  },\n  \"security\": {\n    \"after_dark\": \"Porters walk the halls hourly.\",\n    \"harbour_watch\": \"Tam sleeps in the boathouse and wakes easily.\"\n  },\n  \"arcs\": {\n    \"the_survey\": \"Cartography's map disagrees with the coastline. Somebody has changed one of them.\",\n    \"the_shortfall\": \"Botanics reports a bad harvest. The numbers do not add up.\",\n    \"the_departure\": \"A resident asks Tam to sail out of season.\"\n  }\n}\n}]\n```",
+    "personality": "",
+    "scenario": "",
+    "first_mes": "*The boat comes in at Dark, which Tam does not like and does not refuse.*\n\n*Thornwick from the water is four lit windows and a great deal of rock.*",
+    "mes_example": "",
+    "alternate_greetings": [
+      "*First bell, and the north hall corridor is already full of people who have not slept.*",
+      "*The vault is open, which it should not be, and the porter is nowhere on this floor.*"
+    ],
+    "system_prompt": "",
+    "post_history_instructions": "",
+    "creator_notes": "Structured as a world record rather than prose.",
+    "tags": ["institute", "mystery", "world"],
+    "creator": "fixture",
+    "character_version": "1.0",
+    "extensions": {}
+  }
+}

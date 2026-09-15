@@ -1,0 +1,881 @@
+<title>Slow Burn Design Brief</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+:root {
+  --ground: #F4F0F1;
+  --surface: #FCFAFB;
+  --surface-2: #EEE8EA;
+  --ink: #241A1E;
+  --ink-soft: #6B5B62;
+  --ink-faint: #9A8A91;
+  --line: #DFD5D9;
+  --line-strong: #C6B7BD;
+  --accent: #8E2F52;
+  --accent-ink: #6E2340;
+  --accent-soft: #F4E5EA;
+  --brass: #7E611C;
+  --brass-soft: #F2EAD6;
+  --good: #2E6B4F;
+  --shadow: 0 1px 2px rgba(36,26,30,.06);
+  --radius: 3px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #171115;
+    --surface: #201920;
+    --surface-2: #2A212A;
+    --ink: #F1E9EC;
+    --ink-soft: #AE9BA4;
+    --ink-faint: #7C6B74;
+    --line: #382C35;
+    --line-strong: #4E3E49;
+    --accent: #E78CA4;
+    --accent-ink: #F2AFC0;
+    --accent-soft: #3A2029;
+    --brass: #D9AE58;
+    --brass-soft: #33281A;
+    --good: #6FC79B;
+    --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #171115;
+  --surface: #201920;
+  --surface-2: #2A212A;
+  --ink: #F1E9EC;
+  --ink-soft: #AE9BA4;
+  --ink-faint: #7C6B74;
+  --line: #382C35;
+  --line-strong: #4E3E49;
+  --accent: #E78CA4;
+  --accent-ink: #F2AFC0;
+  --accent-soft: #3A2029;
+  --brass: #D9AE58;
+  --brass-soft: #33281A;
+  --good: #6FC79B;
+  --shadow: none;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 {
+  font-family: Fraunces, "Iowan Old Style", Georgia, serif;
+  font-weight: 600;
+  text-wrap: balance;
+  margin: 0;
+  line-height: 1.15;
+}
+
+.mono {
+  font-family: "IBM Plex Mono", ui-monospace, "Cascadia Mono", monospace;
+}
+
+a { color: var(--accent); }
+
+/* ---------- shell ---------- */
+
+.shell {
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  gap: 40px;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding-inline: 20px;
+  padding-block: 0 0;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .shell { grid-template-columns: minmax(0, 1fr); gap: 0; }
+}
+
+/* ---------- rail ---------- */
+
+.rail {
+  position: sticky;
+  top: 0;
+  padding-block: 32px;
+  max-height: 100vh;
+  overflow-y: auto;
+}
+.rail-title {
+  font-size: 11px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 14px;
+}
+.rail-list { display: flex; flex-direction: column; gap: 2px; }
+.rail-link {
+  display: grid;
+  grid-template-columns: 16px minmax(0,1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 7px 8px;
+  border-radius: var(--radius);
+  color: var(--ink-soft);
+  text-decoration: none;
+  font-size: 13.5px;
+  border-left: 2px solid transparent;
+}
+.rail-link:hover { background: var(--surface-2); color: var(--ink); }
+.rail-link .k { font-size: 11px; color: var(--ink-faint); }
+.rail-link .n { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--ink-faint); }
+.rail-link.full { border-left-color: var(--good); }
+.rail-link.full .n { color: var(--good); }
+
+@media (max-width: 900px) {
+  .rail {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    max-height: none;
+    padding-block: 10px;
+    background: var(--ground);
+    border-bottom: 1px solid var(--line);
+    margin-inline: -20px;
+    padding-inline: 20px;
+  }
+  .rail-title { display: none; }
+  .rail-list { flex-direction: row; overflow-x: auto; gap: 6px; scrollbar-width: thin; }
+  .rail-link { grid-template-columns: auto auto; white-space: nowrap; border-left: 0; border-bottom: 2px solid transparent; }
+  .rail-link .label { display: none; }
+  .rail-link.full { border-left-color: transparent; border-bottom-color: var(--good); }
+}
+
+/* ---------- main ---------- */
+
+main { padding-block: 40px 140px; min-width: 0; }
+
+.masthead { margin-bottom: 40px; }
+.eyebrow {
+  font-size: 11px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 14px;
+}
+h1 { font-size: clamp(34px, 6vw, 52px); letter-spacing: -.02em; }
+.standfirst {
+  font-size: 18px;
+  color: var(--ink-soft);
+  max-width: 60ch;
+  margin-top: 16px;
+}
+
+.howto {
+  margin-top: 26px;
+  padding: 16px 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  font-size: 14.5px;
+  color: var(--ink-soft);
+  max-width: 62ch;
+}
+.howto strong { color: var(--ink); font-weight: 600; }
+
+/* ---------- briefing ---------- */
+
+.sec { margin-top: 56px; scroll-margin-top: 80px; }
+@media (max-width: 900px) { .sec { scroll-margin-top: 70px; } }
+
+.sec-head { border-top: 1px solid var(--line-strong); padding-top: 16px; margin-bottom: 8px; }
+.sec-key {
+  font-size: 11px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 8px;
+}
+h2 { font-size: clamp(24px, 4vw, 31px); letter-spacing: -.015em; }
+.sec-intro { color: var(--ink-soft); max-width: 62ch; margin-top: 12px; font-size: 15.5px; }
+
+.mechs { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius); margin-top: 24px; overflow: hidden; }
+.mech { background: var(--surface); padding: 18px 20px; display: grid; gap: 6px; }
+.mech-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
+.mech-num { font-size: 11px; color: var(--ink-faint); }
+.mech h3 { font-size: 18px; }
+.mech p { margin: 0; font-size: 14.5px; color: var(--ink-soft); }
+.mech p b { color: var(--ink); font-weight: 600; }
+.mech-who {
+  font-size: 11.5px;
+  letter-spacing: .04em;
+  color: var(--brass);
+  background: var(--brass-soft);
+  padding: 3px 7px;
+  border-radius: var(--radius);
+}
+.mech.gap { background: var(--accent-soft); }
+.mech.gap .mech-who { color: var(--accent); background: transparent; border: 1px solid var(--accent); }
+
+.tablewrap { overflow-x: auto; margin-top: 24px; border: 1px solid var(--line); border-radius: var(--radius); }
+table { border-collapse: collapse; width: 100%; min-width: 620px; background: var(--surface); font-size: 13.5px; }
+th, td { text-align: left; padding: 11px 13px; vertical-align: top; border-bottom: 1px solid var(--line); }
+thead th { background: var(--surface-2); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-soft); font-weight: 500; white-space: nowrap; }
+tbody th { font-weight: 500; color: var(--ink-soft); white-space: nowrap; font-size: 12.5px; }
+td { color: var(--ink-soft); }
+tr:last-child th, tr:last-child td { border-bottom: 0; }
+td.yes { color: var(--good); }
+td.no { color: var(--accent); }
+
+.note {
+  margin-top: 22px;
+  font-size: 14.5px;
+  color: var(--ink-soft);
+  max-width: 62ch;
+}
+.note b { color: var(--ink); font-weight: 600; }
+code {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .88em;
+  background: var(--surface-2);
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+
+/* ---------- questions ---------- */
+
+.qlist { margin-top: 10px; }
+
+.q {
+  border-top: 1px solid var(--line);
+  padding: 24px 0 26px;
+  display: grid;
+  gap: 14px;
+}
+.q.star { border-top-color: var(--brass); }
+
+.q-head { display: grid; grid-template-columns: 54px minmax(0,1fr); gap: 14px; align-items: start; }
+@media (max-width: 560px) { .q-head { grid-template-columns: minmax(0,1fr); gap: 6px; } }
+
+.q-id { font-size: 11.5px; color: var(--ink-faint); padding-top: 4px; display: flex; gap: 6px; align-items: center; }
+.q-star { color: var(--brass); font-size: 13px; }
+
+.q-text { font-family: Fraunces, Georgia, serif; font-size: 19px; line-height: 1.35; font-weight: 600; text-wrap: balance; }
+.q-help { font-size: 14px; color: var(--ink-soft); margin-top: 7px; max-width: 60ch; }
+.q-help b { color: var(--ink); font-weight: 600; }
+
+.q-body { padding-left: 68px; display: grid; gap: 12px; }
+@media (max-width: 560px) { .q-body { padding-left: 0; } }
+
+.hint {
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.chip {
+  font: inherit;
+  font-size: 14px;
+  padding: 7px 13px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink-soft);
+  border-radius: 100px;
+  cursor: pointer;
+  text-align: left;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.chip:hover { border-color: var(--accent); color: var(--ink); }
+.chip[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--surface);
+  font-weight: 500;
+}
+:root[data-theme="dark"] .chip[aria-pressed="true"],
+:root:not([data-theme="light"]) .chip[aria-pressed="true"] { color: #1A1014; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .chip[aria-pressed="true"] { color: #FFF; }
+}
+
+textarea {
+  font: inherit;
+  font-size: 15px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  resize: vertical;
+  line-height: 1.5;
+}
+textarea::placeholder { color: var(--ink-faint); }
+textarea:focus-visible, .chip:focus-visible, .rail-link:focus-visible, button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+textarea.big { min-height: 88px; }
+
+/* ---------- footer bar ---------- */
+
+.bar {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 40;
+  background: var(--surface);
+  border-top: 1px solid var(--line-strong);
+  padding: 12px 20px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  justify-content: center;
+}
+.bar-inner { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; max-width: 1060px; width: 100%; }
+.count { font-size: 13.5px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.count b { color: var(--ink); font-weight: 600; }
+.meter { flex: 1 1 120px; height: 4px; background: var(--surface-2); border-radius: 100px; overflow: hidden; min-width: 80px; }
+.meter i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+.savestate { font-size: 11.5px; color: var(--ink-faint); letter-spacing: .04em; min-width: 92px; }
+.savestate.ok { color: var(--good); }
+button.act {
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  padding: 8px 15px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-2);
+  color: var(--ink);
+  cursor: pointer;
+}
+button.act:hover { border-color: var(--accent); color: var(--accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+</style>
+
+<div class="shell">
+  <nav class="rail" aria-label="Sections">
+    <div class="rail-title">Brief</div>
+    <div class="rail-list" id="rail"></div>
+  </nav>
+
+  <main>
+    <header class="masthead">
+      <div class="eyebrow">Design brief &middot; 11 September 2026</div>
+      <h1>Building the roleplay app you actually want</h1>
+      <p class="standfirst">I read everything I could find on Tipsy Chat, FictionLab, SillyTavern and ChungusHub, plus how long&#8209;term memory is really done in 2026. Here is what I learned, and the questions I need answered before writing a line of code.</p>
+
+      <div class="howto">
+        <strong>How to use this page.</strong> Read the two short briefings, then tap answers to the questions. Nothing is required, skip anything that does not apply, and use the note box under any question to say it in your own words. Your answers save automatically. The <span style="color:var(--brass)">&#9733;</span> questions are the ones that change how the app has to be built, so those matter most. When you are done, tell me in the chat and I will read them.
+      </div>
+    </header>
+
+    <section class="sec" id="s-memory">
+      <div class="sec-head">
+        <div class="sec-key">Briefing one</div>
+        <h2>Why every app you tried &ldquo;lacks memory&rdquo;</h2>
+      </div>
+      <p class="sec-intro">An AI model remembers nothing between messages. Every time you press send, the app rebuilds one big block of text and ships it. Whatever is in that block, the character knows. Whatever is not, it has genuinely never seen. So &ldquo;memory&rdquo; is only ever a question of <em>how the app decides what goes in the block</em>. There are five ways to do it, and the apps you tried each use two or three.</p>
+
+      <div class="mechs">
+        <div class="mech">
+          <div class="mech-top"><span class="mono mech-num">01</span><h3>The scrollback</h3><span class="mono mech-who">Tipsy Chat, and nothing else</span></div>
+          <p>Paste the last N messages word for word. <b>Perfect recall</b> of recent scenes, and nothing beats it there. But older messages fall off the end silently, and you re&#8209;send the whole window every single message, so it is the most expensive kind of memory there is. Tipsy's memory setting is literally a size slider for this, and its gem price is charged per 10,000 tokens of it. There is nothing behind the window.</p>
+        </div>
+        <div class="mech">
+          <div class="mech-top"><span class="mono mech-num">02</span><h3>The recap</h3><span class="mono mech-who">FictionLab's Memory Matrix</span></div>
+          <p>Every so often, ask a model to write down what happened, and keep the note instead of the messages. <b>Cheap plot continuity</b> over thousands of messages. But compression eats the specifics: &ldquo;he promised to bring her the letter by Friday&rdquo; becomes &ldquo;they discussed the letter&rdquo;. FictionLab writes one card per 30 messages, caps you at 100 cards free or 500 paid, and deletes the oldest first unless you pin it. In a 3,000&#8209;message slow burn, your opening arc is gone or reduced to one 500&#8209;character card.</p>
+        </div>
+        <div class="mech">
+          <div class="mech-top"><span class="mono mech-num">03</span><h3>The search</h3><span class="mono mech-who">SillyTavern, off by default</span></div>
+          <p>Store every old message, and when you send a new one, pull back the handful that look most similar. <b>Unlimited cheap archive</b>, great for &ldquo;what was the whiskey called&rdquo;. Useless for slow burn: it only fires when your message already resembles the memory, so a character can never bring something up unprompted. SillyTavern's own docs say it &ldquo;does not guarantee improved memory&rdquo;.</p>
+        </div>
+        <div class="mech gap">
+          <div class="mech-top"><span class="mono mech-num">04</span><h3>The character sheet</h3><span class="mono mech-who">None of the four apps you tried</span></div>
+          <p>A live fact sheet kept up to date in the background: what day it is, where everyone is, what they are wearing, who is hurt, what each character wants, how they feel about each other, <b>and every promise still unkept</b>. Always included, never summarised away. This is the one thing that makes a character raise something from 400 messages ago at the right moment. Talemate and a couple of SillyTavern extensions do it. <b>This is your gap.</b></p>
+        </div>
+        <div class="mech">
+          <div class="mech-top"><span class="mono mech-num">05</span><h3>The encyclopedia</h3><span class="mono mech-who">Your lorebooks</span></div>
+          <p>Entries with trigger words. Say &ldquo;the Northern Keep&rdquo; and that entry gets pasted in. <b>Exact, cheap, and entirely under your control</b>, which is why you write them. Blind to anything you paraphrase, and it needs tending. The clever trick the best setups use: save each scene's recap <em>as</em> a lorebook entry with auto&#8209;generated keywords, so old scenes come back only when they are relevant.</p>
+        </div>
+      </div>
+
+      <p class="note"><b>The short version.</b> Tipsy gives you one mechanism. FictionLab gives you two and a half and will not take your lorebooks. Nobody gives you the fourth one, which is the one that makes slow burn work. Stacking all five is the whole design.</p>
+    </section>
+
+    <section class="sec" id="s-matrix">
+      <div class="sec-head">
+        <div class="sec-key">Briefing two</div>
+        <h2>What the four apps actually do</h2>
+      </div>
+      <p class="sec-intro">Checked against each app's own documentation and source in September 2026. The useful read is the last two rows: the two apps that feel good cost the most and lock you out, and the two that are free and open are the ones that feel wrong.</p>
+
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr><th></th><th>Tipsy Chat</th><th>FictionLab</th><th>SillyTavern</th><th>ChungusHub</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Memory</th>
+              <td>Window size slider, plus 2&ndash;4k of pins on paid tiers. No recaps at all.</td>
+              <td>Recap cards every 30 messages, capped and deleted oldest&#8209;first.</td>
+              <td>Five overlapping extensions you assemble yourself.</td>
+              <td>Layered recaps. Has an open bug that silently drops old turns.</td>
+            </tr>
+            <tr>
+              <th>Character sheet</th>
+              <td class="no">None</td>
+              <td class="no">None</td>
+              <td>Third&#8209;party extensions only</td>
+              <td class="no">None</td>
+            </tr>
+            <tr>
+              <th>Your lorebooks</th>
+              <td>Own format, creators only</td>
+              <td class="no">Cannot import. Type by hand.</td>
+              <td class="yes">Full support, it is the standard</td>
+              <td class="yes">Full support, lossless</td>
+            </tr>
+            <tr>
+              <th>Multi&#8209;character</th>
+              <td class="yes">Yes, one narrator voices all</td>
+              <td class="yes">Yes, picks who is in the scene</td>
+              <td class="yes">Yes, real turn scheduler</td>
+              <td class="no">No. One character per chat.</td>
+            </tr>
+            <tr>
+              <th>Settings</th>
+              <td>Medium. No prompt editing.</td>
+              <td>Shallow. 300 characters of instructions.</td>
+              <td>Total. Overwhelming.</td>
+              <td>Deep but tidy</td>
+            </tr>
+            <tr>
+              <th>Choose your model</th>
+              <td class="no">No, drink names only</td>
+              <td class="no">No, fixed list</td>
+              <td class="yes">Any, your own key</td>
+              <td class="yes">Any, your own key</td>
+            </tr>
+            <tr>
+              <th>Cost</th>
+              <td>Gems, priced per message by window size. A 100k chat runs ~200 gems <em>per reply</em>.</td>
+              <td>Free, $7.99 or $24.99 a month</td>
+              <td class="yes">Free, you pay the model directly</td>
+              <td class="yes">Free, you pay the model directly</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="note"><b>On your lorebooks.</b> If they came from Chub, Janitor or SillyTavern, they are one of two shapes of the same de facto standard: a <code>.json</code> world&#8209;info file, or a book tucked inside a character card, which is a <code>.png</code> image with the text hidden in it. Both are plain JavaScript to read, including the trigger words, the always&#8209;on entries, the priority order and the timing rules. Whatever you have, we can import it and, just as important, export it back out unchanged. Nothing you own gets trapped in this app.</p>
+    </section>
+
+    <div id="questions"></div>
+
+  </main>
+</div>
+
+<div class="bar">
+  <div class="bar-inner">
+    <span class="count"><b id="done">0</b> of <span id="total">0</span> answered</span>
+    <span class="meter"><i id="meterfill"></i></span>
+    <span class="savestate mono" id="savestate">&nbsp;</span>
+    <button class="act" id="copy" type="button">Copy answers</button>
+  </div>
+</div>
+
+<script>
+const QUESTIONS = [
+  // ---------------- A ----------------
+  { s:'A', id:'a1', star:1, q:'How many characters are usually in a scene at once, and how many exist in the whole story?',
+    help:'This decides whether the app needs a turn scheduler and separate memory per character, or one shared scene.',
+    type:'one', opts:['Me and one character, others are rare','2 to 3 talking, a handful recurring','A real ensemble, 6 or more, always around','It varies wildly by story'] },
+  { s:'A', id:'a2', star:1, q:'Who should speak the other characters?',
+    help:'<b>One narrator</b> means a single reply writes everyone, the way Tipsy and FictionLab do it. <b>Separate turns</b> means each character answers on their own, like SillyTavern groups. Separate turns cost more money and can feel slower, but each character can genuinely know different things.',
+    type:'one', opts:['One narrator voice writes everyone, like Tipsy','Each character takes their own turn','Depends on the scene, let me switch','No idea, pick whichever is better'] },
+  { s:'A', id:'a3', star:1, q:'Should characters be able to keep secrets from each other, and have that actually hold?',
+    help:'As in: Anna knows about the letter, Marcus does not, and Marcus never accidentally reacts to it. No app you tried can do this. It is buildable but it shapes the whole engine.',
+    type:'one', opts:['Yes, essential to how I write','Nice to have, not critical','No, everyone can know everything'] },
+  { s:'A', id:'a4', q:'How long is a typical sitting, and how long does a whole story run?',
+    type:'text', ph:'For example: an hour or two at a time, 30 messages, and a story runs for weeks and thousands of messages.' },
+  { s:'A', id:'a5', q:'How long should replies be?',
+    type:'many', opts:['A few sentences','Two to four paragraphs','A full page of prose','Let it vary with the moment','I want to set it per story'] },
+  { s:'A', id:'a6', q:'What point of view and tense do you write in?',
+    type:'many', opts:['First person, present. "I reach for the door"','Third person, past. "She reached for the door"','Third person, present','I mix it up'] },
+  { s:'A', id:'a7', q:'Do you narrate the world too, or only your own character?',
+    type:'one', opts:['Only my character, the app runs the world','I direct scenes too: "later that night..."','Both, depending on mood'] },
+  { s:'A', id:'a8', star:1, q:'How do you want to control slow burn pacing?',
+    help:'Pick everything that appeals. This becomes a real feature with real machinery, not a line in a prompt.',
+    type:'many', opts:['A dial from glacial to fast','Named relationship stages it cannot skip','A reluctance level per character','Hard rules: "no confession before X happens"','I just say so out of character when it rushes'] },
+  { s:'A', id:'a9', q:'NSFW content?',
+    help:'This decides which AI models are usable. Some refuse; some have no filtering at all.',
+    type:'one', opts:['Yes, and it needs to be uncensored','Yes, but occasional refusals are survivable','Sometimes, mild','No'] },
+  { s:'A', id:'a10', q:'What do you play, and do you use any game mechanics?',
+    type:'text', ph:'Genres: romance, slow-burn drama, fantasy, sci-fi, horror, historical, slice of life. Mechanics: inventory, stats, dice, relationship meters, or none at all, just prose.' },
+  { s:'A', id:'a11', q:'How often do you regenerate a reply, edit it, or go back and try a different path?',
+    help:'If you branch constantly, the app should keep every version as a tree instead of a straight line. That is a real decision early on.',
+    type:'one', opts:['Constantly, I explore alternatives','Sometimes, when a reply misses','Rarely, I take what I get'] },
+
+  // ---------------- B ----------------
+  { s:'B', id:'b1', star:1, q:'A character promised you something 400 messages ago. Nobody has mentioned it since. Should they bring it up on their own?',
+    help:'This is the single most important question on the page. &ldquo;Yes, unprompted&rdquo; means building the character sheet from briefing one, with a live list of unkept promises fed in every single turn. Search&#8209;based memory can never do this.',
+    type:'one', opts:['Yes, unprompted, that is the entire point','Yes, if I nudge the scene toward it','I would rather remind them myself'] },
+  { s:'B', id:'b2', star:1, q:'What must never, ever be forgotten? Pick your top three.',
+    help:'Each of these is a different piece of machinery, so the ones you pick get built first.',
+    type:'many', opts:['How characters feel about each other','Promises and unfinished business','The timeline: what day it is, how long since what','Physical state: where they are, what they wear, injuries','Who knows what, and who is hiding it','World facts and history','The exact wording of key moments'] },
+  { s:'B', id:'b3', q:'How do you want to see and fix what the app remembers?',
+    type:'many', opts:['A journal I can read and edit in plain words','A timeline of events','A relationship map between characters','A character sheet per person','Honestly, I would rather never see it'] },
+  { s:'B', id:'b4', q:'How much memory keeping are you willing to do yourself?',
+    type:'one', opts:['None, it should be fully automatic','It suggests, I tap accept or reject','I will pin the important things myself','I will happily write entries by hand'] },
+  { s:'B', id:'b5', q:'When the app remembers something wrong, what should happen?',
+    type:'many', opts:['I edit the memory and they instantly know the corrected version','I say it out of character in the chat','It should flag things it is unsure about'] },
+  { s:'B', id:'b6', q:'Should a character remember you across separate stories?',
+    type:'one', opts:['Yes, like a new game plus','No, every story starts clean','Let me choose per story'] },
+  { s:'B', id:'b7', q:'Should the app track in&#8209;story time explicitly, like "Day 14, evening, three days since the festival"?',
+    type:'one', opts:['Yes, and let me skip ahead: "two weeks later"','Yes, but keep it quiet in the background','No, it gets in the way'] },
+  { s:'B', id:'b8', q:'Building good memory means extra AI calls running in the background, roughly 20 to 40 percent more cost. Worth it?',
+    type:'one', opts:['Yes, memory is why I am doing this','Yes, but let me turn it off for cheap scenes','I need to see the numbers first'] },
+
+  // ---------------- C ----------------
+  { s:'C', id:'c1', star:1, q:'What lorebook and character files do you actually have on your computer or phone right now?',
+    help:'If you can, find one and look at the end of its filename. This tells me exactly what the importer has to read on day one. If you are not sure, say where you got them.',
+    type:'many', opts:['PNG images from Chub, Janitor or similar','.json files exported from SillyTavern','Tipsy world book .json','Text I wrote myself in notes or a document','I am honestly not sure'] },
+  { s:'C', id:'c2', q:'Roughly how many lorebook entries do you have, and how long is each one?',
+    type:'text', ph:'For example: about 60 entries, most a paragraph, a few are pages long. A rough guess is fine.' },
+  { s:'C', id:'c3', q:'How do your entries get triggered today?',
+    type:'many', opts:['Keywords I wrote myself','Some are always on','I use the advanced options: secondary keys, priority, timing','I do not know, I just uploaded them'] },
+  { s:'C', id:'c4', q:'Do you play as a defined character of your own, and is it the same one every time?',
+    type:'one', opts:['One persona I always use','A different me per story','I barely define myself at all'] },
+  { s:'C', id:'c5', q:'Should the app write new lore on its own as the story invents places and people?',
+    type:'one', opts:['Yes, and ask me before saving','Yes, silently, I will clean up later','No, I write all lore myself'] },
+
+  // ---------------- D ----------------
+  { s:'D', id:'d1', star:1, q:'Name what made Tipsy feel immersive, and what made SillyTavern feel like software.',
+    help:'This one is worth typing a real answer to. It sets the entire look and feel, and it is the thing I can least guess at.',
+    type:'text', big:1, ph:'Tipsy felt good because... SillyTavern felt wrong because... Think about: the background art, avatars on messages, how a reply appears, voice, how settings are hidden or shown, colours, how it reads on a phone.' },
+  { s:'D', id:'d2', q:'How should the story itself look on screen?',
+    type:'one', opts:['Chat bubbles with avatars, like messaging','Flowing prose like a novel page','Prose, but a small portrait beside each speaker','Let me switch between them'] },
+  { s:'D', id:'d3', q:'Images?',
+    type:'many', opts:['AI generated scene art as I go','Backgrounds I choose per scene','Character portraits that change with mood','Just a fixed portrait each','None, words only'] },
+  { s:'D', id:'d4', q:'Should replies be read aloud?',
+    type:'one', opts:['Yes, a different voice per character','Yes, one narrator voice','No'] },
+  { s:'D', id:'d5', q:'Where do you actually read and write? Be honest.',
+    type:'one', opts:['Almost always my PC','Almost always my phone','Genuinely both, and they must stay in sync'] },
+  { s:'D', id:'d6', q:'Look and feel?',
+    type:'many', opts:['Dark, always','Light, always','Match whatever my device is doing','Ambient touches: rain, snow, drifting light','No effects, keep it still','Settings hidden away so I only see the story'] },
+  { s:'D', id:'d7', q:'Should there be a small live panel showing time, place, mood and relationships while you play?',
+    type:'one', opts:['Yes, always visible','Yes, but let me pull it up when I want it','No, it breaks the spell'] },
+
+  // ---------------- E ----------------
+  { s:'E', id:'e1', star:1, q:'Which AI models have you liked most, and which felt wrong?',
+    help:'Tipsy&rsquo;s Top Pick is Claude&#8209;family, its Sake is Google&rsquo;s Gemini. FictionLab&rsquo;s Oracle is DeepSeek&#8209;based. If you know which of those you preferred, that alone tells me a lot.',
+    type:'text', ph:'For example: Tipsy Top Pick wrote the best prose but ate gems. FictionLab Oracle was fine but repetitive. Or just: I have no idea, they are all drink names.' },
+  { s:'E', id:'e2', star:1, q:'What can you comfortably spend on AI each month?',
+    help:'For scale, at about 50 messages a day: a cheap strong model runs a few dollars a month, a mid&#8209;tier Claude about $25 to $30, the top model around $65. Bigger memory windows multiply that by three or four. This decides the model, the window size, and how hard the app has to compress.',
+    type:'one', opts:['Under $10','$10 to $30','$30 to $100','Whatever it takes to get this right','Less than I pay Tipsy now, that is the point'] },
+  { s:'E', id:'e3', q:'Do you already have an API key or a developer account anywhere?',
+    help:'An API key is just a long password that lets an app talk to an AI company directly and pay per use. If you have none, that is completely normal and I will walk you through getting one.',
+    type:'many', opts:['OpenRouter','Anthropic (Claude)','Google (Gemini)','OpenAI','None, and I will need help','I would rather not put a card anywhere'] },
+  { s:'E', id:'e4', q:'Does it matter to you that your stories pass through a company’s servers?',
+    type:'one', opts:['Do not care','Prefer companies that do not train on my chats','It must never leave my computer'] },
+  { s:'E', id:'e5', q:'Do you want to switch AI models mid&#8209;story, cheap for filler and expensive for the big scenes?',
+    type:'one', opts:['Yes, that sounds great','No, pick one good one and forget it','Maybe later, not at first'] },
+
+  // ---------------- F ----------------
+  { s:'F', id:'f1', star:1, q:'Where does this need to run?',
+    help:'Windows only is by far the simplest. Phone access is very doable but changes how the app is put together, so I would rather know now than rebuild later.',
+    type:'one', opts:['My Windows PC only','PC, and my phone when I am at home','PC, and my phone from anywhere','Mostly my phone, honestly'] },
+  { s:'F', id:'f2', q:'How should your stories be backed up?',
+    type:'one', opts:['One file I can copy anywhere, that is enough','Automatic backup to the cloud','Both'] },
+  { s:'F', id:'f3', q:'Is it fine if it opens in its own window from your browser, with its own icon, or do you want a real installed program?',
+    type:'one', opts:['Browser window with an icon is fine','I want a real .exe','No preference, whichever works better'] },
+
+  // ---------------- G ----------------
+  { s:'G', id:'g1', q:'Which settings did you go looking for in Tipsy or FictionLab and never find?',
+    help:'Tick anything that rings a bell, and add your own below. Nothing here is hard to build; I just need to know which you care about.',
+    type:'many', opts:['Reply length in actual words','How much narration versus dialogue','Never speak or act for my character','A standing note that applies to every reply','Stop it repeating the same phrasings','Personality intensity per character','Start a fresh scene without losing memory','Name and save a moment to come back to','Edit the instructions the AI actually gets'] },
+  { s:'G', id:'g2', q:'Do you want to be able to see exactly what gets sent to the AI?',
+    help:'Some people find it fascinating and it makes fixing problems far easier. Others find it is exactly the kind of thing that ruined SillyTavern.',
+    type:'one', opts:['Yes, I want to see and tweak it','Tucked away somewhere, for when things go wrong','No, that is the programmy stuff I am escaping'] },
+  { s:'G', id:'g3', q:'Anything else at all. What have I not asked about?',
+    type:'text', big:1, ph:'A feature you have always wanted. Something that annoys you daily. A story you are in the middle of that must survive the move. What "I still don’t feel it" about ChungusHub means to you.' },
+];
+
+const SECTIONS = [
+  { k:'A', t:'How you play' },
+  { k:'B', t:'Memory' },
+  { k:'C', t:'Lorebooks' },
+  { k:'D', t:'Look and feel' },
+  { k:'E', t:'Models and money' },
+  { k:'F', t:'Where it runs' },
+  { k:'G', t:'Settings' },
+];
+
+const state = Object.create(null);
+let db = null, saveTimer = null, dirty = false;
+
+/* ---------- persistence ---------- */
+
+function localLoad() {
+  try {
+    const raw = localStorage.getItem('brief-answers');
+    if (raw) Object.assign(state, JSON.parse(raw));
+  } catch (e) { /* private window or blocked storage */ }
+}
+function localSave() {
+  try { localStorage.setItem('brief-answers', JSON.stringify(state)); } catch (e) {}
+}
+
+function setSaveState(text, ok) {
+  const el = document.getElementById('savestate');
+  el.textContent = text;
+  el.classList.toggle('ok', !!ok);
+}
+
+function scheduleSave() {
+  dirty = true;
+  localSave();
+  setSaveState('saving...', false);
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(flush, 700);
+}
+
+async function flush() {
+  if (!dirty) return;
+  dirty = false;
+  if (!db) { setSaveState('saved on this device', true); return; }
+  try {
+    await db.doc('brief/answers').set({ answers: state, updated: new Date().toISOString() });
+    setSaveState('saved', true);
+  } catch (e) {
+    setSaveState('saved on this device', true);
+  }
+}
+
+/* ---------- rendering ---------- */
+
+function answered(q) {
+  const v = state[q.id];
+  if (!v) return false;
+  if (v.choice && v.choice.length) return true;
+  return !!(v.note && v.note.trim());
+}
+
+function updateProgress() {
+  const done = QUESTIONS.filter(answered).length;
+  document.getElementById('done').textContent = done;
+  document.getElementById('meterfill').style.width = (done / QUESTIONS.length * 100) + '%';
+  for (const s of SECTIONS) {
+    const qs = QUESTIONS.filter(q => q.s === s.k);
+    const n = qs.filter(answered).length;
+    const link = document.getElementById('rail-' + s.k);
+    if (!link) continue;
+    link.querySelector('.n').textContent = n + '/' + qs.length;
+    link.classList.toggle('full', n === qs.length);
+  }
+}
+
+function buildRail() {
+  const rail = document.getElementById('rail');
+  for (const s of SECTIONS) {
+    const a = document.createElement('a');
+    a.className = 'rail-link';
+    a.id = 'rail-' + s.k;
+    a.href = '#s-' + s.k;
+    a.innerHTML = '<span class="mono k">' + s.k + '</span>' +
+                  '<span class="label">' + s.t + '</span>' +
+                  '<span class="mono n">0/0</span>';
+    rail.appendChild(a);
+  }
+}
+
+function buildQuestions() {
+  const root = document.getElementById('questions');
+  SECTIONS.forEach((s, si) => {
+    const sec = document.createElement('section');
+    sec.className = 'sec';
+    sec.id = 's-' + s.k;
+    const qs = QUESTIONS.filter(q => q.s === s.k);
+    sec.innerHTML =
+      '<div class="sec-head">' +
+        '<div class="sec-key mono">Section ' + s.k + ' &middot; ' + qs.length + ' questions</div>' +
+        '<h2>' + s.t + '</h2>' +
+      '</div><div class="qlist"></div>';
+    const list = sec.querySelector('.qlist');
+
+    qs.forEach((q, qi) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'q' + (q.star ? ' star' : '');
+      const num = s.k + '·' + String(qi + 1).padStart(2, '0');
+
+      const head = document.createElement('div');
+      head.className = 'q-head';
+      head.innerHTML =
+        '<div class="q-id mono">' + num + (q.star ? '<span class="q-star" title="Changes how the app is built">★</span>' : '') + '</div>' +
+        '<div><div class="q-text">' + q.q + '</div>' +
+        (q.help ? '<div class="q-help">' + q.help + '</div>' : '') + '</div>';
+      wrap.appendChild(head);
+
+      const body = document.createElement('div');
+      body.className = 'q-body';
+
+      if (q.opts) {
+        const hint = document.createElement('div');
+        hint.className = 'hint mono';
+        hint.textContent = q.type === 'many' ? 'Pick any that fit' : 'Pick one';
+        body.appendChild(hint);
+
+        const chips = document.createElement('div');
+        chips.className = 'chips';
+        q.opts.forEach((opt, oi) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'chip';
+          b.id = 'chip-' + q.id + '-' + oi;
+          b.textContent = opt;
+          b.setAttribute('aria-pressed', 'false');
+          b.addEventListener('click', () => {
+            const cur = state[q.id] || (state[q.id] = { choice: [], note: '' });
+            const has = cur.choice.indexOf(opt) !== -1;
+            if (q.type === 'many') {
+              cur.choice = has ? cur.choice.filter(x => x !== opt) : cur.choice.concat([opt]);
+            } else {
+              cur.choice = has ? [] : [opt];
+            }
+            paintChips(q);
+            updateProgress();
+            scheduleSave();
+          });
+          chips.appendChild(b);
+        });
+        body.appendChild(chips);
+      }
+
+      const ta = document.createElement('textarea');
+      ta.id = 'note-' + q.id;
+      if (q.big) ta.className = 'big';
+      ta.placeholder = q.ph || 'Anything to add in your own words';
+      ta.addEventListener('input', () => {
+        const cur = state[q.id] || (state[q.id] = { choice: [], note: '' });
+        cur.note = ta.value;
+        ta.style.height = 'auto';
+        ta.style.height = Math.max(44, ta.scrollHeight) + 'px';
+        updateProgress();
+        scheduleSave();
+      });
+      body.appendChild(ta);
+
+      wrap.appendChild(body);
+      list.appendChild(wrap);
+    });
+
+    root.appendChild(sec);
+  });
+}
+
+function paintChips(q) {
+  const chosen = (state[q.id] && state[q.id].choice) || [];
+  (q.opts || []).forEach((opt, oi) => {
+    const b = document.getElementById('chip-' + q.id + '-' + oi);
+    if (b) b.setAttribute('aria-pressed', chosen.indexOf(opt) !== -1 ? 'true' : 'false');
+  });
+}
+
+function paintAll() {
+  for (const q of QUESTIONS) {
+    paintChips(q);
+    const ta = document.getElementById('note-' + q.id);
+    const note = (state[q.id] && state[q.id].note) || '';
+    if (ta && ta.value !== note) {
+      ta.value = note;
+      ta.style.height = 'auto';
+      if (note) ta.style.height = Math.max(44, ta.scrollHeight) + 'px';
+    }
+  }
+  updateProgress();
+}
+
+/* ---------- copy out ---------- */
+
+function asText() {
+  const lines = ['DESIGN BRIEF ANSWERS', ''];
+  for (const s of SECTIONS) {
+    lines.push('== ' + s.k + '. ' + s.t.toUpperCase() + ' ==');
+    for (const q of QUESTIONS.filter(x => x.s === s.k)) {
+      const v = state[q.id];
+      if (!v || (!(v.choice && v.choice.length) && !(v.note || '').trim())) continue;
+      lines.push('');
+      lines.push('Q (' + q.id + '): ' + q.q.replace(/&#8209;/g, '-').replace(/&rsquo;/g, "'").replace(/&ldquo;|&rdquo;/g, '"'));
+      if (v.choice && v.choice.length) lines.push('-> ' + v.choice.join(' | '));
+      if ((v.note || '').trim()) lines.push('   note: ' + v.note.trim());
+    }
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+document.getElementById('copy').addEventListener('click', async () => {
+  const btn = document.getElementById('copy');
+  try {
+    await navigator.clipboard.writeText(asText());
+    btn.textContent = 'Copied';
+  } catch (e) {
+    btn.textContent = 'Could not copy';
+  }
+  setTimeout(() => { btn.textContent = 'Copy answers'; }, 1800);
+});
+
+/* ---------- boot ---------- */
+
+document.getElementById('total').textContent = QUESTIONS.length;
+localLoad();
+buildRail();
+buildQuestions();
+paintAll();
+setSaveState('saved on this device', true);
+
+window.addEventListener('beforeunload', () => { if (dirty) flush(); });
+
+(async () => {
+  const store = await (window.claude && window.claude.use ? window.claude.use('db') : Promise.resolve(null));
+  if (!store) return;
+  db = store;
+  try {
+    const snap = await db.doc('brief/answers').get();
+    if (snap.exists) {
+      const remote = (snap.data() || {}).answers || {};
+      const localCount = QUESTIONS.filter(answered).length;
+      let remoteCount = 0;
+      for (const k in remote) {
+        const v = remote[k];
+        if (v && ((v.choice && v.choice.length) || (v.note || '').trim())) remoteCount++;
+      }
+      if (remoteCount >= localCount) {
+        for (const k in state) delete state[k];
+        Object.assign(state, remote);
+        paintAll();
+        localSave();
+      } else {
+        scheduleSave();
+      }
+    }
+    setSaveState('saved', true);
+  } catch (e) {
+    setSaveState('saved on this device', true);
+  }
+})();
+</script>

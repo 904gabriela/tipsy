@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>Tipsy</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Tipsy">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<!-- The lock. Over everything, because until you are through it there is
+     nothing else to look at. -->
+<div class="gate" id="gate" hidden>
+  <div class="gate-card" id="gate-body"></div>
+</div>
+
+<div class="app" id="app">
+
+  <!-- ============================ library ============================ -->
+  <section class="screen" id="screen-library" data-screen="library">
+    <header class="bar bar-top">
+      <h1 class="wordmark" id="library-title">Tipsy</h1>
+      <!-- One button, and what it makes depends on which shelf you are looking
+           at. A "+" that always begins a story is wrong on two tabs out of three. -->
+      <button class="round-btn" id="btn-add" aria-label="Begin a story" title="Begin a story">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+      <button id="btn-new-story" hidden></button>
+    </header>
+
+    <div class="scroll" id="library-scroll">
+      <div class="pad">
+
+        <div class="tab-panel is-on" data-panel="stories">
+          <div id="story-list"></div>
+        </div>
+
+        <div class="tab-panel" data-panel="characters">
+          <!-- Three shelves of one collection, not three tabs. People are what
+               you mostly have; the other two are where the odd package goes,
+               and they share the search, the tags and the grid rather than
+               each growing their own. -->
+          <div class="shelves" id="shelves" role="tablist" aria-label="Collection">
+            <button class="shelf-btn is-on" data-shelf="people" role="tab" aria-selected="true">People</button>
+            <button class="shelf-btn" data-shelf="scenarios" role="tab" aria-selected="false">Scenarios</button>
+            <button class="shelf-btn" data-shelf="worlds" role="tab" aria-selected="false">Worlds</button>
+            <button class="shelf-btn" data-shelf="sources" role="tab" aria-selected="false">Sources</button>
+          </div>
+          <div class="row-actions">
+            <button class="btn" data-import="character">Add from a file</button>
+            <button class="btn" id="btn-url-import">From a link</button>
+          </div>
+          <div class="search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+            <input type="search" id="char-search" placeholder="name, tag, or anything in them"
+              autocapitalize="off" autocomplete="off" spellcheck="false" enterkeyhint="search">
+          </div>
+          <div class="tagrow" id="char-tags"></div>
+          <div class="sortrow">
+            <label for="char-sort">Sort</label>
+            <select id="char-sort">
+              <option value="recent">Recently added</option>
+              <option value="name">Name</option>
+              <option value="used">Recently used</option>
+            </select>
+            <span class="count" id="shelf-count"></span>
+          </div>
+          <div id="character-list" class="grid"></div>
+        </div>
+
+        <div class="tab-panel" data-panel="lore">
+          <div class="row-actions">
+            <button class="btn" data-import="lore">Add from a file</button>
+            <button class="btn" id="btn-url-import-lore">From a link</button>
+          </div>
+          <button id="btn-new-lorebook" hidden></button>
+          <div id="lore-list" class="list"></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Thumb-height, floating, and the same three places the tabs were.
+         A row of tabs at the top of a phone screen is the one part of a
+         reading app your hand never comfortably reaches. -->
+    <nav class="tabbar" id="tabbar">
+      <button class="tabbtn is-on" data-tab="stories" aria-label="Stories">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H11v16H5.5A1.5 1.5 0 0 1 4 18.5Z"/><path d="M20 5.5A1.5 1.5 0 0 0 18.5 4H13v16h5.5a1.5 1.5 0 0 0 1.5-1.5Z"/></svg>
+        <span>Stories</span>
+      </button>
+      <button class="tabbtn" data-tab="characters" aria-label="Library">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6"/></svg>
+        <span>Library</span>
+      </button>
+      <!-- Lore is an engine word, not a place you keep things. Its books now
+           live in the library as sources, and its editor is reached from
+           inside one. Nothing was removed: the shelf moved. -->
+      <button class="tabbtn" id="btn-create" aria-label="Start something">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        <span>Create</span>
+      </button>
+      <button class="tabbtn" id="btn-settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 8.6a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+        <span>Settings</span>
+      </button>
+    </nav>
+  </section>
+
+  <!-- ============================= story ============================= -->
+  <section class="screen" id="screen-story" data-screen="story" hidden>
+    <header class="bar bar-top">
+      <button class="icon-btn" id="btn-back" aria-label="Back to library">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <div class="bar-title">
+        <span id="story-title">Story</span>
+        <button class="chip-model" id="btn-model" title="Change model"></button>
+      </div>
+      <div class="bar-actions">
+        <!-- The whole story, composed: who is in it, its world, where it
+             comes from, and what the model can see right now. -->
+        <button class="icon-btn" id="btn-bible" title="The story" aria-label="The story">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H11v16H5.5A1.5 1.5 0 0 1 4 18.5Z"/><path d="M20 5.5A1.5 1.5 0 0 0 18.5 4H13v16h5.5a1.5 1.5 0 0 0 1.5-1.5Z"/></svg>
+        </button>
+        <button class="icon-btn" id="btn-memory" title="What the story remembers" aria-label="What the story remembers">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a4 4 0 0 0-4 4v1a3 3 0 0 0 0 6v1a4 4 0 0 0 8 0v-1a3 3 0 0 0 0-6V7a4 4 0 0 0-4-4Z"/><path d="M12 8v8"/></svg>
+        </button>
+        <button class="icon-btn" id="btn-story-settings" title="Settings" aria-label="Settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 8.6a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <button class="now-strip" id="now-strip" hidden>
+      <span id="now-when"></span>
+      <span id="now-where"></span>
+      <span id="now-who"></span>
+    </button>
+
+    <div class="scene" id="scene" aria-hidden="true">
+      <div class="scene-img" id="scene-img"></div>
+      <div class="scene-veil" id="scene-veil"></div>
+      <canvas class="scene-fx" id="scene-fx"></canvas>
+    </div>
+
+    <div class="scroll story-scroll" id="story-scroll">
+      <div class="pad" id="messages"></div>
+    </div>
+
+    <footer class="composer" id="composer">
+      <div class="composer-hint" id="composer-hint" hidden></div>
+      <!-- The six tools live behind the plus. They are here when you want them
+           and out of the way when you are writing, which is most of the time. -->
+      <div class="chat-extras" id="chat-extras" hidden>
+      <div class="quickbar" id="quickbar">
+        <button class="quick" id="quick-dials" title="How it is being told">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+          <span id="quick-dials-label">Telling</span>
+        </button>
+        <button class="quick" id="quick-persona" title="Who you are playing">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6"/></svg>
+          <span id="quick-persona-label">You</span>
+        </button>
+        <button class="quick" id="quick-arc" title="Where everyone stands">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18V9M10 18V5M16 18v-6M22 18h-2"/></svg>
+          <span id="quick-arc-label">Stages</span>
+        </button>
+      </div>
+      <!-- Two ways to move without typing. They sit next to the box because
+           that is where you are when you cannot think of anything to write. -->
+      <div class="nudges" id="nudges">
+        <button class="nudge" id="btn-impersonate" title="Have it write your line, into the box">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.5 4.5l3 3L8 19H5v-3Z"/><path d="M14 7l3 3"/></svg>
+          Write my turn
+        </button>
+        <button class="nudge" id="btn-continue" title="Add more to the last reply">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5v14l6-7Z"/><path d="M13 5v14l6-7Z"/></svg>
+          Carry on
+        </button>
+        <button class="nudge" id="btn-marks" title="What the marks mean">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9a3 3 0 1 1 4 2.8c-.7.3-1 .9-1 1.7v.5"/><path d="M12 17.5v.01"/></svg>
+          Marks
+        </button>
+      </div>
+      </div>
+      <div class="composer-row">
+        <button class="icon-btn composer-more" id="composer-more" aria-label="Story tools"
+          aria-controls="chat-extras" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <textarea id="input" rows="1" placeholder="Write your part…" enterkeyhint="enter"></textarea>
+        <button class="send" id="btn-send" aria-label="Send">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+    </footer>
+  </section>
+
+
+  <!-- ============================== lore ============================== -->
+  <section class="screen" id="screen-lore" data-screen="lore" hidden>
+    <header class="bar bar-top">
+      <button class="icon-btn" id="lore-back" aria-label="Back">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <div class="bar-title"><span id="lore-name">Lorebook</span><span class="chip-model" id="lore-sub"></span></div>
+      <div class="bar-actions">
+        <button class="icon-btn" id="lore-select" title="Select several" aria-label="Select several">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        </button>
+        <button class="icon-btn" id="lore-add" title="Add an entry" aria-label="Add an entry">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+    </header>
+    <div class="scroll" id="lore-scroll">
+      <div class="pad">
+        <div id="lore-pinned"></div>
+        <div class="filters" id="lore-filters"></div>
+        <div id="lore-groups"></div>
+      </div>
+    </div>
+    <footer class="bulkbar" id="lore-bulk" hidden>
+      <div class="bulkbar-inner">
+        <span class="bulk-count" id="bulk-count">0 chosen</span>
+        <button class="btn quiet" data-bulk="all">All shown</button>
+        <button class="btn quiet" data-bulk="none">None</button>
+        <span class="bulk-sep"></span>
+        <button class="btn" data-bulk="disable">Turn off</button>
+        <button class="btn" data-bulk="enable">Turn on</button>
+        <button class="btn" data-bulk="retype">Change type</button>
+        <button class="btn" data-bulk="copy">Copy into…</button>
+        <button class="btn danger" data-bulk="delete">Delete</button>
+      </div>
+    </footer>
+  </section>
+
+</div>
+
+<!-- ============================== sheets ============================== -->
+<div class="sheet-host" id="sheet-host" hidden>
+  <div class="sheet-veil" data-close></div>
+  <div class="sheet" role="dialog" aria-modal="true">
+    <div class="sheet-grab"></div>
+    <header class="sheet-head">
+      <h2 id="sheet-title"></h2>
+      <button class="icon-btn" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </header>
+    <div class="sheet-body" id="sheet-body"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<input type="file" id="avatar-input" hidden accept="image/*">
+<input type="file" id="bg-input" hidden accept="image/*">
+<input type="file" id="file-input" multiple hidden accept=".json,.png,.charx,application/json,image/png">
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

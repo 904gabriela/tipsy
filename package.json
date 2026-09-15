@@ -1,0 +1,19 @@
+{
+  "name": "tipsy",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "setup": "node scripts/setup.js",
+    "import:check": "node scripts/check-import.js",
+    "semantics:check": "node scripts/check-semantics.js",
+    "library:check": "node scripts/check-library.js",
+    "plan:check": "node scripts/check-import-plan.js",
+    "context:check": "node scripts/check-context.js",
+    "threads:check": "node scripts/check-threads.js",
+    "bg:check": "node scripts/check-background-model.js",
+    "reconcile:check": "node scripts/check-reconcile.js",
+    "recursion:check": "node scripts/check-book-recursion.js"
+  }
+}
