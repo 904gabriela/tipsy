@@ -2008,6 +2008,52 @@ button.cast-name[data-entry-open] { text-decoration: underline; text-decoration-
 .cast-means.excluded::before { content: '⊘'; }
 .ss-source-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 
+/* ------------------------------------------------------------ story builder
+   Suggestions sit among the story's own material and look like it, marked
+   quietly as suggestions. The story is the thing on screen, not the machine. */
+
+.rv-story .rv-row-label { font: 500 17px/1.3 Newsreader, Georgia, serif; }
+.rv-premise { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.rv-assist { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: var(--s3) 0 var(--s4); }
+.rv-assist .btn { min-height: 40px; }
+.rv-assist .rv-hint { margin: 0; flex: 1 1 12rem; }
+.rv-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: var(--s3) 0; }
+.rv-actions .btn { min-height: 40px; }
+.rv-item-actions { display: flex; gap: 4px; margin: 6px -8px -4px; }
+.rv-entry .rv-item-actions { margin: 0; padding: 0 6px 8px; }
+.rv-item-actions .btn { min-height: 36px; padding: 6px 10px; font-size: 13.5px; }
+.by-nexus { color: var(--accent); }
+.cast-backing.by-nexus { color: var(--accent); }
+.cast-row.is-suggested, .rv-entry.is-suggested { border-left: 3px solid var(--accent-soft); }
+.rv-entry-preview {
+  font-size: 13px; color: var(--ink-soft); line-height: 1.4; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.cast-promote { margin-top: 8px; padding: 10px 0 4px; border-top: 1px solid var(--line); border-bottom: 0; }
+.cast-promote .switch-why { overflow-wrap: anywhere; }
+/* A decision this weighty gets a switch big enough to hit on purpose. */
+.cast-promote .switch { transform: scale(1.3); transform-origin: right center; margin: 6px 2px 0 8px; }
+
+.bi-more { margin: 0 0 var(--s4); border: 1px solid var(--line); border-radius: var(--r-in); padding: 0 14px; background: var(--surface); }
+.bi-more > summary {
+  min-height: 48px; display: flex; align-items: center; cursor: pointer;
+  font-size: 14.5px; font-weight: 500; list-style: none;
+}
+.bi-more > summary::-webkit-details-marker { display: none; }
+.bi-more > summary::after { content: '›'; margin-left: auto; color: var(--ink-faint); font-size: 20px; transition: transform var(--quick); }
+.bi-more[open] > summary::after { transform: rotate(90deg); }
+.bi-more[open] { padding-bottom: 6px; }
+.bi-depth { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.bi-depth-opt {
+  min-height: 56px; padding: 8px 6px; border-radius: var(--r); text-align: center;
+  border: 1px solid var(--line-strong); background: var(--ground); display: flex; flex-direction: column; gap: 2px;
+}
+.bi-depth-opt b { font-size: 14px; font-weight: 600; }
+.bi-depth-opt span { font-size: 11.5px; color: var(--ink-soft); line-height: 1.25; }
+.bi-depth-opt[aria-checked="true"] { background: var(--accent-soft); border-color: var(--accent); }
+.bi-building { display: flex; flex-direction: column; align-items: center; gap: var(--s3); padding: var(--s8) 0 var(--s6); text-align: center; }
+.bi-now { font: 500 18px/1.3 Newsreader, Georgia, serif; margin: 0; }
+
 .rv-entries { display: flex; flex-direction: column; gap: var(--s2); }
 .rv-entry { border: 1px solid var(--line); border-radius: var(--r-in); background: var(--surface); overflow: hidden; }
 .rv-entry.off { opacity: .7; }

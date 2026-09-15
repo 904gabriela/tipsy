@@ -103,9 +103,11 @@ function findItem(draft, draftId) {
 /** A draft with one scope's generated material taken out, so it can be written again. */
 function withoutGenerated(draft, { parts = new Set(), item = null }) {
   const out = structuredClone(draft);
-  const gone = (origin, part, id) => origin === 'generated' && (item ? id === item : parts.has(part));
-  out.casting = out.casting.filter((r) => !gone(r.origin, 'people', r.draftId));
-  for (const s of out.sections) { s.items = s.items.filter((i) => !gone(i.origin, s.id, i.draftId)); s.count = s.items.length; }
+  // Asking for one item again replaces it, edited or not; asking for a whole
+  // part again leaves the suggestions the person edited.
+  const gone = (x, part) => x.origin === 'generated' && (item ? x.draftId === item : parts.has(part) && !x.edited);
+  out.casting = out.casting.filter((r) => !gone(r, 'people'));
+  for (const s of out.sections) { s.items = s.items.filter((i) => !gone(i, s.id)); s.count = s.items.length; }
   if (!item) {
     for (const p of ['title', 'premise']) if (parts.has(p) && out.story?.[p]?.origin === 'generated') out.story[p] = null;
     if (parts.has('opening') && out.story?.opening?.origin === 'generated') out.story.opening = null;

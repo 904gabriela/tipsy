@@ -401,12 +401,14 @@ export function validateGeneration(raw, ctx) {
 export function mergeGenerated(draft, gen, scope) {
   const out = structuredClone(draft);
   const parts = scope.parts;
-  const replacing = (origin, part) => origin === 'generated' && !scope.item && parts.has(part);
+  // Suggestions the person has edited are theirs now: asking for a part again
+  // replaces only the suggestions nobody touched.
+  const replacing = (x, part) => x.origin === 'generated' && !x.edited && !scope.item && parts.has(part);
 
   // Earlier generations in the regenerated scope go; everything else stays.
   if (!scope.item) {
-    out.casting = out.casting.filter((r) => !replacing(r.origin, 'people'));
-    for (const s of out.sections) s.items = s.items.filter((i) => !replacing(i.origin, s.id));
+    out.casting = out.casting.filter((r) => !replacing(r, 'people'));
+    for (const s of out.sections) s.items = s.items.filter((i) => !replacing(i, s.id));
   } else {
     out.casting = out.casting.filter((r) => !(r.origin === 'generated' && r.draftId === scope.item));
     for (const s of out.sections) s.items = s.items.filter((i) => !(i.origin === 'generated' && i.draftId === scope.item));

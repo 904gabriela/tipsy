@@ -196,6 +196,15 @@ console.log('\nG  partial regeneration touches only its scope');
   ok('the opening is untouched', d.story.opening.text === built.story.opening.text);
   ok('links from removed items go with them', !d.links.some((l) => l.fromDraftId === 'p1'));
 
+  const touched = structuredClone(built);
+  const mine = touched.sections.find((s) => s.id === 'places').items[0];
+  mine.content = 'The person rewrote this.'; mine.edited = true;
+  const d1 = await regenerate({ draft: touched, scope: { part: 'places' }, callModel: model({ entries: [{ id: 'fresh', section: 'places', title: 'Fresh Place', content: 'New.' }] }) });
+  ok('asking for a section again keeps suggestions the person edited', placesOf(d1).some((i) => i.content === 'The person rewrote this.' && i.edited)
+    && placesOf(d1).some((i) => i.title === 'Fresh Place') && placesOf(d1).length === 2);
+  const d1b = await regenerate({ draft: touched, scope: { item: mine.draftId }, callModel: model({ entries: [{ id: 'swap', section: 'places', title: 'Swapped', content: 'Asked for.' }] }) });
+  ok('but asking for that one item again replaces it', !placesOf(d1b).some((i) => i.edited) && placesOf(d1b).some((i) => i.title === 'Swapped'));
+
   const fillDraft = await buildDraft({ mode: 'fill', base: sourceBase(), callModel: model({ entries: [{ id: 'ev', section: 'events', title: 'Storm', content: 'A storm.' }] }) });
   const before = sourceSnapshot(fillDraft);
   const d2 = await regenerate({ draft: fillDraft, scope: { part: 'places' }, callModel: model({ entries: [{ id: 'dock', section: 'places', title: 'The Docks', content: 'Wet and loud.' }] }) });
