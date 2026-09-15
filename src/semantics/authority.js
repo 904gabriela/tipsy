@@ -19,7 +19,7 @@
 
 import { createHash } from 'node:crypto';
 
-export const PERSON_CATEGORIES = ['identity', 'appearance', 'personality', 'speech', 'behavior', 'backstory', 'psychology', 'relationship', 'secret', 'goal', 'other'];
+export const PERSON_CATEGORIES = ['identity', 'appearance', 'personality', 'speech', 'behavior', 'backstory', 'psychology', 'relationship', 'secret', 'goal', 'skill', 'ability', 'equipment', 'belief', 'habit', 'other'];
 // direction: how to narrate. reference: specialised knowledge to draw on when relevant.
 export const WORLD_CATEGORIES = ['background', 'rule', 'event', 'item', 'direction', 'reference', 'other'];
 export const ENTITY_TYPES = ['person', 'place', 'faction', 'item', 'event', 'concept'];

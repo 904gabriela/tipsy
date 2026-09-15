@@ -457,13 +457,16 @@ CREATE INDEX IF NOT EXISTS idx_source_entities_entity ON source_entities(entity_
 
 -- What an entry is, as organised: its scope, its category, and whether it is
 -- the profile of an entity. One row per entry, or none (not organised yet).
--- Categories are singular; headings in the UI may be plural.
+-- Categories are singular; headings in the UI may be plural. They are for the
+-- machine and stay few: a universe's own words ("Quirk", "Magic") are display
+-- groups, never new categories.
 CREATE TABLE IF NOT EXISTS entry_semantics (
   entry_id          TEXT PRIMARY KEY REFERENCES lore_entries(id) ON DELETE CASCADE,
   scope             TEXT NOT NULL CHECK (scope IN ('entity','world','other')),
   category          TEXT NOT NULL CHECK (category IN (
                       'identity','appearance','personality','speech','behavior','backstory',
                       'psychology','relationship','secret','goal',
+                      'skill','ability','equipment','belief','habit',
                       'background','rule','event','item','direction','reference',
                       'profile','other')),
   defines_entity_id TEXT REFERENCES lore_entities(id) ON DELETE RESTRICT,

@@ -12,7 +12,7 @@ import { spawn } from 'node:child_process';
 import { open } from '../src/db/index.js';
 import { composeSource } from '../src/import/compose.js';
 import { applyToStory } from '../src/import/compose-apply.js';
-import { entryHash, isDirection, organizationState, readsAsWorldContent } from '../src/semantics/authority.js';
+import { entryHash, isDirection, organizationState, readsAsWorldContent, PERSON_CATEGORIES } from '../src/semantics/authority.js';
 import {
   createEntity, getEntity, declareInSource, declarationsOf, entityUsage, setEntrySemantics, setRelation,
   distinguish, areDistinct, bindCard, semanticViews, sourceOrganization, resolveNpcEntity, setSourceRole, sourceRole,
@@ -116,6 +116,14 @@ const lotus = createEntity(db, { type: 'place', name: 'The Black Lotus' });
   ok('an entry can only be about an entity its own source declares', throws(() => setRelation(db, { entryId: ids.carloAgain, entityId: lotus, relation: 'related', origin: 'converted', status: 'approved' }), /declares/));
   ok('categories are the singular enums only', throws(() => setEntrySemantics(db, { entryId: ids.voice, scope: 'entity', category: 'relationships', origin: 'converted', status: 'approved' }), /not a category/)
     && throws(() => db.raw.prepare(`INSERT INTO entry_semantics (entry_id,scope,category,origin,status,created_at,updated_at) VALUES (?,'world','directions','converted','approved',1,1)`).run(ids.pacing), /CHECK/));
+  // skill, ability, equipment, belief, habit: accepted by the store and by the table itself.
+  const deep = ['skill', 'ability', 'equipment', 'belief', 'habit'];
+  ok('the deep-character categories exist', deep.every((category) => !throws(() => {
+    db.raw.prepare(`INSERT INTO entry_semantics (entry_id,scope,category,origin,status,created_at,updated_at) VALUES (?,'entity',?,'manual','proposed',1,1)`).run(ids.voice, category);
+    db.raw.prepare('DELETE FROM entry_semantics WHERE entry_id=?').run(ids.voice);
+  })) && deep.every((c) => PERSON_CATEGORIES.includes(c)));
+  ok("a universe's own words are not categories", ['quirk', 'magic', 'cybernetics'].every((category) =>
+    throws(() => setEntrySemantics(db, { entryId: ids.voice, scope: 'entity', category, origin: 'manual', status: 'proposed' }), /not a category/)));
 }
 
 console.log('\n7–8, 13  approved semantics outrank kind; unorganised entries fall back; kind is not rewritten');
