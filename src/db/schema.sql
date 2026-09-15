@@ -385,6 +385,22 @@ CREATE TABLE IF NOT EXISTS entry_entry_links (
 );
 CREATE INDEX IF NOT EXISTS idx_eel_about ON entry_entry_links(about_id);
 
+-- Material one story has decided to ignore. The entry stays exactly as it is
+-- in its package, enabled, and every other story still reads it; this story
+-- simply never counts it as eligible. Any kind of entry — a person left out of
+-- an AU, an event that never happened here, a rule that does not apply.
+--
+-- Its own table rather than a role in story_npcs (being ignored is not a part
+-- in the cast) or a list in stories.settings (a list of ids cannot cascade,
+-- and the eligibility query could not see it).
+CREATE TABLE IF NOT EXISTS story_entry_exclusions (
+  story_id   TEXT NOT NULL REFERENCES stories(id)      ON DELETE CASCADE,
+  entry_id   TEXT NOT NULL REFERENCES lore_entries(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (story_id, entry_id)
+);
+CREATE INDEX IF NOT EXISTS idx_exclusion_entry ON story_entry_exclusions(entry_id);
+
 -- ------------------------------------------------------------------ assets
 -- Pictures that belong to a story: backgrounds, scene art. Kept out of the
 -- story row so that reading a story every message does not drag a megabyte

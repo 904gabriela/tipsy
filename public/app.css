@@ -1983,8 +1983,8 @@ body:has(#screen-library[hidden]) #toasts { bottom: calc(var(--s5) + env(safe-ar
 }
 button.cast-name[data-entry-open] { text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
 .cast-role {
-  flex: 0 0 auto; max-width: 52%; min-height: 40px; font-size: 15px;
-  padding: 6px 28px 6px 10px; border-radius: 8px;
+  flex: 0 0 auto; max-width: 62%; min-height: 40px; font-size: 15px;
+  padding: 6px 26px 6px 10px; border-radius: 8px;
   background: var(--ground); border: 1px solid var(--line-strong); color: var(--ink);
 }
 .cast-role:disabled { opacity: .6; }
@@ -1992,6 +1992,21 @@ button.cast-name[data-entry-open] { text-decoration: underline; text-decoration-
 .cast-suggest.changed { color: var(--accent); }
 .cast-backing { color: var(--ink-faint); }
 .cast-why { margin-top: 4px; font-size: 12.5px; color: var(--ink-faint); line-height: 1.4; overflow-wrap: anywhere; }
+
+/* Known is in the story, quietly. Excluded is out of it, visibly. */
+.cast-row.is-known { background: var(--ground); }
+.cast-row.is-excluded { background: none; border-style: dashed; border-color: var(--line-strong); }
+.cast-row.is-excluded .cast-name { color: var(--ink-soft); text-decoration: line-through; text-decoration-color: var(--ink-faint); }
+.cast-means {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 8px;
+  padding: 4px 10px; border-radius: 12px; font-size: 12.5px; line-height: 1.35;
+}
+.cast-means::before { font-weight: 700; }
+.cast-means.known { background: var(--surface-2); color: var(--ink-soft); }
+.cast-means.known::before { content: '○'; }
+.cast-means.excluded { background: var(--accent-soft); color: var(--accent); }
+.cast-means.excluded::before { content: '⊘'; }
+.ss-source-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 
 .rv-entries { display: flex; flex-direction: column; gap: var(--s2); }
 .rv-entry { border: 1px solid var(--line); border-radius: var(--r-in); background: var(--surface); overflow: hidden; }

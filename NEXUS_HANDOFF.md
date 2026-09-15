@@ -4,6 +4,10 @@ Written 15 September 2026, for an agent with this repository and none of the
 conversation that produced it. Everything below was verified against the code
 and the live database on that date. Verify again before you rely on it.
 
+**Updated later the same day** after §17 Story Composition Review was built on
+branch `feature/story-composition-review` (not merged to `main`). Sections 2,
+8–11, 14, 16 and 17 describe that branch. Section 19 is the short version.
+
 ---
 
 ## 1. What this is for
@@ -32,11 +36,14 @@ Everything in this section is implemented and working. Nothing here is a plan.
 
 **Story and cast.** `stories` (with `persona_id`, `head_id`, `settings` JSON,
 `framework_id`, `scenario_id`). `story_characters(story_id, character_id, role)`
-where role is `lead` or `cast`; the read query is
+where role is `lead`, `cast`, or (from a reviewed composition) `main` /
+`supporting` / `background`; the read query is
 `ORDER BY (sc.role = 'lead') DESC, c.name COLLATE NOCASE`, so the lead is
 explicitly first and `characters[0]` in the prompt builder is the lead by
-construction. Two leads would fall back to alphabetical silently — no
-invariant enforces one lead yet.
+construction. One lead is enforced by `setStoryCharacterRole` (naming a new lead
+demotes the old), by `setStoryCharacters` (keeps the existing lead) and by
+composition apply (refuses two). Nothing reads `main`/`supporting`/`background`
+for prompt weighting.
 
 **Lore.** `lorebooks` and `lore_entries`, faithful to the SillyTavern model:
 keys, secondary keys, selective logic, `constant`, ord, position, depth,
@@ -72,8 +79,9 @@ Frameworks reach the prompt (world, narrator rules, ensemble examples, closing
 instructions); their lore is read live rather than copied.
 
 **Composition.** `story_npcs`, `entry_character_links`, `entry_entry_links`,
-`src/import/compose.js`, `POST /api/compose`, `POST /api/stories/:id/compose`.
-All present and tested. See §8 — the review UI on top of it is NOT built.
+`story_entry_exclusions`, `src/import/compose.js` (the analyser, pure),
+`src/import/compose-apply.js` (plan, atomic apply, removal), the Review UI in
+`public/app.js` (`beginReview` and the functions after it). See §8.
 
 ---
 
@@ -233,88 +241,130 @@ of initials.
 
 ---
 
-## 8. Composition backend — built, unfinished on top
+## 8. Story Composition — built
 
-The gap a screen recording exposed: adding a source package wrote one row in
-`story_lorebooks` and everything inside it stayed invisible. The story said
-"world and lore: Phase Engine Lore" and that was all.
+**Source Package → Composition Draft → Review → Apply.** All four exist.
 
-Built:
+- `composeSource(entries, ctx)` in `src/import/compose.js` reads books into a
+  draft. Pure, writes nothing, `invented: 0`.
+- `POST /api/compose` `{lorebookIds, characterIds?, premise?, storyId?}` returns
+  the draft. Without `storyId` it is a new-story draft.
+- `POST /api/stories` with `composition: {casting, links, recursion, exclude,
+  include}` creates the story, card parts, sources, reviewed cast, exclusions,
+  links and greeting **in one transaction**.
+- `POST /api/stories/:id/compose` applies a reviewed draft to an existing story,
+  one transaction. Cards already in the story are never recast here.
+- `GET` / `DELETE /api/stories/:id/sources/:bookId` — removal preview / removal.
+- Every write is re-validated server-side in `planComposition`: only people can
+  be cast, a lore-backed person cannot lead, at most one lead, everything must
+  come from a book the story reads.
 
-- `src/import/compose.js` — `composeSource(entries, ctx)`, exporting `SECTIONS`
-  and `ROLES`. Mode `organize` invents nothing and returns `invented: 0` as a
-  checkable promise.
-- `POST /api/compose` `{lorebookIds, storyId?, mode, title?}` → a draft.
-  **Writes nothing.**
-- `POST /api/stories/:id/compose` `{lorebookIds, casting, links, recursion}` →
-  applies a reviewed draft. Connects the source, records membership and
-  semantic links. **Copies no entry and edits none.**
-- `story_npcs(story_id, entry_id, role, ord)` — people with no card.
-- `entry_character_links(entry_id, character_id)` and
-  `entry_entry_links(entry_id, about_id)` — real foreign keys both sides, one
-  table per target kind. No polymorphic ids.
+**UI.** Create: *What it is → Who leads → Sources → Review story → Start*.
+Existing story (story settings → This story): *Review cast and material* reopens
+the review over its current books; *+ Add a source* reviews additions; *Remove*
+shows what the story loses first. Saving the story sheet no longer touches
+sources. Review root: You (persona) · Sources · Casting · Locations · Factions ·
+Background & Premise · Rules · Directions · Events · Items · Other. Opening an
+entry fetches the live entry with its engine settings; nothing is copied.
 
-The architecture is: **Source Package → Composition Draft → Review → Apply.**
+**Persona in creation.** Optional, visible on Review, defaults to nobody. An
+explicit `personaId: null` is respected; only a caller that omits the key gets
+the old "exactly one persona" default.
 
-**The review UI does not exist.** Until it does, the create flow still behaves
-the way the recording showed, because the screen is the fix.
+**Removing a source** deletes the story's `story_lorebooks` row (and its
+recursion setting), the `story_npcs` rows standing on that book's entries, and
+the story's exclusions of that book's entries. It keeps the book, entries,
+cards, messages and all semantic links. Limitation: there is no lineage to tell
+a manually added cast row from a reviewed one; all current rows come from review.
+
+**Fixed along the way.** `db.setStoryLorebooks` and `db.setStoryCharacters`
+used to delete and re-insert every row: saving the story sheet wiped per-story
+recursion (`block` on The Saint would have been lost) and could hand the lead
+to whichever card came first. Both now write only the difference.
 
 ---
 
-## 9. What the analyser currently finds
+## 9. Analyser semantics
 
-Against the real Phase Engine Lore (32), with the 255-message story as context:
+**A person** (`personFromEntry`) must be typed `character`, have a name for a
+title — aliases after `:` ` / ` ` — ` `(` stripped — and be what its text is
+about: the name opens the content or leads the keys. Rejected, and left in their
+sections: headings about someone ("Abandonment Wound"), families, places, events,
+`WORLD —` / `CORE —` / `Event:` labels, the user persona, and mis-titled
+entries (real MHA packages have "Mitsuki Bakugo" holding Katsuki's profile —
+those go to Other with a note). Duplicate entries for one person become one row
+with several `entryIds`.
 
-```
-27 active entries · 4 people · invented 0
-Locations 5 · Factions 2 · Background 9 · Rules 1 · Directions 5 · Things 1
+**Links** (`entry_character_links` to a card, `entry_entry_links` to a
+lore-backed person): high = name in title or first sentence, medium = in keys,
+low = only near the start. Low is shown unticked. Rules/directions/notes never
+get low links. People are not linked to each other. Never from provenance.
+Links describe material, not a story, so they are global.
 
-Salvatore            main        named 107 times in the story
-Don Raffaele Costa   main        named 70 times
-Carlo Vancetti       supporting  named 14 times
-Marco                background  mentioned 4 times
-```
+**Correction to the original §9:** "Don Raffaele Costa named 70 times" was the old
+first-word, case-insensitive count matching **don't**. He is named 0 times in
+The Saint. Real counts: Salvatore 107, Carlo 14, Marco 4.
 
-**These are draft suggestions with their evidence attached, not decisions.**
-
-A correction already applied and worth keeping: **only actual people may become
-story NPCs.** "Vancetti Family", "How Patrick Communicates", "Abandonment",
-"Established Devotion Regression" were appearing in Casting. A heading *about*
-somebody is not somebody; those belong in Background. `looksLikeAName()` in
-`compose.js` does this and will need more work as new packages arrive.
+**Patrick, Phase Engine Lore (32), new story with lead 8a2be6d9:** Carlo Vancetti
+Supporting (Patrick's card names him; 4 other entries), Marco Supporting (in the
+opening; card names him), Salvatore Known, Don Raffaele Costa Known. Locations 5,
+Factions 2, Background & Premise 10, Rules 1, Directions 8, Items 1, Other 1.
+As the existing Saint: Salvatore and Carlo Main, Marco Background, Costa Known.
 
 ---
 
 ## 10. New stories versus existing ones
 
-The current analyser leans on counting how often a name appears in the
-conversation. **That only works for a story that already has one.** For a new
-story it must fall back on the source's own structure — prominence, entry size,
-always-on status, how many other entries reference a person. That fallback
-exists but is weak and unverified. This needs finishing.
+Evidence for a new story comes from the source: named in the opening or premise
+(+2), the lead's card names them (+2), their entry names the lead (+1), always-on
+(+2), referenced by other entries (+1 at 2, +2 at 4), a library card with that
+name (+1), unusually long entry (+1). Existing stories add conversation mentions
+(+1 / +2 at 5 / +4 at 40). Score ≥6 Main, ≥4 Supporting, ≥2 Background, else
+**Known** — conservative on purpose. Shared first names or surnames (a family)
+are not counted as anyone. Someone already cast through another source's entry
+is suggested Known with that reason, so a second package cannot double-cast them.
 
-A trap worth knowing: the first test of this reported "Salvatore: not named in
-the story" when he appears 107 times. The counting was fine; the test had
-picked one of the one-message decoy stories. Check which story you are reading.
+**MHA validation** (My Hero Academia World, 172 entries, Bakugo lead de8ed7a7):
+105 people; all 19 Class 1-A students in Casting; nobody suggested Main
+(Izuku Supporting, 10 Background, 93 Known). Reviewed cast of 12 persisted, no
+cards created. Adding MHA RP Optimized (142) to that story kept lead, cast and
+each book's recursion choice.
 
 ---
 
-## 11. Cast model
+## 11. Cast model and exclusions
 
-Approved shape: **Lead · Main · Supporting · Background · Known/Available ·
-Excluded.**
+Draft states: **Lead · Main · Supporting · Background · Known / Available ·
+Excluded** (`out` from old drafts = Excluded).
 
-`story_characters` for reusable cards; `story_npcs` for lore-backed people.
-Lead normally stays a reusable card. Never auto-create a global character card
-for a discovered NPC — promotion is a deliberate act, and when it happens it
-should use `characters.from_entry` (the column does not exist yet; the pattern
-already exists as `personas.from_entry`).
+| State | Stored as | Eligible for the prompt |
+| --- | --- | --- |
+| Lead | `story_characters.role = 'lead'` (card only) | yes |
+| Main / Supporting / Background | card: `story_characters.role`; lore person: `story_npcs.role` | yes |
+| Known / Available | nothing | yes, activates normally |
+| Excluded | `story_entry_exclusions(story_id, entry_id)` | **no**, in this story only |
 
-**Cast role and context depth are different concepts.** Role says how important
-somebody is; depth says how much fixed text about them is sent. Auto defaults
-may derive depth from role, but do not hard-code it as semantics, and **do not
-implement prompt weighting from roles yet** — that changes how established
-stories compile and must be tested on a new story first.
+`story_entry_exclusions` is generic: any entry kind can be excluded
+(`composition.exclude` / `include`), not only people. Excluding a person
+excludes every entry of that person (`entryIds`) and removes their cast row.
+The entry stays enabled in its source; other stories are unaffected.
+
+**Filtering point:** `db.entriesForStory` (SQL `NOT IN` the story's exclusions)
+and the framework merge in `assemble()` in `server.js`, i.e. before
+`activate()`. An excluded entry cannot fire, be recursed into, or feed recursion,
+and does not appear in `/api/stories/:id/prompt` trace or messages.
+
+**Limitation, deliberately:** exclusion removes the excluded entries, not the
+entity. Other entries that mention the person (The Black Lotus mentions
+Salvatore) still activate, and the model may still use the name from them, from
+chat history, or from memory. Links are not used to suppress related material:
+coverage is partial, global and review-approved only, so they cannot promise
+entity-wide exclusion.
+
+Cast role and context depth are different concepts. **Roles do not change prompt
+weighting yet** — that changes how established stories compile and must be
+tested on a new story first. Never auto-create a global card for a lore-backed
+person; promotion should use `characters.from_entry` (column not yet added).
 
 ---
 
@@ -339,27 +389,25 @@ three produce a draft that must be reviewed before anything becomes canon.
 
 ---
 
-## 14. Legacy migration, still pending
+## 14. Legacy migration — done
 
-Her People library still contains scenario and world packages imported before
-the semantic classifier existed, so they appear in the character picker.
+`scripts/migrate-legacy-people.js` (dry run by default, `--apply` to write, one
+transaction, idempotent). Applied to the real database on 15 Sep 2026 after a
+backup: `C:\Users\gabri\tipsy-backups\tipsy-20260915-052900-before-legacy-people.db`.
 
-The dry-run was verified repeatedly and was stable across code changes:
+It moved only high-confidence Scenario/World cards used by no story, merged exact
+duplicates by SHA-256 of the stored file, re-attached the existing embedded book
+(detaching `from_character` first — that FK is `ON DELETE CASCADE`), kept
+pictures, and invented no import provenance.
 
-**→ Scenario, high confidence**: Actuate MHA classroom ×2 · MHA || SLEEPOVER ×3
-· MHA || Sticky Situations · MHA || Class With The Bakusquad
-**→ World, high confidence**: MHA RPG Bot # Infinity ×2 (21 embedded lore
-entries, 3 starting points each)
-**Stay Character, high confidence**: two Katsuki Bakugo, three Patrick Moretti
-**Manual review only**: `[🅰️] Kirishima` · the Bakugo with a 67,125-character
-greeting (a pasted previous story, not a malformed card) · Midnight Munchies
-
-Exact duplicates exist and must be consolidated by content hash or provenance,
-**never by title**: Infinity ×2 (each with its own copy of the same 21-entry
-book), SLEEPOVER ×3, classroom ×2. The migration must be idempotent — run it
-twice on a copy and the second run must create nothing.
-
-Do not re-derive this. Re-run the classifier to confirm, then act.
+- Scenarios (4): Actuate MHA classroom (×2 merged), MHA || SLEEPOVER (×3),
+  MHA || Sticky Situations, MHA || Class With The Bakusquad.
+- World (1): MHA RPG Bot # Infinity (×2 merged); one identical, unused 21-entry
+  book copy removed; 1,108 → 1,087 entries.
+- People now (9): Katsuki Bakugo ×3, Patrick Moretti ×2, Patrick Moretti 'The
+  Saint', Patrick Moretti — First Meeting, [🅰️] Kirishima, Midnight Munchies.
+- Left for manual review: Kirishima (medium World), the 67k-greeting Bakugo (low),
+  Midnight Munchies (medium Scenario). Second run: nothing to move.
 
 ---
 
@@ -378,54 +426,45 @@ that error was made repeatedly and cost real time.
 
 ## 16. Tests
 
-`npm run` scripts, verified present:
+`npm run` scripts:
 
 ```
 import:check  semantics:check  library:check  plan:check  context:check
-threads:check bg:check         reconcile:check recursion:check
+threads:check bg:check         reconcile:check recursion:check compose:check
 ```
 
 Plus `scripts/smoke.js <port>`, `scripts/check-scene-state.js`,
 `scripts/replay-state.js`, `scripts/check-legacy-threads.js`.
 
-Last observed passing counts — **re-run rather than trusting these**:
-semantics 61 · threads 19 · reconcile 16 · book-recursion 13 · context 64 ·
-smoke 92 · scene-state 9.
+Last passing on the feature branch: compose 138 · smoke 92 · context 64 ·
+semantics 61 · library 58 · plan 57 · threads 19 · reconcile 16 · recursion 13 ·
+import 19 files, 0 failed. `bg:check` and `check-scene-state` call live models
+and were not re-run.
 
-Most suites need a throwaway server: `PORT=8xxx DB_PATH=<temp> node server.js`.
-Never point a test at `data/tipsy.db`. Two memory-engine smoke checks are
-non-deterministic because they depend on a live extraction; a single failure in
-`correction applies` or `facts reach the prompt` is usually flakiness, not a
-regression.
+`compose:check` needs no setup: it builds its own throwaway database and server,
+and checks the compiled request through `/api/stories/:id/prompt`.
+
+`library:check`, `context:check` and `smoke.js` need a throwaway server:
+`PORT=8xxx DB_PATH=<temp> node server.js`. Never point a test at
+`data/tipsy.db`. For real-data checks, snapshot it (`VACUUM INTO`) and, since
+it is password-locked, remove the `auth` setting **in the copy only**.
 
 ---
 
 ## 17. Next task
 
-**Do not start by redesigning anything.** Finish the Story Composition review
-experience. The backend exists.
+§17 Story Composition Review is implemented on `feature/story-composition-review`
+and validated on real data (disposable stories on snapshots) and in headless
+Chrome at 390px and 320px. It still needs **her own visual approval on the
+phone** before merging to `main`.
 
-1. **Analyser semantics** — only real people become NPCs; make new-story
-   evidence work without a transcript; support Known/Available and Excluded in
-   the draft.
-2. **Review UI** — source → analysing → Review Story, between "add source" and
-   "start".
-3. **Casting review** — change any suggested role.
-4. **Persona choice during story creation** — optional, but visible before
-   starting. A new story currently gets none and says "Nobody yet" afterwards.
-5. **Reviewable sections** — Casting, Locations, Factions, Background, Rules,
-   Directions, Events, Items, Other.
-6. **Safe transactional apply.**
-7. **Safe source removal** — define it; removing a source must take nothing
-   away from the reusable package.
-8. **Legacy migration** (§14) so scenarios stop appearing as characters.
-9. **Validate on real data** — a new disposable story with a real Patrick
-   package, and an MHA package with many characters, checking that Class 1-A
-   people appear in casting review without becoming global cards.
-10. **Mobile/browser validation**, iPhone width and 320px.
+Intentionally NOT implemented:
 
-Not yet: AI Build It Out · context-depth weighting · automatic NPC promotion ·
-Home redesign.
+- AI Story Builder (Build It Out / Fill the Gaps / freeform generation)
+- context-depth weighting from cast roles
+- NPC promotion to a card (`characters.from_entry`)
+- Home redesign / story covers
+- a UI to exclude non-person material (the API supports it)
 
 ---
 
@@ -442,6 +481,19 @@ Not:
 The source should visibly unfold into casting, locations, factions, backstory,
 rules, directions, events, items and the rest — while every piece of activation
 metadata stays exactly as it was underneath.
+
+---
+
+## 19. Where things stand (short)
+
+- Branch `feature/story-composition-review`; `git log main..HEAD` lists its commits.
+  Not merged. `backup/pre-email-rewrite` is a private local branch — never push it.
+- Commits use the GitHub noreply address, configured for this repository only.
+- The Saint (`83d52b5a`) is unchanged by all of this: no cast from sources, no
+  exclusions, both books still `block`, 255 messages.
+- The running server must be restarted to pick up new code; `start.bat` does it.
+- The real database gains the empty `story_entry_exclusions` table the first time
+  this branch's server starts (schema.sql runs `CREATE TABLE IF NOT EXISTS`).
 
 ---
 

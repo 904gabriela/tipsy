@@ -26,7 +26,10 @@ const unique = (xs) => [...new Set(xs.filter(Boolean))];
  * a state the model cannot hold: somebody who is not a person in the cast, a
  * lore-backed lead, two leads, material from a book the story will not read.
  */
-export function planComposition(db, { storyId = null, existingBookIds = [], lorebookIds = [], casting = [], links = [], recursion = {} }) {
+export function planComposition(db, {
+  storyId = null, existingBookIds = [], lorebookIds = [], casting = [], links = [], recursion = {},
+  exclude = [], include = [],
+}) {
   const newBooks = unique(lorebookIds).filter((id) => !existingBookIds.includes(id));
   for (const id of newBooks) {
     if (!db.getLorebook(id)) throw new CompositionError('One of those sources is no longer in the library.', 404);
@@ -35,10 +38,22 @@ export function planComposition(db, { storyId = null, existingBookIds = [], lore
   const pool = new Map();
   for (const id of books) for (const e of db.listEntries(id)) pool.set(e.id, e);
 
-  const npcs = [];     // { entryId, role } to set
-  const drop = [];     // entryIds to take out of the cast
-  const cards = [];    // { characterId, role } — new stories only
+  const npcs = [];       // { entryId, role } to set
+  const drop = [];       // entryIds to take out of the cast
+  const cards = [];      // { characterId, role } — new stories only
+  const excludes = [];   // entryIds this story will ignore
+  const includes = [];   // entryIds this story stops ignoring
   const seen = new Set();
+
+  // Every entry that describes one person. A person described in two entries
+  // is excluded, or let back in, as one person.
+  const idsOf = (raw, primary) => {
+    const ids = unique([primary, ...(Array.isArray(raw.entryIds) ? raw.entryIds : [])]);
+    for (const id of ids) {
+      if (!pool.has(id)) throw new CompositionError('Somebody in that cast comes from a source this story is not using.');
+    }
+    return ids;
+  };
 
   for (const raw of casting) {
     const role = normalizeRole(raw.role);
@@ -49,6 +64,11 @@ export function planComposition(db, { storyId = null, existingBookIds = [], lore
       seen.add(`c:${raw.characterId}`);
       if (!db.getCharacter(raw.characterId)) throw new CompositionError('One of those characters is no longer in the library.', 404);
       cards.push({ characterId: raw.characterId, role });
+      // A card left out of a new story takes the entries about the same
+      // person with it, if the person chose to exclude them.
+      const ids = Array.isArray(raw.entryIds) ? idsOf(raw, null) : [];
+      if (role === 'excluded') excludes.push(...ids);
+      else includes.push(...ids);
       continue;
     }
 
@@ -56,8 +76,13 @@ export function planComposition(db, { storyId = null, existingBookIds = [], lore
     if (!entry) throw new CompositionError('Somebody in that cast comes from a source this story is not using.');
     if (seen.has(`e:${entry.id}`)) continue;
     seen.add(`e:${entry.id}`);
+    const ids = idsOf(raw, entry.id);
 
-    if (role === 'known' || role === 'excluded') { drop.push(entry.id); continue; }
+    // Known: in the story's knowledge, not its cast, and eligible as normal.
+    // Excluded: not in the cast and not eligible at all, in this story only.
+    if (role === 'known') { drop.push(...ids); includes.push(...ids); continue; }
+    if (role === 'excluded') { drop.push(...ids); excludes.push(...ids); continue; }
+    includes.push(...ids);
 
     // Checked here and not only in the draft, so nothing that calls this can
     // put "Vancetti Family" in the cast however the request was made.
@@ -87,10 +112,28 @@ export function planComposition(db, { storyId = null, existingBookIds = [], lore
     }
   }
 
+  // Any material at all can be excluded, not only people: an event that never
+  // happened here, a rule that does not apply.
+  for (const id of exclude) {
+    if (!pool.has(id)) throw new CompositionError('That material is not part of a source this story is using.');
+    excludes.push(id);
+  }
+  for (const id of include) {
+    if (!pool.has(id)) throw new CompositionError('That material is not part of a source this story is using.');
+    includes.push(id);
+  }
+  const excluded = new Set(excludes);
+  if (includes.some((id) => excluded.has(id))) {
+    throw new CompositionError('The same material cannot be both excluded and kept in one change.');
+  }
+
   const policies = {};
   for (const id of newBooks) if (recursion && recursion[id] === 'block') policies[id] = 'block';
 
-  return { storyId, newBooks, policies, npcs, drop, cards, leads, links: linkWrites };
+  return {
+    storyId, newBooks, policies, npcs, drop, cards, leads, links: linkWrites,
+    excludes: unique(excludes), includes: unique(includes),
+  };
 }
 
 /**
@@ -106,6 +149,12 @@ export function writeComposition(db, storyId, plan) {
   }
   for (const n of plan.npcs) db.setStoryNpc(storyId, n.entryId, n.role);
   for (const id of plan.drop) db.removeStoryNpc(storyId, id);
+  for (const id of plan.includes || []) db.includeEntry(storyId, id);
+  for (const id of plan.excludes || []) {
+    // Ignored material is not in the cast either, however it got there.
+    db.removeStoryNpc(storyId, id);
+    db.excludeEntry(storyId, id);
+  }
   for (const l of plan.links) {
     if (l.characterId) db.linkEntryToCharacter(l.entryId, l.characterId);
     else db.linkEntryToEntry(l.entryId, l.aboutId);
@@ -130,6 +179,7 @@ export function applyToStory(db, storyId, body) {
       added: plan.newBooks.length,
       cast: after.characters.length,
       npcs: db.storyNpcs(storyId).length,
+      excluded: db.storyExclusions(storyId).length,
       links: plan.links.length,
     };
   });
@@ -149,6 +199,7 @@ export function sourceRemovalPreview(db, storyId, lorebookId, compose) {
   const draft = compose(book.entries, { characters: [], storyCards: story.characters });
   const ids = new Set(book.entries.map((e) => e.id));
   const cast = db.storyNpcs(storyId).filter((n) => ids.has(n.entry_id));
+  const exclusions = db.storyExclusions(storyId).filter((x) => ids.has(x.entry_id));
   const policy = db.storyLorebookSettings(storyId).find((r) => r.lorebook_id === lorebookId)?.recursion || null;
   const personaFrom = story.persona && story.persona.from_entry && ids.has(story.persona.from_entry) ? story.persona.name : null;
 
@@ -159,6 +210,9 @@ export function sourceRemovalPreview(db, storyId, lorebookId, compose) {
       ...draft.sections.filter((s) => s.count).map((s) => ({ id: s.id, label: SECTIONS.find((x) => x.id === s.id)?.label || s.label, count: s.count })),
     ],
     castLeaving: cast.map((n) => ({ entryId: n.entry_id, name: nameFromTitle(n.title).name || n.title, role: n.role })),
+    // Choices this story made about the source's material. They mean nothing
+    // once the story no longer reads it, so they go with it.
+    exclusionsForgotten: exclusions.map((x) => ({ entryId: x.entry_id, name: nameFromTitle(x.title).name || x.title })),
     recursion: policy,
     personaFrom,
     keeps: [
@@ -190,7 +244,9 @@ export function removeSource(db, storyId, lorebookId) {
     const ids = new Set(db.listEntries(lorebookId).map((e) => e.id));
     const leaving = db.storyNpcs(storyId).filter((n) => ids.has(n.entry_id));
     for (const n of leaving) db.removeStoryNpc(storyId, n.entry_id);
+    const forgotten = db.storyExclusions(storyId).filter((x) => ids.has(x.entry_id));
+    for (const x of forgotten) db.includeEntry(storyId, x.entry_id);
     db.raw.prepare(`DELETE FROM story_lorebooks WHERE story_id=? AND lorebook_id=?`).run(storyId, lorebookId);
-    return { removed: lorebookId, castLeft: leaving.length };
+    return { removed: lorebookId, castLeft: leaving.length, exclusionsForgotten: forgotten.length };
   });
 }

@@ -872,9 +872,11 @@ route('POST', '/api/stories', async (req) => {
   const plan = composition
     ? planComposition(db, {
       lorebookIds: b.lorebookIds || [],
-      casting: (composition.casting || []).filter((c) => !c.characterId),
+      casting: composition.casting || [],
       links: composition.links || [],
       recursion: composition.recursion || {},
+      exclude: composition.exclude || [],
+      include: composition.include || [],
     })
     : null;
 
@@ -1065,9 +1067,13 @@ function assemble(storyId, extraUser = null, { openSecrets = null, mode = null }
   // injected, it becomes available to be retrieved, and a 300-entry campaign
   // costs nothing until something in the scene actually calls for it.
   const framework = story.framework_id ? db.getFramework(story.framework_id) : null;
+  //
+  // What this story has excluded is left out here, before activation, from
+  // the story's books (inside entriesForStory) and from its world's alike.
+  const excluded = db.storyExclusionIds(storyId);
   const byId = new Map();
   for (const e of db.entriesForStory(storyId)) byId.set(e.id, e);
-  if (framework) for (const e of db.entriesForFramework(framework.id)) if (!byId.has(e.id)) byId.set(e.id, e);
+  if (framework) for (const e of db.entriesForFramework(framework.id)) if (!byId.has(e.id) && !excluded.has(e.id)) byId.set(e.id, e);
   const loreEntries = [...byId.values()].filter((e) => e.id !== personaEntry);
 
   // What the story remembers: the world state, folded scenes, and any thread
@@ -1821,7 +1827,8 @@ route('GET', '/api/stories/:id/bible', async (req, res, { id }) => {
 
   const entries = db.entriesForStory(id);
   const framework = story.framework_id ? db.getFramework(story.framework_id) : null;
-  const worldEntries = framework ? db.entriesForFramework(framework.id) : [];
+  const excludedIds = db.storyExclusionIds(id);
+  const worldEntries = framework ? db.entriesForFramework(framework.id).filter((w) => !excludedIds.has(w.id)) : [];
   const pool = [...entries, ...worldEntries.filter((w) => !entries.some((e) => e.id === w.id))];
 
   // The headings people use are not the nine types the engine stores. This
@@ -1905,6 +1912,10 @@ route('GET', '/api/stories/:id/bible', async (req, res, { id }) => {
     persona: story.persona ? { id: story.persona.id, name: story.persona.name, avatar: story.persona.avatar } : null,
     cast,
     npcs,
+    // Material this story ignores. Still in its source, not in this story.
+    excluded: db.storyExclusions(id).map((x) => ({
+      entryId: x.entry_id, title: nameFromTitle(x.title).name || x.title, kind: x.kind, lorebookId: x.lorebook_id,
+    })),
     lead: cast.find((c) => c.role === 'lead') || null,
     knownPeople: { count: knownPeople.length, sample: knownPeople.slice(0, 12).map(brief) },
     sections,
@@ -1962,6 +1973,7 @@ route('POST', '/api/compose', async (req) => {
     premise: story ? (story.settings?.premise || '') : premise,
     opening: story ? '' : (chosen?.content || leadCards[0]?.first_message || ''),
     storyNpcs: story ? db.storyNpcs(story.id) : [],
+    storyExclusions: story ? db.storyExclusionIds(story.id) : new Set(),
     mode,
   });
 

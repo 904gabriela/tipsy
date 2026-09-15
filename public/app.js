@@ -984,6 +984,11 @@ const CAST_LABEL = {
   known: 'Known / Available', excluded: 'Excluded',
 };
 const CAST_ORDER = ['lead', 'main', 'supporting', 'background', 'known', 'excluded'];
+// The two parts that are not the cast, said in terms of what they do.
+const ROLE_MEANS = {
+  known: 'Exists in this story and may appear when relevant.',
+  excluded: 'Kept in the source, ignored by this story.',
+};
 const IN_CAST = new Set(['lead', 'main', 'supporting', 'background']);
 const SECTION_HELP = {
   places: 'Where it happens.',
@@ -1015,7 +1020,7 @@ async function beginReview(opts) {
     castFilter: 'cast',
     castFind: '',
   };
-  sheet(opts.mode === 'new' ? 'Begin a story' : 'Add a source', `
+  sheet(opts.heading || (opts.mode === 'new' ? 'Begin a story' : 'Add a source'), `
     ${opts.mode === 'new' ? stepBar(4) : ''}
     <div class="rv-reading">
       <div class="rv-spinner" aria-hidden="true"></div>
@@ -1086,7 +1091,7 @@ function reviewRoot() {
     known ? `${num(known)} known` : '',
   ].filter(Boolean).join(' · ');
 
-  sheet(isNew ? 'Review story' : 'Review additions', `
+  sheet(rv.heading || (isNew ? 'Review story' : 'Review additions'), `
     ${isNew ? stepBar(4) : ''}
     ${isNew && rv.title ? `<h3 class="rv-title">${esc(rv.title)}</h3>` : ''}
 
@@ -1174,7 +1179,7 @@ function reviewCasting() {
     const cardLocked = locked && r.backing === 'card';
     const changed = role !== r.suggested;
     return `
-    <div class="cast-row" data-key="${esc(r.key)}">
+    <div class="cast-row${role === 'known' ? ' is-known' : role === 'excluded' ? ' is-excluded' : ''}" data-key="${esc(r.key)}">
       <div class="cast-top">
         <button class="cast-name" ${r.entryId ? `data-entry-open="${esc(r.entryId)}"` : 'tabindex="-1"'}>${esc(r.name)}</button>
         <select class="cast-role" data-role-for="${esc(r.key)}" aria-label="Part for ${esc(r.name)}"${cardLocked ? ' disabled' : ''}>
@@ -1188,6 +1193,7 @@ function reviewCasting() {
         <span class="cast-suggest${changed ? ' changed' : ''}">Suggested ${esc(CAST_LABEL[r.suggested])}</span>
         <span class="cast-backing">${r.backing === 'card' ? 'Character card' : r.libraryCardId ? 'From the source · has a card too' : 'From the source'}</span>
       </div>
+      ${ROLE_MEANS[role] ? `<div class="cast-means ${esc(role)}">${esc(ROLE_MEANS[role])}</div>` : ''}
       ${r.why?.length ? `<div class="cast-why">${esc(r.why.slice(0, 3).join(' · '))}</div>` : ''}
       ${cardLocked ? '<div class="cast-why">Character cards are changed from the story sheet.</div>' : ''}
     </div>`;
@@ -1195,7 +1201,7 @@ function reviewCasting() {
 
   sheet('Casting', `
     ${reviewBack()}
-    <p class="rv-lede">Who is in the story, and how much. Anyone Known stays available through the source and turns up when a scene needs them.</p>
+    <p class="rv-lede">Who is in the story, and how much. Known people are not cast but may still turn up when a scene calls for them. Excluded people stay in the source and this story ignores them.</p>
     <div class="rv-chips">
       ${chip('cast', 'In the cast', counts.cast)}
       ${chip('known', 'Known', counts.known)}
@@ -1390,8 +1396,11 @@ function reviewSources() {
 function reviewedComposition() {
   const d = rv.draft;
   return {
+    // Every entry that describes the person goes with them, so excluding
+    // somebody written up twice excludes them once, completely.
     casting: d.casting.map((r) => ({
       ...(r.characterId ? { characterId: r.characterId } : { entryId: r.entryId }),
+      entryIds: r.entryIds || [],
       role: roleOf(r),
     })),
     links: d.links.filter((l, i) => rv.links.get(i)).map((l) => (l.characterId
@@ -1436,12 +1445,12 @@ async function applyReviewed(btn) {
   btn.disabled = true;
   const c = reviewedComposition();
   // Cards already in the story stay as they are, and anyone Known who was
-  // never in the cast needs nothing written.
+  // never in the cast or excluded needs nothing written.
   const current = new Map(rv.draft.casting.map((r) => [r.key, r.current]));
   const casting = c.casting.filter((x, i) => {
     const r = rv.draft.casting[i];
     if (r.characterId) return false;
-    return IN_CAST.has(x.role) || current.get(r.key);
+    return IN_CAST.has(x.role) || x.role === 'excluded' || current.get(r.key);
   });
   try {
     const storyId = rv.storyId;
@@ -1451,7 +1460,7 @@ async function applyReviewed(btn) {
     rv = null;
     state.story = await get(`/api/stories/${storyId}`);
     await loadLibrary();
-    toast('Added to the story.', { kind: 'good', sub: `${num(out.npcs)} from sources in the cast · ${num(out.links)} links` });
+    toast('Saved to the story.', { kind: 'good', sub: `${num(out.npcs)} from sources in the cast · ${num(out.excluded)} excluded · ${num(out.links)} links` });
     closeSheet();
   } catch (err) {
     toast(err.message, { kind: 'bad', ms: 8000 });
@@ -1481,6 +1490,7 @@ async function confirmSourceRemoval(storyId, bookId, after) {
     </div>
     ${p.castLeaving.length ? `<p class="rv-lede" style="margin-top:14px">Leaving the cast:</p>
       <div class="rv-facts">${p.castLeaving.map((c) => `<div class="stat-row"><span>${esc(c.name)}</span><span>${esc(CAST_LABEL[c.role] || c.role)}</span></div>`).join('')}</div>` : ''}
+    ${p.exclusionsForgotten?.length ? `<p class="rv-hint">This story ignores ${esc(p.exclusionsForgotten.map((x) => x.name).join(', '))} from this source. That choice goes with it, and nothing is removed from the source.</p>` : ''}
     ${p.recursion === 'block' ? '<p class="rv-hint">Its setting for this story, keeping entries from pulling in others, is forgotten with it.</p>' : ''}
     ${p.personaFrom ? `<p class="rv-hint">${esc(p.personaFrom)} was made from an entry in this source and stays as your persona.</p>` : ''}
     <div class="rv-keeps">
@@ -1547,7 +1557,10 @@ async function panelStorySheet() {
           <button class="btn quiet" data-removebook="${esc(b.id)}">Remove</button>
         </div>`).join('') || '<div class="empty">No sources yet.</div>'}
     </div>
-    <button class="btn" id="ss-addsource" style="margin-top:8px">+ Add a source</button>
+    <div class="ss-source-actions">
+      ${(st.lorebookIds || []).length ? '<button class="btn" id="ss-review">Review cast and material</button>' : ''}
+      <button class="btn" id="ss-addsource">+ Add a source</button>
+    </div>
 
     <div class="sheet-actions">
       <button class="btn quiet" data-back>Back</button>
@@ -1569,6 +1582,15 @@ async function panelStorySheet() {
       const edit = e.target.closest('[data-editbook]');
       if (edit) { closeSheet(); openLorebook(edit.dataset.editbook); }
     });
+
+    // The same review, over everything the story already reads, showing what
+    // was chosen last time: who is cast, who is Known, who is excluded.
+    const review = $('#ss-review', root);
+    if (review) {
+      review.addEventListener('click', () => beginReview({
+        mode: 'existing', heading: 'Review story', storyId: st.id, lorebookIds: [...st.lorebookIds], back: reopen,
+      }));
+    }
 
     $('#ss-addsource', root).addEventListener('click', () => {
       const back = reopen;
@@ -2276,6 +2298,7 @@ async function storyBible() {
         </div>`).join('')}
     </div>
     ${b.knownPeople.count ? `<div class="why dim">${num(b.knownPeople.count)} more people are written about in this story's material. They are not cast — they appear when a scene calls for them.</div>` : ''}
+    ${(b.excluded || []).length ? `<div class="why dim">Ignored in this story: ${esc(b.excluded.map((x) => x.title).join(', '))}. Still in their source.</div>` : ''}
 
     <h4 class="bible-h">Its world</h4>
     ${b.sections.map((s) => fold(s.label, s.count,

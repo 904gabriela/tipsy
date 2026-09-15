@@ -262,6 +262,7 @@ function aboutness(entry, target) {
  *   premise      what the person wrote the story is
  *   opening      the greeting the story will open on
  *   storyNpcs    lore-backed people already in the story: [{entry_id, role}]
+ *   storyExclusions  entry ids this story ignores (a Set or an array)
  *   mode         'organize' — invent nothing
  * @returns a draft: references and suggestions, nothing written
  */
@@ -270,6 +271,7 @@ export function composeSource(entries, ctx = {}) {
     characters = [], storyCards = [], leadCards = [], transcript = '',
     premise = '', opening = '', storyNpcs = [], mode = 'organize',
   } = ctx;
+  const excludedIds = new Set(ctx.storyExclusions || []);
   const existing = storyCards.length > 0 || !!transcript;
 
   const all = entries.map((e) => ({ ...e, enabled: !(e.enabled === 0 || e.enabled === false) }));
@@ -372,7 +374,10 @@ export function composeSource(entries, ctx = {}) {
     });
 
     // Already in this story: what they are stays what they are, and says so.
-    const current = g.entries.map((e) => npcRole.get(e.id)).find(Boolean);
+    // A choice already made for this story is what the draft shows: in the
+    // cast in some part, or excluded from it.
+    const current = g.entries.map((e) => npcRole.get(e.id)).find(Boolean)
+      || (g.entries.some((e) => excludedIds.has(e.id)) ? 'excluded' : null);
     const elsewhere = !current ? castByName.get(norm(g.name)) : null;
     casting.push({
       key: `entry:${primary.id}`,
@@ -386,7 +391,8 @@ export function composeSource(entries, ctx = {}) {
       suggested: current || (elsewhere ? 'known' : s.role),
       current: current || null,
       alreadyCast: elsewhere ? { entryId: elsewhere.entry_id, role: elsewhere.role } : null,
-      why: current ? ['already in this story', ...s.why]
+      why: current === 'excluded' ? ['excluded from this story', ...s.why]
+        : current ? ['already in this story', ...s.why]
         : elsewhere ? [`already in the cast as ${elsewhere.role}, through another source`] : s.why,
       score: s.score,
       mentions: mentionsOf(transcript, handles),
@@ -479,6 +485,7 @@ export function composeSource(entries, ctx = {}) {
   const brief = (e, note = '') => ({
     entryId: e.id, title: e.title || '(untitled)', kind: e.kind,
     tokens: tokens(e.content), always: !!e.constant, enabled: e.enabled,
+    excluded: excludedIds.has(e.id),
     keys: keysOf(e).slice(0, 4),
     lorebookId: e.lorebookId || e.lorebook_id || null,
     about: aboutOf(e.id),
@@ -523,6 +530,7 @@ export function composeSource(entries, ctx = {}) {
       people: casting.length,
       cast: casting.filter((r) => CAST_ROLES.includes(r.suggested)).length,
       known: count('known'),
+      excluded: count('excluded'),
       tokens: all.filter((e) => e.enabled).reduce((n, e) => n + tokens(e.content), 0),
       alwaysOn: all.filter((e) => e.constant && e.enabled).length,
       links: links.length,

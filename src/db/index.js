@@ -451,7 +451,14 @@ function wrap(db) {
         .map(rowToEntry);
     },
 
-    /** Entries for every book switched on in a story, ready for the engine. */
+    /**
+     * Entries for every book switched on in a story, ready for the engine.
+     *
+     * This is where a story's eligible lore is decided, so it is also where
+     * the story's exclusions apply: an excluded entry is not handed to the
+     * activation engine at all, so it cannot fire, be pulled in by recursion,
+     * or feed recursion for anything else.
+     */
     entriesForStory(storyId) {
       // sl.recursion rides along so the activation engine can honour a
       // per-story choice without a second query and without the entry itself
@@ -459,8 +466,28 @@ function wrap(db) {
       return all(
         `SELECT e.*, sl.recursion AS book_recursion FROM lore_entries e
          JOIN story_lorebooks sl ON sl.lorebook_id = e.lorebook_id
-         WHERE sl.story_id = ? AND e.enabled = 1`, storyId
+         WHERE sl.story_id = ? AND e.enabled = 1
+           AND e.id NOT IN (SELECT entry_id FROM story_entry_exclusions WHERE story_id = ?)`, storyId, storyId
       ).map((r) => ({ ...rowToEntry(r), bookRecursion: r.book_recursion || null }));
+    },
+
+    // ---------------------------------------------- what a story ignores
+
+    /** Keep one entry out of one story. The entry itself is not touched. */
+    excludeEntry(storyId, entryId) {
+      run(`INSERT OR IGNORE INTO story_entry_exclusions (story_id,entry_id,created_at) VALUES (?,?,?)`, storyId, entryId, now());
+    },
+    /** Let it back in. */
+    includeEntry(storyId, entryId) {
+      run(`DELETE FROM story_entry_exclusions WHERE story_id=? AND entry_id=?`, storyId, entryId);
+    },
+    storyExclusions(storyId) {
+      return all(`SELECT x.entry_id, e.title, e.kind, e.lorebook_id FROM story_entry_exclusions x
+                  JOIN lore_entries e ON e.id = x.entry_id
+                  WHERE x.story_id=? ORDER BY e.title COLLATE NOCASE`, storyId);
+    },
+    storyExclusionIds(storyId) {
+      return new Set(all(`SELECT entry_id FROM story_entry_exclusions WHERE story_id=?`, storyId).map((r) => r.entry_id));
     },
 
     // ------------------------------------------------- who is in a story

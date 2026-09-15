@@ -254,6 +254,74 @@ console.log('\nF  applying a reviewed composition');
   ok('no message was touched', count('messages') === msgs);
   ok('the other book keeps its recursion setting', db.storyLorebookSettings(sid).find((r) => r.lorebook_id === bookB)?.recursion === 'block');
   ok('removing a source the story does not have is refused', throws(() => removeSource(db, sid, bookA), /not part/));
+
+  console.log('\nL  Known and Excluded are different things');
+  const fpL = fingerprint();
+  const charsL = count('characters');
+  const sA = db.createStory({ title: 'Exclusion A', characterIds: [dario], lorebookIds: [bookA] });
+  const sB = db.createStory({ title: 'Exclusion B', characterIds: [dario], lorebookIds: [bookA] });
+  db.addMessage({ storyId: sA, role: 'assistant', content: 'The ferry horn sounds.' });
+  const msgsA = JSON.stringify(db.raw.prepare('SELECT id, content FROM messages WHERE story_id=?').all(sA));
+  const eligible = (s, id) => db.entriesForStory(s).some((e) => e.id === id);
+  const mira = [ids['Mira Castell'], ids['Mira Castell / Keeper']];
+
+  applyToStory(db, sA, { casting: [{ entryId: ids['Oren Hale: The Ferryman'], role: 'known' }] });
+  ok('Known: not in the cast', !db.storyNpcs(sA).some((x) => x.entry_id === ids['Oren Hale: The Ferryman']));
+  ok('Known: still eligible for the story', eligible(sA, ids['Oren Hale: The Ferryman']));
+
+  applyToStory(db, sA, { casting: [{ entryId: ids['Oren Hale: The Ferryman'], role: 'excluded' }] });
+  ok('Excluded: not in the cast', !db.storyNpcs(sA).some((x) => x.entry_id === ids['Oren Hale: The Ferryman']));
+  ok('Excluded: not eligible for the story', !eligible(sA, ids['Oren Hale: The Ferryman']));
+  ok('Excluded is recorded for this story', db.storyExclusionIds(sA).has(ids['Oren Hale: The Ferryman']));
+  ok('the same entry is still eligible in another story', eligible(sB, ids['Oren Hale: The Ferryman']));
+  ok('the entry is still enabled in its source', db.listEntries(bookA).find((e) => e.id === ids['Oren Hale: The Ferryman']).enabled === true);
+
+  applyToStory(db, sA, { casting: [{ entryId: ids['Mira Castell'], entryIds: mira, role: 'main' }] });
+  applyToStory(db, sA, { casting: [{ entryId: ids['Mira Castell'], entryIds: mira, role: 'excluded' }] });
+  ok('excluding someone in the cast takes them out of it', !db.storyNpcs(sA).some((x) => mira.includes(x.entry_id)));
+  ok('a person described in two entries is excluded as one person', mira.every((id) => !eligible(sA, id)));
+
+  applyToStory(db, sA, { casting: [{ entryId: ids['Oren Hale: The Ferryman'], role: 'known' }] });
+  ok('moving back to Known restores eligibility', eligible(sA, ids['Oren Hale: The Ferryman']));
+  applyToStory(db, sA, { casting: [{ entryId: ids['Mira Castell'], entryIds: mira, role: 'supporting' }] });
+  ok('putting an excluded person in the cast lets them back in', mira.every((id) => eligible(sA, id)) && db.storyNpcs(sA).some((x) => x.entry_id === ids['Mira Castell']));
+
+  applyToStory(db, sA, { exclude: [ids['Harbour Law']] });
+  ok('material that is not a person can be excluded too', !eligible(sA, ids['Harbour Law']) && eligible(sB, ids['Harbour Law']));
+  ok('excluding it made nobody a cast member', !db.storyNpcs(sA).some((x) => x.entry_id === ids['Harbour Law']));
+  applyToStory(db, sA, { include: [ids['Harbour Law']] });
+  ok('and let back in', eligible(sA, ids['Harbour Law']));
+  ok('asking to exclude and keep the same entry at once is refused',
+    throws(() => applyToStory(db, sA, { exclude: [ids.Pell], include: [ids.Pell] }), /both/));
+  ok('an entry from a book the story does not read cannot be excluded',
+    throws(() => applyToStory(db, sA, { exclude: [ids.war] }), /not part of a source/));
+
+  db.setStoryCharacters(sA, [dario]);
+  db.updateStory(sA, { title: 'Exclusion A, renamed' });
+  applyToStory(db, sA, { casting: [{ entryId: ids.Pell, role: 'excluded' }] });
+  db.setStoryLorebooks(sA, [bookA]);
+  db.updateStory(sA, { title: 'Exclusion A, saved again', settings: { premise: 'edited' } });
+  ok('an exclusion survives saving the story', db.storyExclusionIds(sA).has(ids.Pell));
+  applyToStory(db, sA, { lorebookIds: [bookB], casting: [{ entryId: ids.war, role: 'background' }] });
+  ok('and adding another source', db.storyExclusionIds(sA).has(ids.Pell));
+  const reread = composeSource(db.listEntries(bookA), { storyCards: db.getStory(sA).characters, storyNpcs: db.storyNpcs(sA), storyExclusions: db.storyExclusionIds(sA) });
+  ok('reopening the review shows the saved exclusion', reread.casting.find((r) => r.name === 'Pell')?.suggested === 'excluded'
+    && reread.casting.find((r) => r.name === 'Pell')?.current === 'excluded');
+  ok('and Known as Known', reread.casting.find((r) => r.name === 'Oren Hale')?.suggested !== 'excluded');
+
+  const sid4 = db.createStory({ title: 'Rollback 2', characterIds: [dario], lorebookIds: [bookA] });
+  const plan4 = planComposition(db, { existingBookIds: [bookA], casting: [{ entryId: ids.Pell, role: 'excluded' }] });
+  let threw4 = false;
+  try { db.transaction(() => writeComposition(db, sid4, { ...plan4, links: [{ entryId: ids.Pell, characterId: 'no-such-character' }] })); } catch { threw4 = true; }
+  ok('a failed apply leaves no exclusion behind', threw4 && db.storyExclusionIds(sid4).size === 0);
+
+  const pvA = sourceRemovalPreview(db, sA, bookA, composeSource);
+  ok('the removal preview names exclusions that will be forgotten', pvA.exclusionsForgotten.some((x) => x.name === 'Pell'));
+  removeSource(db, sA, bookA);
+  ok('removing the source forgets its exclusions', ![...db.storyExclusionIds(sA)].some((id) => Object.values(ids).includes(id) && id !== ids.war));
+  ok('the other story is untouched by all of it', eligible(sB, ids.Pell) && db.storyExclusionIds(sB).size === 0);
+  ok('no entry changed, no card created or deleted, no message touched', fingerprint() === fpL && count('characters') === charsL
+    && JSON.stringify(db.raw.prepare('SELECT id, content FROM messages WHERE story_id=?').all(sA)) === msgsA);
 }
 
 // ----------------------------------------------------- the route, end to end
@@ -307,6 +375,47 @@ try {
   ok('Known is not in the cast', !bible.npcs.some((x) => x.entryId === ids.Pell));
   ok('the chosen recursion setting is on the new source', bible.sources.connected.find((s) => s.id === bookA)?.recursion === 'block');
   ok('it opens on the lead’s greeting', story.messages.length === 1 && /ferry horn/.test(story.messages[0].content));
+
+  console.log('\nM  the compiled request, through the real prompt route');
+  const orenText = 'Oren Hale runs the last ferry';
+  const ruleText = 'Slow burn. Mira Castell appears at most once a scene';
+  const P = async (sid) => (await J(`/api/stories/${sid}/prompt`, null, 'GET')).body;
+  const sent = (p, text) => p.messages.some((m) => m.content.includes(text));
+  const traced = (p, id) => p.trace.find((t) => t.id === id);
+  const start = await J('/api/stories', {
+    title: 'Prompt check', personaId: null, lorebookIds: [bookA],
+    composition: { casting: [{ characterId: dario, role: 'lead' }, { entryId: ids['Oren Hale: The Ferryman'], role: 'known' }] },
+  });
+  const ps = start.body.id;
+  const storyB = (await J('/api/stories', { title: 'Prompt check B', personaId: null, lorebookIds: [bookA], composition: { casting: [{ characterId: dario, role: 'lead' }] } })).body.id;
+  let p = await P(ps);
+  const availableBefore = p.sources.lore.available.total;
+  ok('Known: the greeting names Oren, so his entry fires', traced(p, ids['Oren Hale: The Ferryman'])?.fired === true);
+  ok('Known: and his text is in the request sent to the model', sent(p, orenText));
+  ok('an always-on rule is in the request', sent(p, ruleText));
+
+  const ex = await J(`/api/stories/${ps}/compose`, { casting: [{ entryId: ids['Oren Hale: The Ferryman'], role: 'excluded' }], exclude: [ids['Pacing RULE']] });
+  ok('excluding through the apply route works', ex.status === 200, JSON.stringify(ex.body));
+  p = await P(ps);
+  ok('Excluded: his text is not in the request, though the greeting still names him', !sent(p, orenText));
+  ok('Excluded: his entry is not in the trace at all — never eligible, not merely unfired', !traced(p, ids['Oren Hale: The Ferryman']));
+  ok('Excluded: two fewer entries were available', p.sources.lore.available.total === availableBefore - 2, `${availableBefore} → ${p.sources.lore.available.total}`);
+  ok('an excluded always-on rule is not in the request', !sent(p, ruleText));
+  const pB = await P(storyB);
+  ok('the other story still sends both', sent(pB, orenText) && sent(pB, ruleText));
+
+  await J(`/api/stories/${ps}`, { title: 'Prompt check, edited', characterIds: [dario] }, 'PATCH');
+  p = await P(ps);
+  ok('saving the story details keeps the exclusion', !sent(p, orenText));
+  const bibleX = (await J(`/api/stories/${ps}/bible`, null, 'GET')).body;
+  ok('the Story Bible lists what this story ignores', bibleX.excluded.some((x) => x.title === 'Oren Hale') && bibleX.excluded.some((x) => x.title === 'Pacing RULE'));
+  const redraft = (await J('/api/compose', { lorebookIds: [bookA], storyId: ps })).body;
+  ok('reopening the review shows Oren as excluded', redraft.casting.find((r) => r.name === 'Oren Hale')?.current === 'excluded');
+
+  await J(`/api/stories/${ps}/compose`, { casting: [{ entryId: ids['Oren Hale: The Ferryman'], role: 'known' }], include: [ids['Pacing RULE']] });
+  p = await P(ps);
+  ok('restoring Known puts his text back in the request', sent(p, orenText) && traced(p, ids['Oren Hale: The Ferryman'])?.fired === true);
+  ok('and the rule', sent(p, ruleText));
 
   const legacy = await J('/api/stories', { characterIds: [dario] });
   const legacyStory = (await J(`/api/stories/${legacy.body.id}`, null, 'GET')).body;
