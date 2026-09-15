@@ -387,7 +387,7 @@ export function composeSource(entries, ctx = {}) {
       always: !!primary.constant,
       enabled: primary.enabled,
       keys: keysOf(primary).slice(0, 4),
-      lorebookId: primary.lorebook_id || null,
+      lorebookId: primary.lorebookId || primary.lorebook_id || null,
     });
   }
 
@@ -472,7 +472,7 @@ export function composeSource(entries, ctx = {}) {
     entryId: e.id, title: e.title || '(untitled)', kind: e.kind,
     tokens: tokens(e.content), always: !!e.constant, enabled: e.enabled,
     keys: keysOf(e).slice(0, 4),
-    lorebookId: e.lorebook_id || null,
+    lorebookId: e.lorebookId || e.lorebook_id || null,
     about: aboutOf(e.id),
     ...(note ? { note } : {}),
   });

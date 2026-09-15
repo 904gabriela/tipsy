@@ -856,7 +856,7 @@ $('#btn-new-story').addEventListener('click', () => {
 });
 
 function stepBar(n) {
-  const names = ['What it is', 'Who is in it', 'What it knows'];
+  const names = ['What it is', 'Who leads', 'Sources', 'Review'];
   return `<div class="steps">${names.map((t, i) => `
     <span class="step${i + 1 === n ? ' is-on' : ''}${i + 1 < n ? ' done' : ''}">
       <b>${i + 1}</b>${esc(t)}
@@ -898,8 +898,8 @@ function newStoryStep(n) {
     sheet('Begin a story', `
       ${stepBar(2)}
       <div class="field">
-        <label>Who is in it?</label>
-        <div class="why">The first one you pick leads, and their greeting opens the story. You can add more later.</div>
+        <label>Who leads it?</label>
+        <div class="why">The first one you pick leads, and their greeting opens the story. Anyone else you pick joins the cast, and you can change their part when you review it.</div>
         ${L.characters.length
         ? picker(L.characters.map((c) => ({ id: c.id, title: c.name, sub: (c.description || '').slice(0, 70) })),
           { selected: new Set(draft.characterIds) })
@@ -932,50 +932,574 @@ function newStoryStep(n) {
   sheet('Begin a story', `
     ${stepBar(3)}
     <div class="field">
-      <label>What does this story know?</label>
-      <div class="why">Lorebooks feed the world in as it comes up. You can change this later, and you do not need one to start.</div>
-      ${L.lorebooks.length
-    ? picker(L.lorebooks.map((b) => ({
-      id: b.id, title: b.name,
-      sub: `${b.entry_count} entries${b.always_on ? `, ${b.always_on} always on` : ''}`,
-    })), { selected: new Set(draft.lorebookIds) })
-    : '<div class="empty">No lorebooks yet. You can add them any time.</div>'}
+      <label>What is it made from?</label>
+      <div class="why">A source is a package of material: its people, places, families and history. Nexus reads it and shows you what it found before anything is added. You do not need one to start.</div>
+      ${sourcePicker(L.lorebooks, new Set(draft.lorebookIds))}
     </div>
     <div class="sheet-actions">
       <button class="btn quiet" id="back2">Back</button>
-      <button class="btn quiet" id="skip">Skip for now</button>
-      <button class="btn primary" id="go">Begin</button>
+      <button class="btn primary" id="go">${draft.lorebookIds.length ? 'Read it' : 'Review'}</button>
     </div>`, (root) => {
     wirePicker(root);
-    $('#back2', root).addEventListener('click', () => newStoryStep(2));
-    $('#skip', root).addEventListener('click', () => {
-      // Nothing here is needed to start writing, and lore is easier to choose
-      // once you know what the story is about anyway.
-      $$('.pick-opt', root).forEach((o) => o.setAttribute('aria-pressed', 'false'));
-      $('#go', root).click();
-    });
-    $('#go', root).addEventListener('click', async (e) => {
-      e.currentTarget.disabled = true;
+    const go = $('#go', root);
+    root.addEventListener('change', () => { go.textContent = picked(root).length ? 'Read it' : 'Review'; });
+    $('#back2', root).addEventListener('click', () => { draft.lorebookIds = picked(root); newStoryStep(2); });
+    go.addEventListener('click', () => {
       draft.lorebookIds = picked(root);
+      beginReview({
+        mode: 'new',
+        title: draft.title,
+        premise: draft.premise,
+        characterIds: draft.characterIds,
+        lorebookIds: draft.lorebookIds,
+        back: () => newStoryStep(3),
+      });
+    });
+  });
+}
+
+/** Source packages to choose from, largest-first within the list the library already sorts. */
+function sourcePicker(books, selected) {
+  if (!books.length) return '<div class="empty">No sources yet. Add one from a file any time.</div>';
+  return picker(books.map((b) => ({
+    id: b.id, title: b.name,
+    sub: `${num(b.entry_count)} entries${b.always_on ? `, ${num(b.always_on)} always on` : ''}`,
+  })), { selected });
+}
+
+// ================================================================ review
+//
+// Source → Composition Draft → Review → Story.
+//
+// Adding a package used to attach a file and say nothing about what was in
+// it. This reads it first and shows the story it makes: who is in it, where it
+// happens, what it remembers. Nothing is written until Start or Apply, and
+// then all of it is written at once.
+//
+// Every item on these screens is a reference to an entry that already exists.
+// Opening one shows that entry, not a copy of it.
+
+const CAST_LABEL = {
+  lead: 'Lead', main: 'Main', supporting: 'Supporting', background: 'Background',
+  known: 'Known / Available', excluded: 'Excluded',
+};
+const CAST_ORDER = ['lead', 'main', 'supporting', 'background', 'known', 'excluded'];
+const IN_CAST = new Set(['lead', 'main', 'supporting', 'background']);
+const SECTION_HELP = {
+  places: 'Where it happens.',
+  factions: 'Families, crews and organisations.',
+  backstory: 'What already happened, and what is true about the people in it.',
+  rules: 'How this world works.',
+  directions: 'How the story should be written.',
+  events: 'Things that happen, or have happened.',
+  items: 'Objects that matter.',
+  other: 'Everything that does not fit a heading, and anything worth a second look.',
+};
+
+let rv = null;
+
+/**
+ * Read the chosen sources into a draft and open the review.
+ *
+ *   mode 'new'      — a story that does not exist yet
+ *   mode 'existing' — sources being added to a story that does
+ */
+async function beginReview(opts) {
+  rv = {
+    ...opts,
+    personaId: opts.mode === 'new' ? null : undefined,
+    draft: null,
+    roles: new Map(),
+    links: new Map(),
+    recursion: {},
+    castFilter: 'cast',
+    castFind: '',
+  };
+  sheet(opts.mode === 'new' ? 'Begin a story' : 'Add a source', `
+    ${opts.mode === 'new' ? stepBar(4) : ''}
+    <div class="rv-reading">
+      <div class="rv-spinner" aria-hidden="true"></div>
+      <p>${opts.lorebookIds.length ? 'Reading your source…' : 'Getting the story ready…'}</p>
+    </div>`);
+
+  if (!state.library) await loadLibrary();
+  try {
+    rv.draft = opts.lorebookIds.length
+      ? await post('/api/compose', opts.mode === 'new'
+        ? { lorebookIds: opts.lorebookIds, characterIds: opts.characterIds, premise: opts.premise }
+        : { lorebookIds: opts.lorebookIds, storyId: opts.storyId })
+      : emptyDraft(opts);
+  } catch (err) {
+    sheet('Something went wrong', `<div class="notice">${esc(err.message)}</div>
+      <div class="sheet-actions"><button class="btn primary" id="rv-back">Back</button></div>`,
+    (root) => $('#rv-back', root).addEventListener('click', () => opts.back()));
+    return;
+  }
+  for (const r of rv.draft.casting) rv.roles.set(r.key, r.suggested);
+  rv.draft.links.forEach((l, i) => rv.links.set(i, l.approved));
+  reviewRoot();
+}
+
+/** A story with no sources still has a cast, and still gets reviewed. */
+function emptyDraft(opts) {
+  const cards = (opts.characterIds || []).map((id) => state.library.characters.find((c) => c.id === id)).filter(Boolean);
+  return {
+    context: 'new', mode: 'organize', invented: 0, links: [], unclear: [], sources: [],
+    lead: cards[0] ? { characterId: cards[0].id, name: cards[0].name } : null,
+    casting: cards.map((c, i) => ({
+      key: `card:${c.id}`, characterId: c.id, entryId: null, entryIds: [], name: c.name, backing: 'card',
+      canLead: true, suggested: i === 0 ? 'lead' : 'main', why: [i === 0 ? 'the story is theirs' : 'you chose them'],
+    })),
+    sections: ['places', 'factions', 'backstory', 'rules', 'directions', 'events', 'items', 'other']
+      .map((id) => ({ id, label: { places: 'Locations', factions: 'Factions', backstory: 'Background & Premise', rules: 'Rules', directions: 'Directions', events: 'Events', items: 'Items', other: 'Other' }[id], count: 0, items: [] })),
+    totals: { entries: 0 },
+  };
+}
+
+const roleOf = (row) => rv.roles.get(row.key);
+const leadRow = () => rv.draft.casting.find((r) => roleOf(r) === 'lead') || null;
+
+/** The overview: a story, not a list of rows. */
+function reviewRoot() {
+  const d = rv.draft;
+  const isNew = rv.mode === 'new';
+  const inCast = d.casting.filter((r) => IN_CAST.has(roleOf(r)));
+  const known = d.casting.filter((r) => roleOf(r) === 'known').length;
+  const lead = leadRow();
+  const personas = state.library?.personas || [];
+  const other = d.sections.find((s) => s.id === 'other');
+  const otherCount = (other?.count || 0) + (d.unclear?.length || 0);
+
+  const row = (id, label, count, sub, { dim = false } = {}) => `
+    <button class="rv-row${dim ? ' dim' : ''}" data-open="${esc(id)}">
+      <span class="rv-row-main">
+        <span class="rv-row-label">${esc(label)}</span>
+        ${sub ? `<span class="rv-row-sub">${esc(sub)}</span>` : ''}
+      </span>
+      <span class="rv-count">${num(count)}</span>
+      <span class="rv-chev" aria-hidden="true">›</span>
+    </button>`;
+
+  const castSub = [
+    lead ? `${lead.name} leads` : 'No lead chosen',
+    inCast.length > 1 ? `${num(inCast.length - 1)} more in the cast` : '',
+    known ? `${num(known)} known` : '',
+  ].filter(Boolean).join(' · ');
+
+  sheet(isNew ? 'Review story' : 'Review additions', `
+    ${isNew ? stepBar(4) : ''}
+    ${isNew && rv.title ? `<h3 class="rv-title">${esc(rv.title)}</h3>` : ''}
+
+    <div class="rv-block">
+      <div class="rv-label">You</div>
+      ${isNew ? `
+        <div class="field rv-you">
+          <select id="rv-persona" aria-label="Who you play">
+            <option value=""${!rv.personaId ? ' selected' : ''}>Nobody in particular</option>
+            ${personas.map((p) => `<option value="${esc(p.id)}"${rv.personaId === p.id ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}
+          </select>
+          <div class="why">Optional. Who you play in this story. You can set it later too.</div>
+        </div>` : `
+        <div class="rv-static">${esc(state.story?.persona?.name || 'Nobody in particular')}</div>`}
+    </div>
+
+    <div class="rv-block">
+      <div class="rv-label">Sources</div>
+      ${d.sources.length ? `<button class="rv-row" data-open="sources">
+        <span class="rv-row-main">
+          ${d.sources.map((s) => `<span class="rv-row-label">${esc(s.name)}</span>`).join('')}
+          <span class="rv-row-sub">${num(d.totals.entries)} entries, all of them still in their source</span>
+        </span>
+        <span class="rv-chev" aria-hidden="true">›</span>
+      </button>` : '<div class="rv-static dim">None. The story starts from its cast alone.</div>'}
+    </div>
+
+    <div class="rv-block">
+      <div class="rv-label">The story</div>
+      <div class="rv-rows">
+        ${row('casting', 'Casting', inCast.length, castSub)}
+        ${d.sections.filter((s) => s.id !== 'other').map((s) => row(s.id, s.label, s.count, '', { dim: !s.count })).join('')}
+        ${row('other', 'Other', otherCount, '', { dim: !otherCount })}
+      </div>
+    </div>
+
+    ${d.sources.length ? `<p class="rv-promise">Nothing here was invented. Every person, place and note is an entry from your source, and none of it is copied.</p>` : ''}
+    ${!lead ? `<div class="notice">Choose a lead in Casting before ${isNew ? 'starting' : 'applying'}. A lead needs a character card.</div>` : ''}
+
+    <div class="sheet-actions">
+      <button class="btn quiet" id="rv-back">Back</button>
+      <button class="btn primary" id="rv-go"${!lead ? ' disabled' : ''}>${isNew ? 'Start story' : 'Apply to story'}</button>
+    </div>
+  `, (root) => {
+    const sel = $('#rv-persona', root);
+    if (sel) sel.addEventListener('change', () => { rv.personaId = sel.value || null; });
+    $('#rv-back', root).addEventListener('click', () => rv.back());
+    $('#rv-go', root).addEventListener('click', (e) => (isNew ? startReviewed(e.currentTarget) : applyReviewed(e.currentTarget)));
+    root.addEventListener('click', (e) => {
+      const o = e.target.closest('[data-open]');
+      if (!o) return;
+      if (o.dataset.open === 'casting') reviewCasting();
+      else if (o.dataset.open === 'sources') reviewSources();
+      else reviewSection(o.dataset.open);
+    });
+  });
+}
+
+const reviewBack = () => `<button class="btn quiet rv-backrow" data-rv-root>&larr; Review</button>`;
+function wireReviewBack(root) {
+  root.addEventListener('click', (e) => { if (e.target.closest('[data-rv-root]')) reviewRoot(); });
+}
+
+/** Everyone the source describes, with a part each, and the reasons for it. */
+function reviewCasting() {
+  const d = rv.draft;
+  const rows = d.casting;
+  const locked = rv.mode === 'existing';
+  const counts = {
+    cast: rows.filter((r) => IN_CAST.has(roleOf(r))).length,
+    known: rows.filter((r) => roleOf(r) === 'known').length,
+    excluded: rows.filter((r) => roleOf(r) === 'excluded').length,
+  };
+  const find = rv.castFind.trim().toLowerCase();
+  const shown = rows
+    .filter((r) => (rv.castFilter === 'all' ? true
+      : rv.castFilter === 'cast' ? IN_CAST.has(roleOf(r)) : roleOf(r) === rv.castFilter))
+    .filter((r) => !find || r.name.toLowerCase().includes(find))
+    .sort((a, b) => CAST_ORDER.indexOf(roleOf(a)) - CAST_ORDER.indexOf(roleOf(b)) || a.name.localeCompare(b.name));
+
+  const chip = (id, label, n) => `<button class="rv-chip" data-filter="${id}" aria-pressed="${rv.castFilter === id}">${esc(label)} <b>${num(n)}</b></button>`;
+
+  const castRow = (r) => {
+    const role = roleOf(r);
+    const cardLocked = locked && r.backing === 'card';
+    const changed = role !== r.suggested;
+    return `
+    <div class="cast-row" data-key="${esc(r.key)}">
+      <div class="cast-top">
+        <button class="cast-name" ${r.entryId ? `data-entry-open="${esc(r.entryId)}"` : 'tabindex="-1"'}>${esc(r.name)}</button>
+        <select class="cast-role" data-role-for="${esc(r.key)}" aria-label="Part for ${esc(r.name)}"${cardLocked ? ' disabled' : ''}>
+          ${CAST_ORDER.map((k) => {
+    const blocked = k === 'lead' && !r.canLead;
+    return `<option value="${k}"${k === role ? ' selected' : ''}${blocked ? ' disabled' : ''}>${esc(blocked ? 'Lead — needs a card' : CAST_LABEL[k])}</option>`;
+  }).join('')}
+        </select>
+      </div>
+      <div class="cast-meta">
+        <span class="cast-suggest${changed ? ' changed' : ''}">Suggested ${esc(CAST_LABEL[r.suggested])}</span>
+        <span class="cast-backing">${r.backing === 'card' ? 'Character card' : r.libraryCardId ? 'From the source · has a card too' : 'From the source'}</span>
+      </div>
+      ${r.why?.length ? `<div class="cast-why">${esc(r.why.slice(0, 3).join(' · '))}</div>` : ''}
+      ${cardLocked ? '<div class="cast-why">Character cards are changed from the story sheet.</div>' : ''}
+    </div>`;
+  };
+
+  sheet('Casting', `
+    ${reviewBack()}
+    <p class="rv-lede">Who is in the story, and how much. Anyone Known stays available through the source and turns up when a scene needs them.</p>
+    <div class="rv-chips">
+      ${chip('cast', 'In the cast', counts.cast)}
+      ${chip('known', 'Known', counts.known)}
+      ${counts.excluded ? chip('excluded', 'Excluded', counts.excluded) : ''}
+      ${chip('all', 'Everyone', rows.length)}
+    </div>
+    ${rows.length > 10 ? `<input type="search" class="rv-find" id="rv-find" placeholder="Find someone" value="${esc(rv.castFind)}" autocomplete="off" enterkeyhint="search">` : ''}
+    <div class="cast-list" id="cast-list">
+      ${shown.map(castRow).join('') || `<div class="empty">${rows.length ? 'Nobody here.' : 'No people found in this source.'}</div>`}
+    </div>
+    <div class="sheet-actions"><button class="btn primary" data-rv-root>Done</button></div>
+  `, (root) => {
+    wireReviewBack(root);
+    root.addEventListener('click', (e) => {
+      const f = e.target.closest('[data-filter]');
+      if (f) { rv.castFilter = f.dataset.filter; reviewCasting(); return; }
+      const o = e.target.closest('[data-entry-open]');
+      if (o) reviewEntry(o.dataset.entryOpen, reviewCasting);
+    });
+    root.addEventListener('change', (e) => {
+      const s = e.target.closest('[data-role-for]');
+      if (!s) return;
+      setCastRole(s.dataset.roleFor, s.value);
+    });
+    const input = $('#rv-find', root);
+    if (input) {
+      input.addEventListener('input', () => {
+        rv.castFind = input.value;
+        const at = input.selectionStart;
+        reviewCasting();
+        const again = $('#rv-find');
+        if (again) { again.focus(); again.setSelectionRange(at, at); }
+      });
+    }
+  });
+}
+
+/**
+ * Change one person's part.
+ *
+ * A story has one lead. Naming a new one moves the old one to Main and says
+ * so, rather than asking a question the answer to which is almost always yes.
+ */
+function setCastRole(key, role) {
+  const row = rv.draft.casting.find((r) => r.key === key);
+  if (!row) return;
+  if (role === 'lead' && !row.canLead) { toast(`${row.name} has no character card, so they cannot lead.`); reviewCasting(); return; }
+  if (role === 'lead') {
+    const prev = leadRow();
+    if (prev && prev.key !== key) {
+      rv.roles.set(prev.key, 'main');
+      toast(`${row.name} now leads. ${prev.name} is Main.`);
+    }
+  }
+  rv.roles.set(key, role);
+  if (!leadRow()) toast('The story has no lead now. Choose one before starting.');
+  reviewCasting();
+}
+
+/** One section of the story: the entries in it, and who each is about. */
+function reviewSection(id) {
+  const d = rv.draft;
+  const s = d.sections.find((x) => x.id === id);
+  const items = id === 'other' ? [...(s?.items || []), ...(d.unclear || [])] : (s?.items || []);
+  const label = s?.label || 'Other';
+
+  // The links suggested for each entry, by their index in the draft.
+  const linksFor = new Map();
+  d.links.forEach((l, i) => {
+    if (!linksFor.has(l.entryId)) linksFor.set(l.entryId, []);
+    linksFor.get(l.entryId).push({ ...l, i });
+  });
+
+  const item = (e) => {
+    const ls = linksFor.get(e.entryId) || [];
+    return `
+    <div class="rv-entry${e.enabled === false ? ' off' : ''}">
+      <button class="rv-entry-open" data-entry-open="${esc(e.entryId)}">
+        <span class="rv-entry-title">${esc(e.title)}</span>
+        <span class="rv-entry-meta">
+          ${e.always ? '<b class="pin">always on</b>' : ''}
+          ${e.enabled === false ? '<b class="off-tag">switched off</b>' : ''}
+          <span>${esc((e.keys || []).slice(0, 3).join(', ') || 'no keys')}</span>
+          <span>~${num(e.tokens)} tokens</span>
+        </span>
+        ${e.note ? `<span class="rv-entry-note">${esc(e.note)}</span>` : ''}
+      </button>
+      ${ls.length ? `<div class="rv-about">
+        <span class="rv-about-label">About</span>
+        ${ls.map((l) => `<button class="rv-link ${esc(l.confidence)}" data-link="${l.i}" aria-pressed="${rv.links.get(l.i)}" title="${esc(l.why)}">${esc(l.targetName)}${l.confidence === 'low' ? '?' : ''}</button>`).join('')}
+      </div>` : ''}
+    </div>`;
+  };
+
+  const anyLow = items.some((e) => (linksFor.get(e.entryId) || []).some((l) => l.confidence === 'low'));
+
+  sheet(label, `
+    ${reviewBack()}
+    <p class="rv-lede">${esc(SECTION_HELP[id] || '')}</p>
+    ${items.some((e) => linksFor.has(e.entryId)) ? `<p class="rv-hint">Tap a name to say whether an entry is about them. ${anyLow ? 'Names with a question mark are guesses and are left off unless you tick them.' : ''}</p>` : ''}
+    <div class="rv-entries">
+      ${items.map(item).join('') || '<div class="empty">Nothing of this kind in the source.</div>'}
+    </div>
+    <div class="sheet-actions"><button class="btn primary" data-rv-root>Done</button></div>
+  `, (root) => {
+    wireReviewBack(root);
+    root.addEventListener('click', (e) => {
+      const l = e.target.closest('[data-link]');
+      if (l) {
+        const i = Number(l.dataset.link);
+        const on = !rv.links.get(i);
+        rv.links.set(i, on);
+        l.setAttribute('aria-pressed', String(on));
+        return;
+      }
+      const o = e.target.closest('[data-entry-open]');
+      if (o) reviewEntry(o.dataset.entryOpen, () => reviewSection(id));
+    });
+  });
+}
+
+/**
+ * One entry, as the engine holds it.
+ *
+ * Read straight from the source, every time: this is that entry, not a copy
+ * taken when the review opened. Editing it happens in its source, where a
+ * change reaches every story that uses it.
+ */
+async function reviewEntry(entryId, back) {
+  sheet('Entry', `${reviewBack()}<div class="empty">Reading…</div>`, wireReviewBack);
+  let e;
+  try { e = await get(`/api/entries/${entryId}`); } catch (err) {
+    sheet('Entry', `${reviewBack()}<div class="notice">${esc(err.message)}</div>`, wireReviewBack); return;
+  }
+  const src = rv.draft.sources.find((s) => s.id === (e.lorebookId || e.lorebook_id));
+  const yes = (v) => (v ? 'yes' : 'no');
+  const facts = [
+    ['Source', src ? src.name : '—'],
+    ['Type', e.kind || '—'],
+    ['Switched on', yes(e.enabled !== false && e.enabled !== 0)],
+    ['Always on', yes(e.constant)],
+    ['Keywords', (e.keys || []).join(', ') || '—'],
+    ['Also needs', (e.secondaryKeys || []).join(', ') || '—'],
+    ['Priority', e.order ?? '—'],
+    ['Chance', e.useProbability === false ? '100%' : `${e.probability ?? 100}%`],
+    ['Group', e.group || '—'],
+    ['Can be pulled in by other entries', yes(!e.excludeRecursion)],
+    ['Can pull in other entries', yes(!e.preventRecursion)],
+    ['Sticky · cooldown · delay', [e.sticky, e.cooldown, e.delay].map((x) => x ?? '—').join(' · ')],
+    ['Size', `~${num(Math.ceil(String(e.content || '').length / 4))} tokens`],
+  ];
+  sheet(e.title || 'Entry', `
+    <button class="btn quiet rv-backrow" id="rv-entry-back">&larr; Back</button>
+    <div class="rv-facts">${facts.map(([k, v]) => `<div class="stat-row"><span>${esc(k)}</span><span>${esc(String(v))}</span></div>`).join('')}</div>
+    <div class="rv-content">${esc(e.content || '')}</div>
+    <p class="rv-hint">To change this entry, open ${esc(src ? src.name : 'its source')} from Sources in your Library. A change there reaches every story that uses it.</p>
+    <div class="sheet-actions"><button class="btn primary" id="rv-entry-done">Back</button></div>
+  `, (root) => {
+    $('#rv-entry-back', root).addEventListener('click', back);
+    $('#rv-entry-done', root).addEventListener('click', back);
+  });
+}
+
+/** The sources themselves, and how this story will use each one. */
+function reviewSources() {
+  const d = rv.draft;
+  sheet('Sources', `
+    ${reviewBack()}
+    <p class="rv-lede">What the story is made from. Connecting a source copies nothing: the source stays in your Library exactly as it is.</p>
+    ${d.sources.map((s) => `
+      <div class="switch-row">
+        <div class="switch-main" style="min-width:0">
+          <div class="switch-title">${esc(s.name)}</div>
+          <div class="switch-why">${num(s.entries)} entries. Let entries pull in other entries they mention? Turn this off for densely cross-referenced sources, where one mention can pull in most of the book.</div>
+        </div>
+        <button class="switch" data-spread="${esc(s.id)}" aria-label="Let entries pull in others" aria-pressed="${rv.recursion[s.id] !== 'block'}"></button>
+      </div>`).join('')}
+    <div class="sheet-actions"><button class="btn primary" data-rv-root>Done</button></div>
+  `, (root) => {
+    wireReviewBack(root);
+    root.addEventListener('click', (e) => {
+      const c = e.target.closest('[data-spread]');
+      if (!c) return;
+      const on = c.getAttribute('aria-pressed') !== 'true';
+      c.setAttribute('aria-pressed', String(on));
+      rv.recursion[c.dataset.spread] = on ? null : 'block';
+    });
+  });
+}
+
+/** What the reviewed draft says, in the shape the server stores. */
+function reviewedComposition() {
+  const d = rv.draft;
+  return {
+    casting: d.casting.map((r) => ({
+      ...(r.characterId ? { characterId: r.characterId } : { entryId: r.entryId }),
+      role: roleOf(r),
+    })),
+    links: d.links.filter((l, i) => rv.links.get(i)).map((l) => (l.characterId
+      ? { entryId: l.entryId, characterId: l.characterId }
+      : { entryId: l.entryId, aboutId: l.aboutId })),
+    recursion: rv.recursion,
+  };
+}
+
+async function startReviewed(btn) {
+  const lead = leadRow();
+  if (!lead) { toast('Choose a lead first.'); return; }
+  btn.disabled = true;
+  try {
+    // A card that offers several ways to meet someone asks which one.
+    // One greeting is not a choice, so it never interrupts.
+    const card = (state.library?.characters || []).find((c) => c.id === lead.characterId);
+    let startingPointId = null;
+    if (card && card.starts > 1) {
+      startingPointId = await chooseOpening('character', card.id);
+      if (startingPointId === false) { reviewRoot(); return; }
+    }
+    const { id } = await post('/api/stories', {
+      title: rv.title,
+      personaId: rv.personaId || null,
+      lorebookIds: rv.lorebookIds,
+      startingPointId,
+      settings: rv.premise ? { premise: rv.premise } : undefined,
+      composition: reviewedComposition(),
+    });
+    rv = null;
+    closeSheet();
+    await loadLibrary();
+    openStory(id);
+  } catch (err) {
+    toast(err.message, { kind: 'bad', ms: 8000 });
+    btn.disabled = false;
+  }
+}
+
+async function applyReviewed(btn) {
+  btn.disabled = true;
+  const c = reviewedComposition();
+  // Cards already in the story stay as they are, and anyone Known who was
+  // never in the cast needs nothing written.
+  const current = new Map(rv.draft.casting.map((r) => [r.key, r.current]));
+  const casting = c.casting.filter((x, i) => {
+    const r = rv.draft.casting[i];
+    if (r.characterId) return false;
+    return IN_CAST.has(x.role) || current.get(r.key);
+  });
+  try {
+    const storyId = rv.storyId;
+    const out = await post(`/api/stories/${storyId}/compose`, {
+      lorebookIds: rv.lorebookIds, casting, links: c.links, recursion: c.recursion,
+    });
+    rv = null;
+    state.story = await get(`/api/stories/${storyId}`);
+    await loadLibrary();
+    toast('Added to the story.', { kind: 'good', sub: `${num(out.npcs)} from sources in the cast · ${num(out.links)} links` });
+    closeSheet();
+  } catch (err) {
+    toast(err.message, { kind: 'bad', ms: 8000 });
+    btn.disabled = false;
+  }
+}
+
+/**
+ * Before a source leaves a story, what the story would lose.
+ *
+ * Nothing leaves the Library. The preview names the people who stood on the
+ * source's entries, because they are the part a person would miss.
+ */
+async function confirmSourceRemoval(storyId, bookId, after) {
+  sheet('Remove source', '<div class="empty">Checking what it is used for…</div>');
+  let p;
+  try { p = await get(`/api/stories/${storyId}/sources/${bookId}`); } catch (err) {
+    sheet('Remove source', `<div class="notice">${esc(err.message)}</div><div class="sheet-actions"><button class="btn primary" id="rm-back">Back</button></div>`,
+      (root) => $('#rm-back', root).addEventListener('click', after));
+    return;
+  }
+  const losing = p.loses.filter((l) => l.count);
+  sheet(`Remove ${p.source.name}?`, `
+    <p class="rv-lede">This story will lose access to:</p>
+    <div class="rv-facts">
+      ${losing.map((l) => `<div class="stat-row"><span>${esc(l.label)}</span><span>${num(l.count)}</span></div>`).join('') || '<div class="why">Nothing it was using.</div>'}
+    </div>
+    ${p.castLeaving.length ? `<p class="rv-lede" style="margin-top:14px">Leaving the cast:</p>
+      <div class="rv-facts">${p.castLeaving.map((c) => `<div class="stat-row"><span>${esc(c.name)}</span><span>${esc(CAST_LABEL[c.role] || c.role)}</span></div>`).join('')}</div>` : ''}
+    ${p.recursion === 'block' ? '<p class="rv-hint">Its setting for this story, keeping entries from pulling in others, is forgotten with it.</p>' : ''}
+    ${p.personaFrom ? `<p class="rv-hint">${esc(p.personaFrom)} was made from an entry in this source and stays as your persona.</p>` : ''}
+    <div class="rv-keeps">
+      <b>Unaffected</b>
+      <span>${esc(p.keeps.join(' · '))}</span>
+    </div>
+    <div class="sheet-actions">
+      <button class="btn quiet" id="rm-cancel">Keep it</button>
+      <button class="btn danger" id="rm-go">Remove from story</button>
+    </div>
+  `, (root) => {
+    $('#rm-cancel', root).addEventListener('click', after);
+    $('#rm-go', root).addEventListener('click', async (e) => {
+      e.currentTarget.disabled = true;
       try {
-        // A card that offers several ways to meet someone asks which one.
-        // One greeting is not a choice, so it never interrupts.
-        const lead = (state.library?.characters || []).find((c) => c.id === draft.characterIds[0]);
-        let startingPointId = null;
-        if (lead && lead.starts > 1) {
-          startingPointId = await chooseOpening('character', lead.id);
-          if (startingPointId === false) { e.currentTarget.disabled = false; return; }
-        }
-        const { id } = await post('/api/stories', {
-          characterIds: draft.characterIds,
-          lorebookIds: draft.lorebookIds,
-          title: draft.title,
-          startingPointId,
-          settings: draft.premise ? { premise: draft.premise } : undefined,
-        });
-        closeSheet();
-        await loadLibrary();
-        openStory(id);
+        await del(`/api/stories/${storyId}/sources/${bookId}`);
+        state.story = await get(`/api/stories/${storyId}`);
+        toast(`${p.source.name} removed from this story.`, { sub: 'It is still in your Library.' });
+        after();
       } catch (err) { toast(err.message, { kind: 'bad' }); e.currentTarget.disabled = false; }
     });
   });
@@ -1010,22 +1534,20 @@ async function panelStorySheet() {
     { selected: cast })}
     <button class="btn" id="ss-newchar" style="margin-top:8px">+ Write a new character</button>
 
-    <div class="sec-head">What it knows</div>
-    <div class="hint">Tap a name to switch a lorebook on or off. The pencil opens it.</div>
+    <div class="sec-head">What it is made from</div>
+    <div class="hint">Adding a source shows you what is in it before anything changes. Removing one keeps it in your Library.</div>
     <div class="list" id="ss-books">
-      ${(L.lorebooks || []).map((b) => {
-    const on = (st.lorebookIds || []).includes(b.id);
-    return `
+      ${(L.lorebooks || []).filter((b) => (st.lorebookIds || []).includes(b.id)).map((b) => `
         <div class="item" style="align-items:center">
-          <button class="pick-box${on ? ' on' : ''}" data-book="${esc(b.id)}" aria-pressed="${on}">✓</button>
           <span class="item-main">
             <span class="item-title">${esc(b.name)}</span>
             <span class="item-sub">${num(b.entry_count)} entries${b.always_on ? `, ${num(b.always_on)} always on` : ''}</span>
           </span>
           <button class="btn quiet" data-editbook="${esc(b.id)}">Edit</button>
-        </div>`;
-  }).join('') || '<div class="empty">No lorebooks yet.</div>'}
+          <button class="btn quiet" data-removebook="${esc(b.id)}">Remove</button>
+        </div>`).join('') || '<div class="empty">No sources yet.</div>'}
     </div>
+    <button class="btn" id="ss-addsource" style="margin-top:8px">+ Add a source</button>
 
     <div class="sheet-actions">
       <button class="btn quiet" data-back>Back</button>
@@ -1033,16 +1555,42 @@ async function panelStorySheet() {
     </div>`, (root) => {
     wirePicker(root);
 
+    // Coming back here from a source's own screens, Back still goes wherever
+    // this sheet's Back went before.
+    const parent = sheetStack[sheetStack.length - 1];
+    const reopen = () => { sheetStack.pop(); pendingBack = parent; panelStorySheet(); };
+
     root.addEventListener('click', (e) => {
-      const box = e.target.closest('[data-book]');
-      if (box) {
-        const on = box.getAttribute('aria-pressed') !== 'true';
-        box.setAttribute('aria-pressed', String(on));
-        box.classList.toggle('on', on);
+      const rm = e.target.closest('[data-removebook]');
+      if (rm) {
+        confirmSourceRemoval(st.id, rm.dataset.removebook, reopen);
         return;
       }
       const edit = e.target.closest('[data-editbook]');
       if (edit) { closeSheet(); openLorebook(edit.dataset.editbook); }
+    });
+
+    $('#ss-addsource', root).addEventListener('click', () => {
+      const back = reopen;
+      const choices = (L.lorebooks || []).filter((b) => !(st.lorebookIds || []).includes(b.id));
+      sheet('Add a source', `
+        <div class="field">
+          <label>Which source?</label>
+          <div class="why">Nexus reads it and shows you who and what is in it. Nothing is added until you apply it.</div>
+          ${sourcePicker(choices, new Set())}
+        </div>
+        <div class="sheet-actions">
+          <button class="btn quiet" id="as-back">Back</button>
+          <button class="btn primary" id="as-go">Read it</button>
+        </div>`, (r2) => {
+        wirePicker(r2);
+        $('#as-back', r2).addEventListener('click', back);
+        $('#as-go', r2).addEventListener('click', () => {
+          const ids = picked(r2);
+          if (!ids.length) { toast('Pick a source first.'); return; }
+          beginReview({ mode: 'existing', storyId: st.id, lorebookIds: ids, back });
+        });
+      });
     });
 
     $('#ss-newchar', root).addEventListener('click', () => characterBuilder(null, async () => {
@@ -1053,12 +1601,14 @@ async function panelStorySheet() {
     $('#ss-save', root).addEventListener('click', async (e) => {
       e.currentTarget.disabled = true;
       const characterIds = picked(root);
-      const lorebookIds = $$('[data-book][aria-pressed="true"]', root).map((b) => b.dataset.book);
+      if (!characterIds.length) { toast('A story needs at least one character.'); e.currentTarget.disabled = false; return; }
       try {
+        // Sources are added and removed on their own, with a preview each
+        // way, so saving the sheet never touches them.
         await patch(`/api/stories/${st.id}`, {
           title: $('#ss-title', root).value.trim() || st.title,
           settings: { ...s, premise: $('#ss-premise', root).value.trim() },
-          characterIds, lorebookIds,
+          characterIds,
         });
         state.story = await get(`/api/stories/${st.id}`);
         $('#story-title').textContent = state.story.title;
@@ -1718,6 +2268,12 @@ async function storyBible() {
     <div class="whos">
       ${b.persona ? who({ ...b.persona, role: 'you' }) : '<div class="why">Nobody is playing you in this story.</div>'}
       ${b.cast.map(who).join('')}
+      ${(b.npcs || []).map((n) => `
+        <div class="whorow">
+          <span class="whoface blank">${esc(String(n.name || '?')[0].toUpperCase())}</span>
+          <span class="whoname">${esc(n.name)}</span>
+          <span class="whorole">${esc(n.role)} · from a source</span>
+        </div>`).join('')}
     </div>
     ${b.knownPeople.count ? `<div class="why dim">${num(b.knownPeople.count)} more people are written about in this story's material. They are not cast — they appear when a scene calls for them.</div>` : ''}
 
