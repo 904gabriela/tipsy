@@ -91,19 +91,53 @@ export function entityUsage(db, entityId) {
  * and the package is a narrative framework. A native package's declared role
  * is stored as approved; an inferred one only ever as proposed.
  */
-export function setSourceRole(db, { lorebookId, role, origin, status, confidence = null, evidence = {}, domains = [] }) {
+export function setSourceRole(db, { lorebookId, role, origin, status, confidence = null, evidence = {}, domains = [], subjectEntityId = null, ownerStoryId = null }) {
   if (!PACKAGE_ROLES.includes(role)) throw new SemanticError(`"${role}" is not a package role.`);
+  if (subjectEntityId && !getEntity(db, subjectEntityId)) throw new SemanticError('No such entity for this source to be about.');
+  if (ownerStoryId && !q(db).get(`SELECT 1 FROM stories WHERE id=?`, ownerStoryId)) throw new SemanticError('No such story to own this source.');
+  if (subjectEntityId && ownerStoryId) throw new SemanticError("A source is either reusable material about someone, or one story's own material — not both.");
   // Domains are tags: lower-case words, deduplicated, nothing more.
   const tags = [...new Set((Array.isArray(domains) ? domains : []).map((d) => String(d).trim().toLowerCase().replace(/\s+/g, '-')).filter(Boolean))];
   if (!['native', 'converted', 'manual', 'inferred'].includes(origin)) throw new SemanticError('A package role needs an origin.');
   if (!['proposed', 'approved'].includes(status)) throw new SemanticError('A package role is proposed or approved.');
   if (status === 'approved' && origin === 'inferred') throw new SemanticError('An inferred role cannot be approved as it stands; a person approves it through review.');
-  q(db).run(`INSERT INTO source_semantics (lorebook_id,package_role,domains,origin,status,confidence,evidence,reviewed_at,created_at,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?)
+  q(db).run(`INSERT INTO source_semantics (lorebook_id,package_role,domains,subject_entity_id,owner_story_id,origin,status,confidence,evidence,reviewed_at,created_at,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
              ON CONFLICT(lorebook_id) DO UPDATE SET package_role=excluded.package_role, domains=excluded.domains,
+               subject_entity_id=excluded.subject_entity_id, owner_story_id=excluded.owner_story_id,
                origin=excluded.origin, status=excluded.status, confidence=excluded.confidence, evidence=excluded.evidence,
                reviewed_at=excluded.reviewed_at, updated_at=excluded.updated_at`,
-  lorebookId, role, j(tags), origin, status, confidence, j(evidence), status === 'approved' ? now() : null, now(), now());
+  lorebookId, role, j(tags), subjectEntityId, ownerStoryId, origin, status, confidence, j(evidence), status === 'approved' ? now() : null, now(), now());
+}
+
+// ------------------------------------------------------------ resources
+
+/**
+ * Say which person a card or persona represents.
+ *
+ * Only called on an explicit decision: a native package binding its own
+ * character to its own entity, or a person choosing in review. The resource
+ * must not already represent someone else.
+ */
+function bindResource(db, table, resourceId, entityId) {
+  const row = q(db).get(`SELECT id, entity_id FROM ${table} WHERE id=?`, resourceId);
+  if (!row) throw new SemanticError(table === 'characters' ? 'No such character.' : 'No such persona.');
+  const entity = getEntity(db, entityId);
+  if (!entity) throw new SemanticError('No such entity.');
+  if (entity.type !== 'person') throw new SemanticError(`A ${table === 'characters' ? 'character' : 'persona'} represents a person, not a ${entity.type}.`);
+  if (row.entity_id && row.entity_id !== entityId) throw new SemanticError('This already represents someone else. Changing that is a separate decision.');
+  q(db).run(`UPDATE ${table} SET entity_id=? WHERE id=?`, entityId, resourceId);
+}
+export const bindCharacterEntity = (db, characterId, entityId) => bindResource(db, 'characters', characterId, entityId);
+export const bindPersonaEntity = (db, personaId, entityId) => bindResource(db, 'personas', personaId, entityId);
+
+/** A display path as stored: a short list of non-empty group names, or null. */
+export function normalizeDisplayPath(path) {
+  if (path === null || path === undefined) return null;
+  if (!Array.isArray(path) || !path.length || path.length > 8) throw new SemanticError('A display path is a list of one to eight group names.');
+  const clean = path.map((s) => (typeof s === 'string' ? s.trim() : ''));
+  if (clean.some((s) => !s || s.length > 80)) throw new SemanticError('Each group name in a display path is 1 to 80 characters.');
+  return clean;
 }
 
 export function sourceRole(db, lorebookId) {
@@ -121,7 +155,8 @@ const CATEGORIES = new Set([...PERSON_CATEGORIES, ...WORLD_CATEGORIES, 'profile'
  * instead of silently keeping or losing the decision. Proposed rows carry no
  * hash: they were never reviewed.
  */
-export function setEntrySemantics(db, { entryId, scope, category, definesEntityId = null, origin, status, confidence = null, evidence = {}, activationPolicy = null }) {
+export function setEntrySemantics(db, { entryId, scope, category, definesEntityId = null, origin, status, confidence = null, evidence = {}, activationPolicy = null, displayPath = null }) {
+  const path = normalizeDisplayPath(displayPath);
   if (!['entity', 'world', 'other'].includes(scope)) throw new SemanticError(`"${scope}" is not a scope.`);
   if (!CATEGORIES.has(category)) throw new SemanticError(`"${category}" is not a category.`);
   if (!['native', 'converted', 'manual', 'generated', 'inferred'].includes(origin)) throw new SemanticError('Semantics need an origin.');
@@ -135,15 +170,19 @@ export function setEntrySemantics(db, { entryId, scope, category, definesEntityI
     if (!declared) throw new SemanticError('An entry can only define an entity its own source declares.');
   }
   const hash = status === 'approved' ? entryHash({ ...entry, keys: parse(entry.keys, []) }) : null;
-  q(db).run(`INSERT INTO entry_semantics (entry_id,scope,category,defines_entity_id,origin,status,confidence,evidence,content_hash,activation_policy,reviewed_at,created_at,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+  if (activationPolicy !== null && !['always', 'keywords', 'advanced'].includes(activationPolicy)) {
+    // 'auto' is reserved in the table and not designed yet.
+    throw new SemanticError(`"${activationPolicy}" is not an activation policy in use.`);
+  }
+  q(db).run(`INSERT INTO entry_semantics (entry_id,scope,category,defines_entity_id,origin,status,confidence,evidence,content_hash,activation_policy,display_path,reviewed_at,created_at,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
              ON CONFLICT(entry_id) DO UPDATE SET
                scope=excluded.scope, category=excluded.category, defines_entity_id=excluded.defines_entity_id,
                origin=excluded.origin, status=excluded.status, confidence=excluded.confidence, evidence=excluded.evidence,
-               content_hash=excluded.content_hash, activation_policy=excluded.activation_policy,
+               content_hash=excluded.content_hash, activation_policy=excluded.activation_policy, display_path=excluded.display_path,
                reviewed_at=excluded.reviewed_at, updated_at=excluded.updated_at`,
   entryId, scope, category, definesEntityId, origin, status, confidence, j(evidence), hash, activationPolicy,
-  status === 'approved' ? now() : null, now(), now());
+  path ? JSON.stringify(path) : null, status === 'approved' ? now() : null, now(), now());
 }
 
 /**

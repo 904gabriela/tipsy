@@ -34,11 +34,14 @@ export const PACKAGE_ROLES = ['character-material', 'world', 'scenario', 'story-
  * @returns {{ role: string|null, state: 'approved'|'proposed'|'none', proposed: string|null }}
  */
 export function packageRoleView(row) {
-  if (!row) return { role: null, state: 'none', proposed: null, domains: [] };
+  if (!row) return { role: null, state: 'none', proposed: null, domains: [], subjectEntityId: null, ownerStoryId: null };
   let domains = [];
   try { domains = JSON.parse(row.domains || '[]'); } catch { /* tags only */ }
-  if (row.status === 'approved') return { role: row.package_role, state: 'approved', proposed: null, domains };
-  return { role: null, state: 'proposed', proposed: row.package_role, domains };
+  // Ownership counts only once approved, like the role itself.
+  const approved = row.status === 'approved';
+  const owners = { subjectEntityId: approved ? row.subject_entity_id || null : null, ownerStoryId: approved ? row.owner_story_id || null : null };
+  if (approved) return { role: row.package_role, state: 'approved', proposed: null, domains, ...owners };
+  return { role: null, state: 'proposed', proposed: row.package_role, domains, ...owners };
 }
 
 /**
@@ -70,18 +73,22 @@ export function entryHash(entry) {
  */
 export function semanticView(entry, row, relations = [], defines = null) {
   if (!row) {
-    return { state: 'none', authoritative: false, stale: false, scope: null, category: null, defines: null, subject: null, related: [], proposedSubjects: relations.filter((r) => r.relation === 'subject').map((r) => r.entity) };
+    return { state: 'none', authoritative: false, stale: false, scope: null, category: null, displayPath: null, defines: null, subject: null, related: [], proposedSubjects: relations.filter((r) => r.relation === 'subject').map((r) => r.entity) };
   }
   const approved = row.status === 'approved';
   const stale = approved && !!row.content_hash && row.content_hash !== entryHash(entry);
   const state = !approved ? 'proposed' : stale ? 'recheck' : 'approved';
   const ok = (r) => r.status === 'approved';
+  let displayPath = null;
+  try { displayPath = row.display_path ? JSON.parse(row.display_path) : null; } catch { /* presentation only */ }
   return {
     state,
     authoritative: approved,
     stale,
     scope: row.scope,
     category: row.category,
+    // For showing the entry under its entity. Nothing that decides anything reads it.
+    displayPath,
     defines: approved ? defines : null,
     subject: approved ? (relations.find((r) => r.relation === 'subject' && ok(r))?.entity || null) : null,
     related: approved ? relations.filter((r) => r.relation === 'related' && ok(r)).map((r) => r.entity) : [],

@@ -52,6 +52,24 @@ const LATER_COLUMNS = [
   // The person a lore-backed cast member IS (P1 of the semantic model).
   // NULL until it can be resolved without guessing; entry_id stays as it was.
   ['story_npcs', 'entity_id', 'TEXT REFERENCES lore_entities(id) ON DELETE RESTRICT'],
+  // Deep characters and personas (P2). Core stays compact: these are the only
+  // new Core slots, and each is empty until someone fills it. Everything
+  // deeper is Knowledge, held as entries.
+  ['characters', 'appearance', 'TEXT'],
+  ['characters', 'behavior', 'TEXT'],
+  ['characters', 'speech_style', 'TEXT'],
+  ['personas', 'personality', 'TEXT'],
+  ['personas', 'appearance', 'TEXT'],
+  ['personas', 'behavior', 'TEXT'],
+  ['personas', 'speech_style', 'TEXT'],
+  // The person a card or persona represents. Only ever written on an explicit
+  // decision (a native package's own declaration, or a review), never guessed.
+  ['characters', 'entity_id', 'TEXT REFERENCES lore_entities(id) ON DELETE RESTRICT'],
+  ['personas', 'entity_id', 'TEXT REFERENCES lore_entities(id) ON DELETE RESTRICT'],
+  // Present in schema.sql for new databases; added here for ones made before.
+  ['entry_semantics', 'display_path', 'TEXT'],
+  ['source_semantics', 'subject_entity_id', 'TEXT REFERENCES lore_entities(id) ON DELETE RESTRICT'],
+  ['source_semantics', 'owner_story_id', 'TEXT REFERENCES stories(id) ON DELETE SET NULL'],
 ];
 
 /**
@@ -149,6 +167,8 @@ function wrap(db) {
         system_prompt: c.systemPrompt || '', post_history_instructions: c.postHistoryInstructions || '',
         creator_notes: c.creatorNotes || '', tags: j(c.tags || []),
         linked_world: c.linkedWorld || '',
+        // Nullable Core slots: empty stays NULL, so nothing changes for a card that never had them.
+        appearance: c.appearance || null, behavior: c.behavior || null, speech_style: c.speechStyle || null,
       };
       if (id && get(`SELECT id FROM characters WHERE id=?`, id)) {
         // Only what was sent. The editor shows a few fields at a time and an
@@ -156,7 +176,7 @@ function wrap(db) {
         const given = Object.entries(fields).filter(([k]) => c[
           { first_message: 'firstMessage', example_dialogue: 'exampleDialogue',
             system_prompt: 'systemPrompt', post_history_instructions: 'postHistoryInstructions',
-            creator_notes: 'creatorNotes', linked_world: 'linkedWorld' }[k] || k
+            creator_notes: 'creatorNotes', linked_world: 'linkedWorld', speech_style: 'speechStyle' }[k] || k
         ] !== undefined);
         if (given.length) {
           run(`UPDATE characters SET ${given.map(([k]) => `${k}=?`).join(',')}, updated_at=? WHERE id=?`,
@@ -733,20 +753,24 @@ function wrap(db) {
 
     // -------------------------------------------------------------- personas
 
-    savePersona({ id, name, description, avatar, fromEntry }) {
+    savePersona({ id, name, description, avatar, fromEntry, personality, appearance, behavior, speechStyle }) {
       // No default for avatar: "not mentioned" must stay distinct from "none",
-      // or renaming someone quietly deletes their picture.
+      // or renaming someone quietly deletes their picture. The Core slots work
+      // the same way: only a slot that was sent is written.
+      const core = { personality, appearance, behavior, speech_style: speechStyle };
       if (id && get(`SELECT 1 FROM personas WHERE id=?`, id)) {
         const fields = ['name=?', 'description=?'];
         const vals = [name, description || ''];
         if (avatar !== undefined) { fields.push('avatar=?'); vals.push(avatar); }
         if (fromEntry !== undefined) { fields.push('from_entry=?'); vals.push(fromEntry); }
+        for (const [k, v] of Object.entries(core)) if (v !== undefined) { fields.push(`${k}=?`); vals.push(v || null); }
         run(`UPDATE personas SET ${fields.join(',')} WHERE id=?`, ...vals, id);
         return id;
       }
       const fresh = id || newId();
-      run(`INSERT INTO personas (id,name,description,avatar,from_entry,created_at) VALUES (?,?,?,?,?,?)`,
-        fresh, name, description || '', avatar ?? null, fromEntry ?? null, now());
+      run(`INSERT INTO personas (id,name,description,avatar,from_entry,personality,appearance,behavior,speech_style,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        fresh, name, description || '', avatar ?? null, fromEntry ?? null,
+        personality || null, appearance || null, behavior || null, speechStyle || null, now());
       return fresh;
     },
 

@@ -55,6 +55,16 @@ Write in flowing prose. Vary your sentence lengths. Stay inside the scene: no su
 
 Do not repeat phrasings you have already used. Do not restate what the other person just said before responding to it.`;
 
+/** A persona's Core slots beyond its description, as prompt sections. Empty slots add nothing. */
+function personaCore(persona, sub) {
+  return [
+    persona.appearance && `## Appearance\n${sub(persona.appearance)}`,
+    persona.personality && `## Personality\n${sub(persona.personality)}`,
+    persona.behavior && `## Behaviour\n${sub(persona.behavior)}`,
+    persona.speech_style && `## Voice\n${sub(persona.speech_style)}`,
+  ].filter(Boolean);
+}
+
 const HARD_RULE = `One rule overrides everything above. The person you are writing with plays their own character. Never write their dialogue, their actions, their thoughts or their choices, and never repeat their last message back at them before responding. Write your reply and stop, so they can answer.`;
 
 /**
@@ -148,11 +158,16 @@ export function buildPrompt({
       slots: {
         character: characters.map((c) => [
           `# ${c.nickname || c.name}`,
-          c.description, c.personality && `## Personality\n${c.personality}`,
+          c.description, c.appearance && `## Appearance\n${c.appearance}`,
+          c.personality && `## Personality\n${c.personality}`,
+          c.behavior && `## Behaviour\n${c.behavior}`, c.speech_style && `## Voice\n${c.speech_style}`,
           c.scenario && `## Setting\n${c.scenario}`,
           c.example_dialogue && `## How they speak\n${examples(c.example_dialogue)}`,
         ].filter(Boolean).join('\n\n')).join('\n\n---\n\n'),
-        persona: persona ? [persona.name, persona.description].filter(Boolean).join('\n') : '',
+        persona: persona ? [
+          [persona.name, persona.description].filter(Boolean).join('\n'),
+          ...personaCore(persona, (t) => t),
+        ].filter(Boolean).join('\n\n') : '',
         lorebook: [constantLoreText, firedLoreText].filter(Boolean).join('\n\n'),
         memory: (memory?.episodes || []).map((e) => e.content).join('\n\n'),
 
@@ -308,13 +323,19 @@ export function buildPrompt({
     for (const c of characters) {
       const parts = [`# ${c.nickname || c.name}`];
       if (c.description) parts.push(subStable(c.description));
+      // Core slots a card may add beyond the CharaCard fields. Empty on every
+      // imported card, so those render exactly as before.
+      if (c.appearance) parts.push(`## Appearance\n${subStable(c.appearance)}`);
       if (c.personality) parts.push(`## Personality\n${subStable(c.personality)}`);
+      if (c.behavior) parts.push(`## Behaviour\n${subStable(c.behavior)}`);
+      if (c.speech_style) parts.push(`## Voice\n${subStable(c.speech_style)}`);
       if (c.scenario) parts.push(`## Setting\n${subStable(c.scenario)}`);
       stable.push(parts.join('\n\n'));
     }
 
-    if (persona && persona.description) {
-      stable.push(`# ${persona.name}\nThe person you are writing with plays this character. Never write for them.\n\n${subStable(persona.description)}`);
+    const personaParts = persona ? [persona.description && subStable(persona.description), ...personaCore(persona, subStable)].filter(Boolean) : [];
+    if (personaParts.length) {
+      stable.push(`# ${persona.name}\nThe person you are writing with plays this character. Never write for them.\n\n${personaParts.join('\n\n')}`);
     }
 
     if (lead && lead.example_dialogue) {

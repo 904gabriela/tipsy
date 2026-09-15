@@ -480,6 +480,10 @@ CREATE TABLE IF NOT EXISTS entry_semantics (
   -- An authoring hint only; the engine reads the entry's own activation fields.
   -- 'auto' is reserved and not used until it is designed.
   activation_policy TEXT CHECK (activation_policy IN ('auto','always','keywords','advanced')),
+  -- Where the entry is shown under its entity, as a JSON array of the person's
+  -- own group names: ["Quirk","Fluid Domain"]. Presentation only — never read
+  -- by activation, retrieval, ownership or prompt precedence.
+  display_path      TEXT,
   reviewed_at       INTEGER,
   created_at        INTEGER NOT NULL,
   updated_at        INTEGER NOT NULL
@@ -548,6 +552,13 @@ CREATE TABLE IF NOT EXISTS source_semantics (
   package_role TEXT NOT NULL CHECK (package_role IN
                  ('character-material','world','scenario','story-package','narrative-framework','reference-pack','mixed')),
   domains      TEXT NOT NULL DEFAULT '[]',
+  -- The entity this reusable source is primarily material about, so it can
+  -- travel with that person into new stories. Not a claim about each entry:
+  -- entries say what they are about in entry_semantics / entry_relations.
+  subject_entity_id TEXT REFERENCES lore_entities(id) ON DELETE RESTRICT,
+  -- The one story this source belongs to (Story Material). NULL for reusable
+  -- sources. A deleted story leaves its material as an ordinary source.
+  owner_story_id    TEXT REFERENCES stories(id) ON DELETE SET NULL,
   origin       TEXT NOT NULL CHECK (origin IN ('native','converted','manual','inferred')),
   status       TEXT NOT NULL CHECK (status IN ('proposed','approved')),
   confidence   TEXT CHECK (confidence IN ('high','medium','low')),
