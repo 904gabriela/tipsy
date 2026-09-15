@@ -16,7 +16,7 @@ import { importFile, ImportError } from './src/import/index.js';
 import { normalizeCard } from './src/import/card.js';
 import { classifyCard, CHOOSABLE_ROLES, ROLES } from './src/import/semantics.js';
 import { planFor, applyPlan, startFromScenario } from './src/import/plan.js';
-import { composeSource, normalizeRole, CAST_ROLES } from './src/import/compose.js';
+import { composeSource, nameFromTitle, normalizeRole, CAST_ROLES } from './src/import/compose.js';
 import {
   planComposition, writeComposition, applyToStory, sourceRemovalPreview, removeSource,
 } from './src/import/compose-apply.js';
@@ -1861,7 +1861,7 @@ route('GET', '/api/stories/:id/bible', async (req, res, { id }) => {
   const knownPeople = pool.filter((e) => e.kind === 'character');
   // People in the cast who have no card: chosen in review, standing on an entry.
   const npcs = db.storyNpcs(id).map((n) => ({
-    entryId: n.entry_id, name: n.title, role: n.role, lorebookId: n.lorebook_id,
+    entryId: n.entry_id, name: nameFromTitle(n.title).name || n.title, role: n.role, lorebookId: n.lorebook_id,
     tokens: Math.ceil((n.chars || 0) / 4),
   }));
 

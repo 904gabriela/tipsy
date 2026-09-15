@@ -314,6 +314,11 @@ export function composeSource(entries, ctx = {}) {
   const sizes = [...groups.values()].map((g) => Math.max(...g.entries.map((e) => String(e.content || '').length)));
   const med = median(sizes);
   const npcRole = new Map(storyNpcs.map((n) => [n.entry_id, n.role]));
+  // The same person may already be in the cast through another source's
+  // entry. They are one person, and suggesting them again would cast them twice.
+  const castByName = new Map(storyNpcs
+    .filter((n) => n.title)
+    .map((n) => [norm(nameFromTitle(n.title).name || n.title), n]));
 
   const casting = [];
   const matchedCardIds = new Set();
@@ -368,6 +373,7 @@ export function composeSource(entries, ctx = {}) {
 
     // Already in this story: what they are stays what they are, and says so.
     const current = g.entries.map((e) => npcRole.get(e.id)).find(Boolean);
+    const elsewhere = !current ? castByName.get(norm(g.name)) : null;
     casting.push({
       key: `entry:${primary.id}`,
       entryId: primary.id,
@@ -377,9 +383,11 @@ export function composeSource(entries, ctx = {}) {
       name: g.name,
       backing: 'lore',
       canLead: false,
-      suggested: current || s.role,
+      suggested: current || (elsewhere ? 'known' : s.role),
       current: current || null,
-      why: current ? ['already in this story', ...s.why] : s.why,
+      alreadyCast: elsewhere ? { entryId: elsewhere.entry_id, role: elsewhere.role } : null,
+      why: current ? ['already in this story', ...s.why]
+        : elsewhere ? [`already in the cast as ${elsewhere.role}, through another source`] : s.why,
       score: s.score,
       mentions: mentionsOf(transcript, handles),
       refs,

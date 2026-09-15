@@ -114,6 +114,17 @@ console.log('\nC  an existing story adds its conversation as evidence');
     { storyCards: [{ ...LEAD, story_role: 'lead' }], transcript: "don't ".repeat(70) }).casting.find((r) => r.name === 'Don Raffaele Costa').mentions === 0);
 }
 
+console.log('\nC2 somebody already cast through another source is not suggested twice');
+{
+  const d = composeSource(PACKAGE, {
+    storyCards: [{ ...LEAD, story_role: 'lead' }],
+    storyNpcs: [{ entry_id: 'other-book-entry', title: 'Mira Castell / Keeper of the Light', role: 'supporting' }],
+  });
+  const mira = d.casting.find((r) => r.name === 'Mira Castell');
+  ok('they default to Known here', mira.suggested === 'known', mira.suggested);
+  ok('and say where they already are', /already in the cast as supporting/.test(mira.why[0]) && mira.alreadyCast?.entryId === 'other-book-entry');
+}
+
 console.log('\nD  cast states');
 {
   ok('the six states exist', ['lead', 'main', 'supporting', 'background', 'known', 'excluded'].every((r) => ROLES.includes(r)));
@@ -227,7 +238,7 @@ console.log('\nF  applying a reviewed composition');
   applyToStory(db, sid, { casting: [{ entryId: ids['Mira Castell'], role: 'main' }] });
   applyToStory(db, sid, { casting: [{ entryId: ids.war, role: 'background' }] });
   const preview = sourceRemovalPreview(db, sid, bookA, composeSource);
-  ok('the preview names the people who would leave the cast', preview.castLeaving.map((x) => x.name).sort().join() === ['Mira Castell', 'Oren Hale: The Ferryman'].sort().join(), JSON.stringify(preview.castLeaving));
+  ok('the preview names the people who would leave the cast, by name not title', preview.castLeaving.map((x) => x.name).sort().join() === ['Mira Castell', 'Oren Hale'].sort().join(), JSON.stringify(preview.castLeaving));
   ok('and counts what the story would lose by section', preview.loses.some((l) => l.id === 'places' && l.count === 2) && preview.loses.some((l) => l.id === 'people' && l.count >= 4));
   ok('and says what it keeps', preview.keeps.some((k) => /message/.test(k)) && preview.keeps.some((k) => /Library/.test(k)));
   const fp = fingerprint();

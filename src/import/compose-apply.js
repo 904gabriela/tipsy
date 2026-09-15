@@ -8,7 +8,7 @@
 // Everything written is a reference. No lore entry is copied or edited, no
 // card is created, and nothing here touches messages, memory or story state.
 
-import { personFromEntry, normalizeRole, NPC_ROLES, SECTIONS } from './compose.js';
+import { personFromEntry, nameFromTitle, normalizeRole, NPC_ROLES, SECTIONS } from './compose.js';
 
 export class CompositionError extends Error {
   constructor(message, status = 400) {
@@ -158,7 +158,7 @@ export function sourceRemovalPreview(db, storyId, lorebookId, compose) {
       { id: 'people', label: 'People written about in it', count: draft.casting.filter((r) => r.backing === 'lore').length },
       ...draft.sections.filter((s) => s.count).map((s) => ({ id: s.id, label: SECTIONS.find((x) => x.id === s.id)?.label || s.label, count: s.count })),
     ],
-    castLeaving: cast.map((n) => ({ entryId: n.entry_id, name: n.title, role: n.role })),
+    castLeaving: cast.map((n) => ({ entryId: n.entry_id, name: nameFromTitle(n.title).name || n.title, role: n.role })),
     recursion: policy,
     personaFrom,
     keeps: [
