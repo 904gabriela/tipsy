@@ -22,6 +22,8 @@ import { buildDraft, regenerate } from './src/builder/index.js';
 import { planGenerated, writeGenerated, createLeadCard, storyPackage } from './src/builder/apply.js';
 import { isDirection, semanticSection } from './src/semantics/authority.js';
 import { semanticViews, sourceOrganization } from './src/semantics/store.js';
+import { inspectPackage, importPackage } from './src/package/import.js';
+import { exportStory, exportSources } from './src/package/export.js';
 import {
   planComposition, writeComposition, applyToStory, sourceRemovalPreview, removeSource,
 } from './src/import/compose-apply.js';
@@ -659,6 +661,49 @@ route('DELETE', '/api/entries/:id', async (req, res, { id }) => { db.deleteEntry
 route('GET', '/api/lorebooks/:id/organization', async (req, res, { id }) => {
   if (!db.getLorebook(id)) throw new HttpError(404, 'No such lorebook.');
   return sourceOrganization(db, id);
+});
+
+// --- Nexus Story Package v1
+//
+// A native package is trusted as written: nothing on these routes classifies,
+// guesses or calls a model. Inspect first to see the proposed decisions (new
+// entities; a new card unless one with the same name exists); import with the
+// decisions actually chosen.
+
+route('POST', '/api/packages/inspect', async (req) => {
+  const { package: pkg } = await readJson(req);
+  return inspectPackage(db, pkg);
+});
+
+route('POST', '/api/packages/import', async (req) => {
+  const { package: pkg, decisions = {}, filename = '' } = await readJson(req);
+  const result = importPackage(db, pkg, {
+    decisions, filename,
+    // A story from a package starts from your defaults, like any new story.
+    baseSettings: {
+      ...DEFAULTS,
+      arc: { ...memory.ARC_DEFAULTS, ladder: memory.DEFAULT_LADDER },
+      secrets: { ...memory.SECRET_DEFAULTS },
+      ...db.getSetting('story_defaults', {}),
+    },
+  });
+  // Each story opens the way a story made here does: with its lead's first line.
+  for (const storyId of Object.values(result.stories)) {
+    const story = db.getStory(storyId);
+    const lead = story.characters[0];
+    if (lead && String(lead.first_message || '').trim()) {
+      db.addMessage({ storyId, role: 'assistant', content: substitute(lead.first_message, { char: lead.nickname || lead.name, user: story.persona ? story.persona.name : 'You' }) });
+    }
+  }
+  return result;
+});
+
+route('GET', '/api/stories/:id/package', async (req, res, { id }) => exportStory(db, id));
+
+route('POST', '/api/packages/export', async (req) => {
+  const { lorebookIds = [] } = await readJson(req);
+  if (!Array.isArray(lorebookIds) || !lorebookIds.length) throw new HttpError(400, 'Choose at least one source to export.');
+  return exportSources(db, lorebookIds);
 });
 
 /** A lorebook as the card view wants it: grouped, counted, costed. */
@@ -2916,7 +2961,8 @@ const server = createServer(async (req, res) => {
         if (res.headersSent) { res.end(); return; }
         const status = e.status || (e instanceof ModelError ? 502 : 500);
         if (!e.status && !(e instanceof ModelError)) console.error(e);
-        json(res, status, { error: e.message || 'Something went wrong.' });
+        // A package error lists every problem, not just the first.
+        json(res, status, { error: e.message || 'Something went wrong.', ...(Array.isArray(e.errors) && e.errors.length ? { errors: e.errors } : {}) });
       }
       return;
     }

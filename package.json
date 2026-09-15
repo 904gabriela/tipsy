@@ -18,6 +18,7 @@
     "compose:check": "node scripts/check-compose.js",
     "builder:check": "node scripts/check-builder.js",
     "semantic-model:check": "node scripts/check-semantic-model.js",
-    "preset-safety:check": "node scripts/check-preset-safety.js"
+    "preset-safety:check": "node scripts/check-preset-safety.js",
+    "package:check": "node scripts/check-package.js"
   }
 }

@@ -634,6 +634,57 @@ as separate layers.
 
 ---
 
+## 23. Semantic model and Nexus Package v1 (branch `feature/semantic-model`)
+
+Not merged, not in production. `data/tipsy.db` has none of this schema.
+
+**P1 — semantic core** (`src/semantics/`). The entity is the person, owned by
+no source and no card (`lore_entities`). Sources declare entities
+(`source_entities`); entries say what they are (`entry_semantics`: scope,
+singular category, `defines`) and who they are about (`entry_relations`:
+one approved subject, any related). Precedence for organising: approved >
+approved-but-changed (NEEDS RECHECK, still used) > proposed > legacy `kind` >
+old links (evidence only, `legacy_entry_links`, no FKs). Activation and prompt
+compilation never read semantics. The 136 old links were copied as evidence,
+never approved.
+
+**Deep characters and personas (approved architecture).**
+- Core lives on the resource: card columns plus nullable `appearance`,
+  `behavior`, `speech_style`; personas `description` plus `personality`,
+  `appearance`, `behavior`, `speech_style`. Kept compact on purpose.
+- Knowledge is entries with semantics (`subject → person`), conditional as
+  their activation says. Visible under a person ≠ sent to the model.
+- `characters.entity_id` / `personas.entity_id`: which person a resource is.
+  Never guessed; native packages bind their own; legacy gets proposals (P3).
+- `source_semantics.subject_entity_id`: reusable material that travels with a
+  person. Does not make every entry about them.
+- `source_semantics.owner_story_id`: Story Material, that story only.
+  (Builder packages still use `lorebooks.original.generatedFor`; export reads both.)
+- `entry_semantics.display_path`: the person's own groups, e.g.
+  `["Quirk","Fluid Domain"]` with category `ability`. Presentation only.
+- Knowledge visibility (true about Reiko ≠ known by Patrick) is NOT built.
+  Keep knowledge as separate entries so it can be filtered later
+  (`entry_semantics.visibility`, `entry_knowers` — future).
+
+**P2 — Nexus Story Package v1** (`src/package/`): format and validator
+(`format.js`, spec in its header), trusted import (`import.js`), export
+(`export.js`). Routes: `POST /api/packages/inspect`, `POST /api/packages/import`,
+`GET /api/stories/:id/package`, `POST /api/packages/export`. No UI yet.
+- Native semantics import as approved, origin `native`. No classifier, composer,
+  builder or model is used (checked statically and with a counting provider).
+- Decisions at import: entities default new; a card/persona is created unless
+  one with the same name exists (then proposed), and none for source-only packages.
+- v1 refuses `visibility`/`knownBy`, `activation.policy: "auto"`, unknown fields,
+  and universe words as categories.
+- Export includes only approved, current semantics; proposed or NEEDS RECHECK
+  entries go out unorganised with a warning. A source with no approved role
+  blocks export — legacy stories (The Saint) are not exportable until organised.
+- Tests: `scripts/check-package.js` with the synthetic fixture
+  `scripts/fixtures/nexus-package-v1-saint-like.json` (fixture → export is
+  byte-identical to its canonical form; export → import → export is byte-identical).
+
+---
+
 ## NEXT AGENT INSTRUCTIONS
 
 1. Read this file.
