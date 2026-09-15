@@ -16,7 +16,10 @@ import { importFile, ImportError } from './src/import/index.js';
 import { normalizeCard } from './src/import/card.js';
 import { classifyCard, CHOOSABLE_ROLES, ROLES } from './src/import/semantics.js';
 import { planFor, applyPlan, startFromScenario } from './src/import/plan.js';
-import { composeSource } from './src/import/compose.js';
+import { composeSource, normalizeRole, CAST_ROLES } from './src/import/compose.js';
+import {
+  planComposition, writeComposition, applyToStory, sourceRemovalPreview, removeSource,
+} from './src/import/compose-apply.js';
 import { buildPrompt, estimateTokens, substitute } from './src/engine/prompt.js';
 import { stream, listModels, credits, ModelError } from './src/llm/openrouter.js';
 import { KINDS, WEIGHTS, classifyEntry, parsePasted } from './src/engine/classify.js';
@@ -835,51 +838,90 @@ route('POST', '/api/lore/test', async (req) => {
 
 route('POST', '/api/stories', async (req) => {
   const b = await readJson(req);
-  if (!b.characterIds?.length) throw new HttpError(400, 'Pick at least one character.');
-  const lead = db.getCharacter(b.characterIds[0]);
 
-  // With exactly one saved persona there is nothing to choose; use it.
+  // A reviewed composition says exactly who is in the story and in what part.
+  // Without one, the first card given leads, as it always has.
+  const composition = b.composition && typeof b.composition === 'object' ? b.composition : null;
+  let characterIds = b.characterIds || [];
+  let cardRoles = null;
+  if (composition) {
+    const cards = (composition.casting || []).filter((c) => c.characterId)
+      .map((c) => ({ characterId: c.characterId, role: normalizeRole(c.role) }))
+      .filter((c) => CAST_ROLES.includes(c.role));
+    const leads = cards.filter((c) => c.role === 'lead');
+    if (leads.length > 1) throw new HttpError(400, 'A story has one lead. Choose which of them it is.');
+    if (!leads.length) throw new HttpError(400, 'Choose who leads the story. The lead needs a character card.');
+    characterIds = [leads[0].characterId, ...cards.filter((c) => c.role !== 'lead').map((c) => c.characterId)];
+    cardRoles = cards;
+  }
+  if (!characterIds.length) throw new HttpError(400, 'Pick at least one character.');
+  const lead = db.getCharacter(characterIds[0]);
+  if (!lead) throw new HttpError(404, 'That character is no longer in the library.');
+
+  // Who you play. Said outright when the person was asked, including "nobody";
+  // only a caller that never asked gets the old convenience of the one persona.
   let personaId = b.personaId || null;
-  if (!personaId) {
+  if (!('personaId' in b)) {
     const personas = db.listPersonas();
     if (personas.length === 1) personaId = personas[0].id;
   }
+  if (personaId && !db.getPersona(personaId)) throw new HttpError(404, 'That persona is no longer saved.');
   const persona = personaId ? db.getPersona(personaId) : null;
 
-  const id = db.createStory({
-    title: b.title?.trim() || (lead ? lead.name : 'New story'),
-    characterIds: b.characterIds,
-    lorebookIds: b.lorebookIds || [],
-    personaId,
-    // A new story starts with the ladder in place. Stories that existed
-    // before it did are left alone: their closeness was scored under the old
-    // rules, so switching it on for them is a decision, not a default.
-    settings: {
-      ...DEFAULTS,
-      arc: { ...memory.ARC_DEFAULTS, ladder: memory.DEFAULT_LADDER },
-      secrets: { ...memory.SECRET_DEFAULTS },
-      // What you set once in the app's own settings, so a new story starts
-      // the way you like rather than the way it shipped.
-      ...db.getSetting('story_defaults', {}),
-      ...(b.settings || {}),
-    },
-  });
+  // Checked before anything is written, then written as one.
+  const plan = composition
+    ? planComposition(db, {
+      lorebookIds: b.lorebookIds || [],
+      casting: (composition.casting || []).filter((c) => !c.characterId),
+      links: composition.links || [],
+      recursion: composition.recursion || {},
+    })
+    : null;
+
   // Open on the character's greeting, so there is something to answer. The
   // greeting is stored as it will be read, names filled in, because history
   // is sent to the model verbatim and shown to you verbatim.
   // A card that offers several ways to meet someone now actually offers them.
   // Without a choice this is the greeting, exactly as before.
   const chosen = b.startingPointId
-    ? db.startingPoints('character', b.characterIds[0]).find((p) => p.id === b.startingPointId)
+    ? db.startingPoints('character', characterIds[0]).find((p) => p.id === b.startingPointId)
     : null;
-  const opening = chosen?.content || lead?.first_message || '';
-  if (opening) {
-    const greeting = substitute(opening, {
-      char: lead.nickname || lead.name,
-      user: persona ? persona.name : 'You',
+  const opening = chosen?.content || lead.first_message || '';
+
+  // The story, its cast, its sources, its links and its first message are one
+  // write. If any of it fails, none of it happened.
+  const id = db.transaction(() => {
+    const storyId = db.createStory({
+      title: b.title?.trim() || lead.name,
+      characterIds,
+      lorebookIds: plan ? [] : (b.lorebookIds || []),
+      personaId,
+      // A new story starts with the ladder in place. Stories that existed
+      // before it did are left alone: their closeness was scored under the old
+      // rules, so switching it on for them is a decision, not a default.
+      settings: {
+        ...DEFAULTS,
+        arc: { ...memory.ARC_DEFAULTS, ladder: memory.DEFAULT_LADDER },
+        secrets: { ...memory.SECRET_DEFAULTS },
+        // What you set once in the app's own settings, so a new story starts
+        // the way you like rather than the way it shipped.
+        ...db.getSetting('story_defaults', {}),
+        ...(b.settings || {}),
+      },
     });
-    db.addMessage({ storyId: id, role: 'assistant', content: greeting });
-  }
+    if (cardRoles) {
+      for (const c of cardRoles.filter((x) => x.role !== 'lead')) db.setStoryCharacterRole(storyId, c.characterId, c.role);
+    }
+    if (plan) writeComposition(db, storyId, plan);
+    if (opening) {
+      const greeting = substitute(opening, {
+        char: lead.nickname || lead.name,
+        user: persona ? persona.name : 'You',
+      });
+      db.addMessage({ storyId, role: 'assistant', content: greeting });
+    }
+    return storyId;
+  });
   return { id };
 });
 
@@ -1817,6 +1859,11 @@ route('GET', '/api/stories/:id/bible', async (req, res, { id }) => {
     tokens: estimateTokens(`${c.description}${c.personality}${c.scenario}`),
   }));
   const knownPeople = pool.filter((e) => e.kind === 'character');
+  // People in the cast who have no card: chosen in review, standing on an entry.
+  const npcs = db.storyNpcs(id).map((n) => ({
+    entryId: n.entry_id, name: n.title, role: n.role, lorebookId: n.lorebook_id,
+    tokens: Math.ceil((n.chars || 0) / 4),
+  }));
 
   // Books this story uses, and books related to it that it does not.
   const connected = story.lorebookIds.map((bid) => {
@@ -1857,6 +1904,7 @@ route('GET', '/api/stories/:id/bible', async (req, res, { id }) => {
     cover: story.art || null,
     persona: story.persona ? { id: story.persona.id, name: story.persona.name, avatar: story.persona.avatar } : null,
     cast,
+    npcs,
     lead: cast.find((c) => c.role === 'lead') || null,
     knownPeople: { count: knownPeople.length, sample: knownPeople.slice(0, 12).map(brief) },
     sections,
@@ -1888,85 +1936,67 @@ route('GET', '/api/stories/:id/bible', async (req, res, { id }) => {
  * is built without a transcript to weigh names against.
  */
 route('POST', '/api/compose', async (req) => {
-  const { lorebookIds = [], storyId = null, mode = 'organize', title = '' } = await readJson(req);
-  if (!lorebookIds.length) throw new HttpError(400, 'Say which source to read.');
+  const {
+    lorebookIds = [], storyId = null, mode = 'organize',
+    characterIds = [], premise = '', startingPointId = null,
+  } = await readJson(req);
 
   const story = storyId ? db.getStory(storyId) : null;
-  const entries = lorebookIds.flatMap((id) => db.listEntries(id));
-  const transcript = story
-    ? db.pathTo(story.head_id, 100000).map((m) => m.content).join('\n')
-    : '';
+  if (storyId && !story) throw new HttpError(404, 'No such story.');
+  const books = lorebookIds.map((id) => db.getLorebook(id)).filter(Boolean);
+  if (books.length !== lorebookIds.length) throw new HttpError(404, 'One of those sources is no longer in the library.');
+  const entries = books.flatMap((b) => b.entries);
+
+  // A new story's evidence is what it will open on and what it says it is.
+  // An existing story's is also what has been written in it.
+  const leadCards = story ? [] : characterIds.map((id) => db.getCharacter(id)).filter(Boolean);
+  const chosen = !story && startingPointId && leadCards[0]
+    ? db.startingPoints('character', leadCards[0].id).find((p) => p.id === startingPointId)
+    : null;
 
   const draft = composeSource(entries, {
-    characters: story ? story.characters : db.listCharacters(),
-    transcript,
-    storyTitle: title || story?.title || '',
+    characters: db.listCharacters(),
+    storyCards: story ? story.characters : [],
+    leadCards,
+    transcript: story ? db.pathTo(story.head_id, 100000).map((m) => m.content).join('\n') : '',
+    premise: story ? (story.settings?.premise || '') : premise,
+    opening: story ? '' : (chosen?.content || leadCards[0]?.first_message || ''),
+    storyNpcs: story ? db.storyNpcs(story.id) : [],
     mode,
   });
 
   return {
     ...draft,
-    sources: lorebookIds.map((id) => {
-      const b = db.getLorebook(id);
-      return b && { id: b.id, name: b.name, entries: b.entries.length };
-    }).filter(Boolean),
+    sources: books.map((b) => ({ id: b.id, name: b.name, entries: b.entries.length })),
   };
 });
 
 /**
- * Make the reviewed draft real.
+ * Make a reviewed draft real, for a story that already exists.
  *
- * Connects the source, records who is in the story and what each piece of
- * material is about. It copies no entry and edits none: everything here is a
- * reference, so removing a source later takes nothing away from the package.
+ * Connects the sources, records who is in the story and what each piece of
+ * material is about, in one transaction. It copies no entry and edits none,
+ * and the cards already in the story are left as they are.
  */
 route('POST', '/api/stories/:id/compose', async (req, res, { id }) => {
-  const story = db.getStory(id);
-  if (!story) throw new HttpError(404, 'No such story.');
-  const { lorebookIds = [], casting = [], links = [], recursion = null } = await readJson(req);
+  const body = await readJson(req);
+  return { ok: true, ...applyToStory(db, id, body) };
+});
 
-  const out = db.transaction(() => {
-    if (lorebookIds.length) {
-      db.setStoryLorebooks(id, [...new Set([...story.lorebookIds, ...lorebookIds])]);
-      for (const bid of lorebookIds) {
-        if (recursion) db.setStoryLorebookRecursion(id, bid, recursion);
-      }
-    }
+/** What taking a source out of a story would cost it, before it happens. */
+route('GET', '/api/stories/:id/sources/:bookId', async (req, res, { id, bookId }) => {
+  return sourceRemovalPreview(db, id, bookId, composeSource);
+});
 
-    // Anyone left out is simply absent: "out" is a decision not to include
-    // them, not a thing to store.
-    const wanted = casting.filter((c) => c.role && c.role !== 'out');
-    const cards = wanted.filter((c) => c.characterId);
-    const npcs = wanted.filter((c) => !c.characterId);
-
-    if (cards.length) {
-      // A lead must come first: the prompt builder reads characters[0] as the
-      // one whose card instructions apply.
-      const ordered = [...cards].sort((a, b) => (a.role === 'lead' ? -1 : 0) - (b.role === 'lead' ? -1 : 0));
-      db.setStoryCharacters(id, [...new Set([
-        ...ordered.map((c) => c.characterId),
-        ...story.characters.map((c) => c.id),
-      ])]);
-    }
-    db.setStoryNpcs(id, [
-      ...db.storyNpcs(id).filter((n) => !npcs.some((c) => c.entryId === n.entry_id))
-        .map((n) => ({ entryId: n.entry_id, role: n.role })),
-      ...npcs.map((c) => ({ entryId: c.entryId, role: c.role })),
-    ]);
-
-    for (const l of links) {
-      if (l.characterId) db.linkEntryToCharacter(l.entryId, l.characterId);
-      else if (l.aboutId) db.linkEntryToEntry(l.entryId, l.aboutId);
-    }
-
-    return {
-      sources: db.getStory(id).lorebookIds.length,
-      cast: db.getStory(id).characters.length,
-      npcs: db.storyNpcs(id).length,
-      links: links.length,
-    };
-  });
-  return { ok: true, ...out };
+/**
+ * Take a source out of a story.
+ *
+ * The book stays in the Library with every entry unchanged, and so does every
+ * card and message. What goes is this story's connection to it, and the cast
+ * memberships that stood on its entries.
+ */
+route('DELETE', '/api/stories/:id/sources/:bookId', async (req, res, { id, bookId }) => {
+  return { ok: true, ...removeSource(db, id, bookId) };
 });
 
 /** Every way a character, scenario or framework can begin. */

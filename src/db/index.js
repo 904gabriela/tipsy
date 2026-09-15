@@ -477,6 +477,20 @@ function wrap(db) {
       return rows.length;
     },
 
+    /** One person's part, leaving everyone else where they were. */
+    setStoryNpc(storyId, entryId, role) {
+      const had = get(`SELECT ord FROM story_npcs WHERE story_id=? AND entry_id=?`, storyId, entryId);
+      if (had) {
+        run(`UPDATE story_npcs SET role=? WHERE story_id=? AND entry_id=?`, role, storyId, entryId);
+        return;
+      }
+      const next = get(`SELECT COALESCE(MAX(ord),-1)+1 AS n FROM story_npcs WHERE story_id=?`, storyId).n;
+      run(`INSERT INTO story_npcs (story_id,entry_id,role,ord) VALUES (?,?,?,?)`, storyId, entryId, role, next);
+    },
+    removeStoryNpc(storyId, entryId) {
+      run(`DELETE FROM story_npcs WHERE story_id=? AND entry_id=?`, storyId, entryId);
+    },
+
     storyNpcs(storyId) {
       return all(`SELECT n.entry_id, n.role, n.ord, e.title, e.summary, e.image,
                     e.lorebook_id, length(e.content) AS chars
@@ -831,19 +845,54 @@ function wrap(db) {
       run(`UPDATE stories SET ${fields.join(',')} WHERE id=?`, ...vals, id);
     },
 
-    /** The first id leads: their card's instructions and greeting are the ones used. */
+    /**
+     * Who has a card in this story.
+     *
+     * Only the difference is written. Somebody who stays keeps the part they
+     * had, and the lead stays the lead unless they are the one leaving: this
+     * used to delete every row and hand the lead to whichever id came first,
+     * so saving the story sheet could quietly change whose story it was.
+     * When there is no lead left, the first id given takes it.
+     */
     setStoryCharacters(storyId, ids) {
       api.transaction(() => {
-        run(`DELETE FROM story_characters WHERE story_id=?`, storyId);
-        ids.forEach((cid, i) => run(
-          `INSERT OR IGNORE INTO story_characters (story_id,character_id,role) VALUES (?,?,?)`,
-          storyId, cid, i === 0 ? 'lead' : 'cast'));
+        const keep = new Set(ids);
+        const rows = all(`SELECT character_id, role FROM story_characters WHERE story_id=?`, storyId);
+        for (const r of rows) {
+          if (!keep.has(r.character_id)) run(`DELETE FROM story_characters WHERE story_id=? AND character_id=?`, storyId, r.character_id);
+        }
+        const had = new Set(rows.map((r) => r.character_id));
+        for (const cid of ids) {
+          if (!had.has(cid)) run(`INSERT OR IGNORE INTO story_characters (story_id,character_id,role) VALUES (?,?,?)`, storyId, cid, 'cast');
+        }
+        const lead = get(`SELECT character_id FROM story_characters WHERE story_id=? AND role='lead'`, storyId);
+        if (!lead && ids.length) run(`UPDATE story_characters SET role='lead' WHERE story_id=? AND character_id=?`, storyId, ids[0]);
       });
     },
 
+    /** Which part a card plays. Exactly one lead: naming a new one demotes the old. */
+    setStoryCharacterRole(storyId, characterId, role) {
+      api.transaction(() => {
+        if (role === 'lead') {
+          run(`UPDATE story_characters SET role='cast' WHERE story_id=? AND role='lead' AND character_id<>?`, storyId, characterId);
+        }
+        run(`UPDATE story_characters SET role=? WHERE story_id=? AND character_id=?`, role, storyId, characterId);
+      });
+    },
+
+    /**
+     * Which books a story reads.
+     *
+     * Only the difference is written, so a book that stays keeps how this
+     * story uses it. Deleting every row and adding them back used to throw
+     * away each book's recursion setting on every save.
+     */
     setStoryLorebooks(storyId, ids) {
       api.transaction(() => {
-        run(`DELETE FROM story_lorebooks WHERE story_id=?`, storyId);
+        const keep = new Set(ids);
+        for (const r of all(`SELECT lorebook_id FROM story_lorebooks WHERE story_id=?`, storyId)) {
+          if (!keep.has(r.lorebook_id)) run(`DELETE FROM story_lorebooks WHERE story_id=? AND lorebook_id=?`, storyId, r.lorebook_id);
+        }
         for (const bid of ids) run(`INSERT OR IGNORE INTO story_lorebooks (story_id,lorebook_id) VALUES (?,?)`, storyId, bid);
       });
     },
