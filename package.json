@@ -15,6 +15,7 @@
     "bg:check": "node scripts/check-background-model.js",
     "reconcile:check": "node scripts/check-reconcile.js",
     "recursion:check": "node scripts/check-book-recursion.js",
-    "compose:check": "node scripts/check-compose.js"
+    "compose:check": "node scripts/check-compose.js",
+    "builder:check": "node scripts/check-builder.js"
   }
 }

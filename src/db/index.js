@@ -614,7 +614,10 @@ function wrap(db) {
               ignore_budget,vectorized,decorators,
               kind,playable,traits,summary,image,linked,original,display_index)
              VALUES (?,?,${vals.map(() => '?').join(',')},?,?)`,
-          id, lorebookId, ...vals, j(null), nextIdx);
+          // `original` is where an entry's origin is kept: the entry as it
+          // arrived in a file, or as the Story Builder proposed it. Only set
+          // when the entry is created; editing never rewrites where it came from.
+          id, lorebookId, ...vals, j(incoming.original ?? null), nextIdx);
       }
       return id;
     },

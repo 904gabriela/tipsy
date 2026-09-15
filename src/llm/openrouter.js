@@ -3,7 +3,9 @@
 // One key, every model. Replies stream back token by token so the story
 // appears as it is written rather than arriving in a lump.
 
-const ENDPOINT = 'https://openrouter.ai/api/v1';
+// Overridable so the checks can stand a local fake in front of the app without
+// a key or a bill. Unset, it is OpenRouter.
+const ENDPOINT = process.env.OPENROUTER_ENDPOINT || 'https://openrouter.ai/api/v1';
 
 export class ModelError extends Error {
   constructor(message, { status, code, retryable = false } = {}) {
@@ -159,6 +161,82 @@ export async function stream({
   }
 
   return { text, usage, model: usedModel, provider: usedProvider, finishReason };
+}
+
+/**
+ * Ask for one JSON object, not streamed.
+ *
+ * For planning calls, where a half-arrived answer is worth nothing. The reply
+ * is parsed but never repaired: a draft cut off mid-list would silently lose
+ * whatever came after the cut, so a cut-off reply comes back as data: null
+ * with finishReason 'length', and the caller decides. Validation is the
+ * caller's job too; this only gets the object out of the text.
+ *
+ * @returns {Promise<{data, text, usage, model, provider, finishReason}>}
+ */
+export async function completeJson({
+  apiKey, model, messages, schema = null,
+  temperature = 0.7, maxTokens = 4000, provider = null, signal, title = 'Tipsy',
+}) {
+  const body = {
+    model,
+    messages: messages.map(({ role, content }) => ({ role, content })),
+    temperature,
+    max_tokens: maxTokens,
+    usage: { include: true },
+    reasoning: { enabled: false },
+    response_format: schema
+      ? { type: 'json_schema', json_schema: { name: 'draft', strict: false, schema } }
+      : { type: 'json_object' },
+  };
+  if (provider) body.provider = provider;
+
+  let res;
+  try {
+    res = await fetch(`${ENDPOINT}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'http://localhost',
+        'X-Title': title,
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    throw new ModelError('Could not reach the model. Check your internet connection.', { code: 'network', retryable: true });
+  }
+  let parsed = null;
+  try { parsed = await res.json(); } catch { /* not json */ }
+  if (!res.ok) throw explain(res.status, parsed);
+  if (parsed?.error) throw explain(parsed.error.code || 500, parsed);
+
+  const choice = parsed?.choices?.[0];
+  const text = choice?.message?.content ?? '';
+  const finishReason = choice?.finish_reason || null;
+  return {
+    data: finishReason === 'length' ? null : jsonIn(text),
+    text,
+    usage: parsed?.usage || null,
+    model: parsed?.model || model,
+    provider: parsed?.provider || null,
+    finishReason,
+  };
+}
+
+/** The one JSON object in a reply: bare, fenced, or with prose around it. */
+export function jsonIn(text) {
+  const tryParse = (s) => { try { const v = JSON.parse(s); return v && typeof v === 'object' ? v : null; } catch { return null; } };
+  const t = String(text || '').trim();
+  const direct = tryParse(t);
+  if (direct) return direct;
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(t);
+  if (fenced) { const v = tryParse(fenced[1].trim()); if (v) return v; }
+  const a = t.indexOf('{');
+  const b = t.lastIndexOf('}');
+  return a >= 0 && b > a ? tryParse(t.slice(a, b + 1)) : null;
 }
 
 /** Everything OpenRouter can serve, trimmed to what this app needs to know. */

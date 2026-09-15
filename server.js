@@ -16,12 +16,15 @@ import { importFile, ImportError } from './src/import/index.js';
 import { normalizeCard } from './src/import/card.js';
 import { classifyCard, CHOOSABLE_ROLES, ROLES } from './src/import/semantics.js';
 import { planFor, applyPlan, startFromScenario } from './src/import/plan.js';
-import { composeSource, nameFromTitle, normalizeRole, CAST_ROLES } from './src/import/compose.js';
+import { composeSource, nameFromTitle, personFromEntry, normalizeRole, CAST_ROLES } from './src/import/compose.js';
+import { fromComposition, checkDraft, HARD as BUILDER_HARD, MODES as BUILDER_MODES, DEPTHS as BUILDER_DEPTHS } from './src/builder/contract.js';
+import { buildDraft, regenerate } from './src/builder/index.js';
+import { planGenerated, writeGenerated, createLeadCard } from './src/builder/apply.js';
 import {
   planComposition, writeComposition, applyToStory, sourceRemovalPreview, removeSource,
 } from './src/import/compose-apply.js';
 import { buildPrompt, estimateTokens, substitute } from './src/engine/prompt.js';
-import { stream, listModels, credits, ModelError } from './src/llm/openrouter.js';
+import { stream, completeJson, listModels, credits, ModelError } from './src/llm/openrouter.js';
 import { KINDS, WEIGHTS, classifyEntry, parsePasted } from './src/engine/classify.js';
 import { defaultValues, costOf, driftFrom, parseScript } from './src/engine/script.js';
 import { createAuth, readCookie, sessionCookie } from './src/auth.js';
@@ -842,21 +845,24 @@ route('POST', '/api/stories', async (req) => {
   // A reviewed composition says exactly who is in the story and in what part.
   // Without one, the first card given leads, as it always has.
   const composition = b.composition && typeof b.composition === 'object' ? b.composition : null;
+  const generated = composition?.generated && typeof composition.generated === 'object' ? composition.generated : null;
   let characterIds = b.characterIds || [];
   let cardRoles = null;
+  // A generated lead with no card, whose card the person asked to be made.
+  const generatedLead = (generated?.items || []).find((i) => i && i.type === 'person' && i.role === 'lead');
   if (composition) {
     const cards = (composition.casting || []).filter((c) => c.characterId)
       .map((c) => ({ characterId: c.characterId, role: normalizeRole(c.role) }))
       .filter((c) => CAST_ROLES.includes(c.role));
     const leads = cards.filter((c) => c.role === 'lead');
-    if (leads.length > 1) throw new HttpError(400, 'A story has one lead. Choose which of them it is.');
-    if (!leads.length) throw new HttpError(400, 'Choose who leads the story. The lead needs a character card.');
-    characterIds = [leads[0].characterId, ...cards.filter((c) => c.role !== 'lead').map((c) => c.characterId)];
+    if (leads.length + (generatedLead ? 1 : 0) > 1) throw new HttpError(400, 'A story has one lead. Choose which of them it is.');
+    if (!leads.length && !generatedLead) throw new HttpError(400, 'Choose who leads the story. The lead needs a character card.');
+    characterIds = [...leads.map((c) => c.characterId), ...cards.filter((c) => c.role !== 'lead').map((c) => c.characterId)];
     cardRoles = cards;
   }
-  if (!characterIds.length) throw new HttpError(400, 'Pick at least one character.');
-  const lead = db.getCharacter(characterIds[0]);
-  if (!lead) throw new HttpError(404, 'That character is no longer in the library.');
+  if (!characterIds.length && !generatedLead) throw new HttpError(400, 'Pick at least one character.');
+  const cardLead = generatedLead ? null : db.getCharacter(characterIds[0]);
+  if (!generatedLead && !cardLead) throw new HttpError(404, 'That character is no longer in the library.');
 
   // Who you play. Said outright when the person was asked, including "nobody";
   // only a caller that never asked gets the old convenience of the one persona.
@@ -879,23 +885,39 @@ route('POST', '/api/stories', async (req) => {
       include: composition.include || [],
     })
     : null;
-
-  // Open on the character's greeting, so there is something to answer. The
-  // greeting is stored as it will be read, names filled in, because history
-  // is sent to the model verbatim and shown to you verbatim.
-  // A card that offers several ways to meet someone now actually offers them.
-  // Without a choice this is the greeting, exactly as before.
-  const chosen = b.startingPointId
-    ? db.startingPoints('character', characterIds[0]).find((p) => p.id === b.startingPointId)
+  const pool = new Map((b.lorebookIds || []).flatMap((bid) => db.listEntries(bid)).map((e) => [e.id, e]));
+  const genPlan = generated
+    ? planGenerated(db, {
+      items: generated.items || [],
+      links: generated.links || [],
+      poolIds: new Set(pool.keys()),
+      castNames: namesInPlay(characterIds, pool),
+      allowLead: true,
+    })
     : null;
-  const opening = chosen?.content || lead.first_message || '';
 
-  // The story, its cast, its sources, its links and its first message are one
-  // write. If any of it fails, none of it happened.
+  // Open on the reviewed opening if there is one; otherwise on the lead's
+  // greeting, so there is something to answer. The greeting is stored as it
+  // will be read, names filled in, because history is sent to the model
+  // verbatim and shown to you verbatim.
+  const reviewedOpening = typeof composition?.opening?.text === 'string' ? composition.opening.text.trim() : '';
+  if (reviewedOpening.length > BUILDER_HARD.openingChars) throw new HttpError(400, 'That opening is too long.');
+  const chosen = b.startingPointId && cardLead
+    ? db.startingPoints('character', cardLead.id).find((p) => p.id === b.startingPointId)
+    : null;
+  const opening = reviewedOpening || chosen?.content || cardLead?.first_message || '';
+  const reviewedPremise = typeof composition?.story?.premise === 'string' ? composition.story.premise.trim().slice(0, BUILDER_HARD.premiseChars) : '';
+
+  // The story, its cast, its sources, its generated material, its links and
+  // its first message are one write. If any of it fails, none of it happened.
   const id = db.transaction(() => {
+    const leadCardId = genPlan?.lead ? createLeadCard(db, genPlan.lead) : null;
+    const ids = leadCardId ? [leadCardId, ...characterIds] : characterIds;
+    const lead = leadCardId ? db.getCharacter(leadCardId) : cardLead;
+    const title = b.title?.trim() || (typeof composition?.story?.title === 'string' && composition.story.title.trim().slice(0, BUILDER_HARD.storyTitleChars)) || lead.name;
     const storyId = db.createStory({
-      title: b.title?.trim() || lead.name,
-      characterIds,
+      title,
+      characterIds: ids,
       lorebookIds: plan ? [] : (b.lorebookIds || []),
       personaId,
       // A new story starts with the ladder in place. Stories that existed
@@ -908,6 +930,7 @@ route('POST', '/api/stories', async (req) => {
         // What you set once in the app's own settings, so a new story starts
         // the way you like rather than the way it shipped.
         ...db.getSetting('story_defaults', {}),
+        ...(reviewedPremise ? { premise: reviewedPremise } : {}),
         ...(b.settings || {}),
       },
     });
@@ -915,6 +938,7 @@ route('POST', '/api/stories', async (req) => {
       for (const c of cardRoles.filter((x) => x.role !== 'lead')) db.setStoryCharacterRole(storyId, c.characterId, c.role);
     }
     if (plan) writeComposition(db, storyId, plan);
+    if (genPlan) writeGenerated(db, storyId, genPlan, { title, builder: composition.builder || {}, leadCardId });
     if (opening) {
       const greeting = substitute(opening, {
         char: lead.nickname || lead.name,
@@ -926,6 +950,16 @@ route('POST', '/api/stories', async (req) => {
   });
   return { id };
 });
+
+/** Every name already in a story's cast or material, so nobody is made twice. */
+function namesInPlay(characterIds, pool) {
+  const names = characterIds.map((cid) => db.getCharacter(cid)?.name).filter(Boolean);
+  for (const e of pool.values()) {
+    const v = personFromEntry(e);
+    if (v.person) names.push(v.name);
+  }
+  return names;
+}
 
 route('GET', '/api/stories/:id', async (req, res, { id }) => {
   const s = db.getStory(id);
@@ -1992,7 +2026,176 @@ route('POST', '/api/compose', async (req) => {
  */
 route('POST', '/api/stories/:id/compose', async (req, res, { id }) => {
   const body = await readJson(req);
-  return { ok: true, ...applyToStory(db, id, body) };
+  const generated = body.generated && typeof body.generated === 'object' ? body.generated : null;
+  if (body.opening) throw new HttpError(400, 'An existing story already began. Its opening is part of the story and is not replaced.');
+  if (!generated) return { ok: true, ...applyToStory(db, id, body) };
+
+  // Source changes and accepted generated material, as one write.
+  const out = db.transaction(() => {
+    const result = applyToStory(db, id, body);
+    const story = db.getStory(id);
+    const pool = new Map(story.lorebookIds.flatMap((bid) => db.listEntries(bid)).map((e) => [e.id, e]));
+    const genPlan = planGenerated(db, {
+      items: generated.items || [],
+      links: generated.links || [],
+      poolIds: new Set(pool.keys()),
+      castNames: namesInPlay(story.characters.map((c) => c.id), pool),
+      allowLead: false,
+    });
+    const written = writeGenerated(db, id, genPlan, { title: story.title, builder: body.builder || {} });
+    return { ...result, generatedBook: written.bookId, generatedEntries: Object.keys(written.entryIds).length, npcs: db.storyNpcs(id).length };
+  });
+  return { ok: true, ...out };
+});
+
+// ============================================================ story builder
+//
+// Drafts only. Nothing on these routes writes to the database: a draft goes
+// back to the client, is reviewed there, and becomes real through
+// POST /api/stories or POST /api/stories/:id/compose like any other draft.
+
+/** Which model plans stories. Its own setting; the roleplay and memory models are untouched. */
+function builderSettings() {
+  const saved = db.getSetting('builder', {});
+  const storyDefaults = db.getSetting('story_defaults', {});
+  return {
+    model: saved.model || storyDefaults.model || DEFAULTS.model,
+    temperature: Number.isFinite(saved.temperature) ? saved.temperature : 0.7,
+    provider: saved.provider || null,
+    configured: !!saved.model,
+  };
+}
+
+route('GET', '/api/builder/settings', async () => builderSettings());
+
+route('PUT', '/api/builder/settings', async (req) => {
+  const b = await readJson(req);
+  const next = { ...db.getSetting('builder', {}) };
+  if (b.model !== undefined) {
+    if (b.model !== null && (typeof b.model !== 'string' || !/^[\w.-]+\/[\w.:-]+$/.test(b.model))) throw new HttpError(400, 'That is not a model id.');
+    next.model = b.model || undefined;
+  }
+  if (b.temperature !== undefined) {
+    const t = Number(b.temperature);
+    if (!Number.isFinite(t) || t < 0 || t > 2) throw new HttpError(400, 'Temperature is between 0 and 2.');
+    next.temperature = t;
+  }
+  if (b.provider !== undefined) {
+    if (b.provider !== null && (typeof b.provider !== 'object' || Array.isArray(b.provider))) throw new HttpError(400, 'Provider routing must be an object.');
+    next.provider = b.provider || undefined;
+  }
+  db.setSetting('builder', next);
+  return builderSettings();
+});
+
+/** The model, as the builder sees it: messages in, parsed object out. */
+function builderModel() {
+  const key = apiKey();
+  if (!key) throw new HttpError(400, 'Add your OpenRouter key in Settings to use the Story Builder.');
+  const s = builderSettings();
+  return async ({ messages, schema, maxTokens, signal }) => completeJson({
+    apiKey: key, model: s.model, messages, schema, maxTokens, signal,
+    temperature: s.temperature, provider: s.provider, title: 'Tipsy story builder',
+  });
+}
+
+/**
+ * The deterministic draft every mode starts from.
+ *
+ * New story: the chosen cards and sources. Existing story: its own cast and
+ * books, and whatever it has already decided about them.
+ */
+function baseDraft({ storyId = null, lorebookIds = [], characterIds = [], premise = '', title = '', mode }) {
+  const story = storyId ? db.getStory(storyId) : null;
+  if (storyId && !story) throw new HttpError(404, 'No such story.');
+  const bookIds = lorebookIds.length ? lorebookIds : (story ? story.lorebookIds : []);
+  const books = bookIds.map((bid) => db.getLorebook(bid)).filter(Boolean);
+  if (books.length !== bookIds.length) throw new HttpError(404, 'One of those sources is no longer in the library.');
+  const leadCards = story ? [] : characterIds.map((cid) => db.getCharacter(cid)).filter(Boolean);
+  if (leadCards.length !== (story ? 0 : characterIds.length)) throw new HttpError(404, 'One of those characters is no longer in the library.');
+
+  const draft = composeSource(books.flatMap((bk) => bk.entries), {
+    characters: db.listCharacters(),
+    storyCards: story ? story.characters : [],
+    leadCards,
+    transcript: story ? db.pathTo(story.head_id, 100000).map((m) => m.content).join('\n') : '',
+    premise: story ? (story.settings?.premise || '') : premise,
+    opening: story ? '' : (leadCards[0]?.first_message || ''),
+    storyNpcs: story ? db.storyNpcs(story.id) : [],
+    storyExclusions: story ? db.storyExclusionIds(story.id) : new Set(),
+  });
+  // A story with no sources and no transcript still has its cards: the
+  // composer only knows it is "existing" from those.
+  if (story) draft.context = 'existing';
+  const base = fromComposition(draft, {
+    mode,
+    story: story
+      ? { title: story.title, premise: story.settings?.premise || '', opening: null }
+      : { title, premise, opening: leadCards[0]?.first_message || '' },
+  });
+  base.sources = books.map((bk) => ({ id: bk.id, name: bk.name, entries: bk.entries.length }));
+  return base;
+}
+
+/** People the builder proposed who share a name with a card in the library. Said, never swapped in. */
+function noteLibraryCards(draft) {
+  const cards = db.listCharacters();
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  for (const r of draft.casting) {
+    if (r.origin !== 'generated') continue;
+    const card = cards.find((c) => norm(c.name) === norm(r.name));
+    if (card) {
+      r.libraryCardId = card.id;
+      r.why = [...(r.why || []), 'a card with this name is in your library'];
+    }
+  }
+  return draft;
+}
+
+/**
+ * Build a draft.
+ *
+ * { mode: organize | fill | build, depth?, idea?, tone?, pointOfView?, instruction?,
+ *   lorebookIds?, characterIds?, premise?, title?, storyId? }
+ */
+route('POST', '/api/builder/draft', async (req) => {
+  const b = await readJson(req);
+  const mode = b.mode || 'organize';
+  if (!BUILDER_MODES.includes(mode)) throw new HttpError(400, `"${mode}" is not a Story Builder mode.`);
+  if (b.depth !== undefined && !BUILDER_DEPTHS.includes(b.depth)) throw new HttpError(400, 'Depth is light, standard or deep.');
+  const text = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+  const base = baseDraft({
+    storyId: b.storyId || null,
+    lorebookIds: Array.isArray(b.lorebookIds) ? b.lorebookIds : [],
+    characterIds: Array.isArray(b.characterIds) ? b.characterIds : [],
+    premise: text(b.premise, BUILDER_HARD.premiseChars),
+    title: text(b.title, BUILDER_HARD.storyTitleChars),
+    mode,
+  });
+  const draft = await buildDraft({
+    mode, depth: b.depth, base,
+    idea: text(b.idea, 4000), tone: text(b.tone, 200), pointOfView: text(b.pointOfView, 200), instruction: text(b.instruction, 1000),
+    callModel: mode === 'organize' ? null : builderModel(),
+  });
+  return noteLibraryCards(draft);
+});
+
+/**
+ * Generate one part of a draft again.
+ *
+ * { draft, scope: { part } | { item: draftId } | { expand: draftId | { entryId } | { characterId } },
+ *   depth?, instruction?, idea? }
+ */
+route('POST', '/api/builder/regenerate', async (req) => {
+  const b = await readJson(req);
+  const draft = checkDraft(b.draft);
+  const text = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+  const out = await regenerate({
+    draft, scope: b.scope, depth: b.depth,
+    instruction: text(b.instruction, 1000), idea: text(b.idea, 4000),
+    callModel: builderModel(),
+  });
+  return noteLibraryCards(out);
 });
 
 /** What taking a source out of a story would cost it, before it happens. */
