@@ -1780,9 +1780,35 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .edit-head .switch { width: 50px; height: 32px; border-radius: 16px; }
 .edit-head .switch::after { width: 24px; height: 24px; }
 .edit-head .switch[aria-pressed="true"]::after { transform: translateX(18px); }
-/* A long section name wraps rather than pushing its count off the side. */
-.edit-head b { min-width: 0; overflow-wrap: anywhere; }
-.edit-head .n { flex: 0 1 auto; min-width: 0; margin-left: auto; text-align: right; }
+/* A long name wraps between words, never inside one, and the meta text beside it
+   gives way first rather than squeezing the title into a column. */
+.edit-head { flex-wrap: wrap; }
+.edit-head b { min-width: 0; overflow-wrap: break-word; }
+/* When the title and its note cannot share a line, the note takes its own line
+   rather than being squeezed into a column two letters wide. */
+.edit-head .n { flex: 0 1 auto; min-width: 7em; max-width: 100%; margin-left: auto; text-align: right; overflow-wrap: break-word; }
+
+/* ------------------------------------------------- understanding a source */
+
+.rv-summary { border: 1px solid var(--line); border-radius: 11px; background: var(--surface); padding: 12px; margin-bottom: 12px; }
+.rv-source { font-size: 12.5px; color: var(--ink-faint); margin-bottom: 4px; }
+.rv-role { font-size: 15px; line-height: 1.45; margin-bottom: 6px; }
+.rv-tally { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.rv-pip {
+  font-size: 12px; padding: 3px 9px; border-radius: 999px;
+  background: var(--surface-2); color: var(--ink-soft); border: 1px solid var(--line);
+}
+.rv-pip.rv-decision { color: var(--accent); border-color: var(--accent); }
+.rv-hint { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-faint); margin: 8px 0 4px; }
+.rv-flag {
+  display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-style: normal;
+  font-size: 10.5px; letter-spacing: .04em; background: var(--surface-2); color: var(--ink-faint); border: 1px solid var(--line);
+}
+.rv-suggest {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between;
+  padding: 9px 10px; margin: 8px 0; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2);
+}
+.rv-suggest .btn { flex: none; }
 
 /* The name is already the sheet's title; repeating it beside the art was the
    same three words twice in one glance. The space goes to what it is for. */

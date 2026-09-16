@@ -6701,7 +6701,7 @@ function shrinkToBlob(file, maxWide = 1600) {
 // entries themselves — only what they are understood to mean.
 // ========================================================================
 
-const review = { bookId: null, draft: null, entries: new Map(), entities: new Map(), role: null, matches: new Map(), open: new Set(['eye']), saving: false };
+const review = { bookId: null, draft: null, entries: new Map(), entities: new Map(), role: null, matches: new Map(), open: new Set(['decision']), saving: false, changingRole: false };
 
 const CATEGORY_LABEL = {
   identity: 'Identity', appearance: 'Appearance', personality: 'Personality', speech: 'Speech',
@@ -6713,17 +6713,45 @@ const CATEGORY_LABEL = {
 const PERSON_CATEGORY = ['identity', 'appearance', 'personality', 'speech', 'behavior', 'backstory', 'psychology',
   'relationship', 'secret', 'goal', 'skill', 'ability', 'equipment', 'belief', 'habit', 'profile'];
 const ROLE_LABEL = {
-  'entity-material': 'Everything about one person or place',
-  world: 'A world', scenario: 'A scenario', 'story-package': 'A whole story',
-  'narrative-framework': 'Narrative framework — how to tell any story',
-  'reference-pack': 'Reference pack — knowledge for when it comes up',
-  mixed: 'Mixed material',
+  'entity-material': 'Mostly about one person or place',
+  world: 'World information',
+  scenario: 'A scenario or starting situation',
+  'story-package': 'A complete story setup',
+  'narrative-framework': 'Rules for how the story should be narrated',
+  'reference-pack': 'Reference knowledge, used when it comes up',
+  mixed: 'A mixture of different material',
+};
+
+/** The four things a proposal can be, from a reader's point of view. */
+const BUCKET = {
+  clear: { title: 'Clear', pip: 'clear', why: 'Nexus is sure about these.' },
+  likely: { title: 'Likely', pip: 'likely', why: 'Nexus has a suggestion, on weaker evidence.' },
+  decision: { title: 'Needs your decision', pip: 'need your decision', why: 'Nexus has more than one reading and cannot choose between them.' },
+  unsorted: { title: "Nexus couldn't place these yet", pip: 'not placed yet', why: 'Not enough in the text to suggest anything useful.' },
+};
+const bucketOf = (d) => {
+  if (!isSettled(d)) return d.candidates?.length >= 2 ? 'decision' : 'unsorted';
+  if (d.confidence === 'high') return 'clear';
+  if (d.confidence === 'medium') return 'likely';
+  return d.candidates?.length >= 2 ? 'decision' : 'unsorted';
 };
 const TYPE_LABEL = { person: 'Person', place: 'Place', faction: 'Group', item: 'Thing', event: 'Event', concept: 'Idea' };
 const TYPE_SECTION = { person: 'People', place: 'Places', faction: 'Groups', item: 'Things', event: 'Events', concept: 'Ideas' };
 
 const entityName = (ref) => review.entities.get(ref)?.name || ref;
 const isSettled = (d) => d.scope !== 'entity' || !!d.subject || !!d.defines;
+const plural = (n, one, many = `${one}s`) => `${num(n)} ${n === 1 ? one : many}`;
+
+/** The likely suggestions still waiting in one section, so it can offer them together. */
+const likelyIn = (entries) => entries.filter((x) => bucketOf(x) === 'likely' && !x.approve && x.current !== 'approved').map((x) => x.ref);
+/**
+ * A section may offer its own likely suggestions once you have opened it and can
+ * see them. There is deliberately no button that accepts every weaker suggestion
+ * in the source at once.
+ */
+const sectionLikely = (s) => (s.likely?.length
+  ? `<div class="row-actions" style="margin-top:10px"><button class="btn quiet" data-accept-section="${esc(s.id)}">Use the ${plural(s.likely.length, 'likely suggestion')} here</button></div>`
+  : '');
 
 /** Open the review for one source. Reading it writes nothing. */
 async function openSourceReview(bookId) {
@@ -6737,13 +6765,31 @@ async function openSourceReview(bookId) {
     return;
   }
   review.draft = draft;
-  review.open = new Set(['eye']);
+  // What needs deciding is the one thing open when the screen arrives.
+  review.open = new Set(['decision']);
+  review.changingRole = false;
   review.entities = new Map(draft.entities.map((x) => [x.ref, { ...x, decision: 'new' }]));
+  // Which entries the original file called one kind of thing and Nexus reads as
+  // another. Only a real disagreement counts: a "character" entry that turns out
+  // to be a faction, or a note that is really a place. A "character" entry that
+  // holds someone's backstory is not a disagreement, and flagging it is noise.
+  const KIND_TYPE = { character: 'person', place: 'place', faction: 'faction', item: 'item', event: 'event' };
+  const typeOfEntity = (ref) => draft.entities.find((x) => x.ref === ref)?.type;
+  const disagrees = (e) => {
+    const stored = KIND_TYPE[e.storedKind];
+    if (e.proposal.defines) return stored !== typeOfEntity(e.proposal.defines);
+    return !!stored && e.proposal.scope !== 'entity';
+  };
+  const reclassified = new Set(draft.entries.filter((e) => e.proposal && disagrees(e)).map((e) => e.ref));
   review.entries = new Map(draft.entries.filter((e) => e.proposal).map((e) => [e.ref, {
     ...e.proposal,
     ref: e.ref, entryId: e.entryId, hash: e.hash, title: e.title, confidence: e.confidence,
     storedKind: e.storedKind, activation: e.activation, evidence: e.evidence, unresolved: e.unresolved,
-    current: e.current, phase: e.phase,
+    current: e.current, phase: e.phase, reclassified: reclassified.has(e.ref),
+    // The people Nexus actually weighed for this entry, best first: those are the
+    // choices that go in front of you. Everyone else is a deliberate search away.
+    candidates: (e.subjectCandidates || []).map((c) => c.entity),
+    suggested: e.proposal.subject || null,
     // Only what Nexus is sure of starts ticked. Everything else waits for you.
     approve: e.confidence === 'high' && isSettled(e.proposal) && e.current !== 'approved',
   }]));
@@ -6753,13 +6799,17 @@ async function openSourceReview(bookId) {
 }
 
 function reviewCounts() {
-  const list = [...review.entries.values()];
+  const list = [...review.entries.values()].filter((d) => d.current !== 'approved');
+  const of = (name) => list.filter((d) => bucketOf(d) === name);
   return {
     total: review.draft.entries.length,
-    eye: list.filter((d) => !isSettled(d) || d.confidence === 'low').length,
-    ready: list.filter((d) => d.approve).length,
-    already: list.filter((d) => d.current === 'approved').length,
-    clear: list.filter((d) => d.confidence === 'high' && isSettled(d) && d.current !== 'approved').length,
+    clear: of('clear').length,
+    likely: of('likely').length,
+    decision: of('decision').length,
+    unsorted: of('unsorted').length,
+    ready: [...review.entries.values()].filter((d) => d.approve).length,
+    already: [...review.entries.values()].filter((d) => d.current === 'approved').length,
+    clearWaiting: of('clear').filter((d) => !d.approve).length,
   };
 }
 
@@ -6768,19 +6818,41 @@ function renderReview() {
   const c = reviewCounts();
   const role = review.role;
   const people = d.entities.filter((x) => review.entities.get(x.ref).type === 'person');
-  const eye = [...review.entries.values()].filter((x) => !isSettled(x) || x.confidence === 'low');
+  const waiting = [...review.entries.values()].filter((x) => x.current !== 'approved');
+  const decision = waiting.filter((x) => bucketOf(x) === 'decision');
+  const unsorted = waiting.filter((x) => bucketOf(x) === 'unsorted');
+  const unplaced = new Set([...decision, ...unsorted].map((x) => x.ref));
+  // Each entry belongs in exactly one place, so nothing is decided twice.
+  const placed = (x) => !unplaced.has(x.ref);
 
   // Where an entry appears follows what the source is FOR, not only its scope:
   // a framework's entries are directives, never world building.
   const sections = [];
-  if (eye.length) sections.push({ id: 'eye', title: 'Needs your eye', n: eye.length, rows: eye.map((x) => entryCard(x, { choose: true })) });
+  if (decision.length) {
+    sections.push({
+      id: 'decision',
+      title: BUCKET.decision.title,
+      n: decision.length,
+      why: BUCKET.decision.why,
+      rows: decision.map((x) => entryCard(x, { choose: true })),
+    });
+  }
+  if (unsorted.length) {
+    sections.push({
+      id: 'unsorted',
+      title: BUCKET.unsorted.title,
+      n: unsorted.length,
+      why: BUCKET.unsorted.why,
+      rows: unsorted.map((x) => entryCard(x, { choose: true })),
+    });
+  }
 
   for (const type of ['person', 'place', 'faction', 'item', 'event', 'concept']) {
     const found = d.entities.filter((x) => review.entities.get(x.ref).type === type);
     if (found.length) sections.push({ id: `ent-${type}`, title: TYPE_SECTION[type], n: found.length, rows: found.map(entityCard) });
   }
   for (const person of people) {
-    const about = [...review.entries.values()].filter((x) => x.subject === person.ref && isSettled(x));
+    const about = [...review.entries.values()].filter((x) => x.subject === person.ref && isSettled(x) && placed(x));
     if (!about.length) continue;
     const groups = new Map();
     for (const x of about) {
@@ -6791,16 +6863,17 @@ function renderReview() {
       id: `know-${person.ref}`,
       title: `What this says about ${review.entities.get(person.ref).name}`,
       n: about.length,
-      rows: [...groups.entries()].map(([label, rows]) => `<div class="sec-head">${esc(label)}</div>${rows.map((x) => entryCard(x, {})).join('')}`),
+      likely: likelyIn(about),
+      rows: [...groups.entries()].map(([label, rows]) => `<div class="sec-head">${esc(label)}</div>${rows.map((x) => entryCard(x, { hideCategory: CATEGORY_LABEL[x.category] === label })).join('')}`),
     });
   }
-  const rest = [...review.entries.values()].filter((x) => isSettled(x) && !x.subject && !x.defines);
+  const rest = [...review.entries.values()].filter((x) => isSettled(x) && !x.subject && !x.defines && placed(x));
   const directives = rest.filter((x) => x.category === 'direction');
   const refs = rest.filter((x) => x.category === 'reference');
   const world = rest.filter((x) => !['direction', 'reference'].includes(x.category));
-  if (directives.length) sections.push({ id: 'directives', title: 'Directives — how to tell it', n: directives.length, rows: directives.map((x) => entryCard(x, {})) });
-  if (refs.length) sections.push({ id: 'reference', title: 'Reference — knowledge for when it comes up', n: refs.length, rows: refs.map((x) => entryCard(x, {})) });
-  if (world.length) sections.push({ id: 'world', title: 'The world and everything else', n: world.length, rows: world.map((x) => entryCard(x, {})) });
+  if (directives.length) sections.push({ id: 'directives', title: 'Directives — how to tell it', n: directives.length, likely: likelyIn(directives), rows: directives.map((x) => entryCard(x, { hideCategory: true })) });
+  if (refs.length) sections.push({ id: 'reference', title: 'Reference — knowledge for when it comes up', n: refs.length, likely: likelyIn(refs), rows: refs.map((x) => entryCard(x, { hideCategory: true })) });
+  if (world.length) sections.push({ id: 'world', title: 'The world and everything else', n: world.length, likely: likelyIn(world), rows: world.map((x) => entryCard(x, {})) });
 
   if (d.variantGroups.length) sections.push({ id: 'variants', title: 'Versions of the same thing', n: d.variantGroups.length, rows: d.variantGroups.map(variantCard) });
   const matches = [...review.matches.entries()];
@@ -6808,11 +6881,14 @@ function renderReview() {
 
   const html = `
     ${backRow()}
-    <div class="edit-card">
-      <div class="edit-head"><b>${esc(d.source.name)}</b><span class="n">${num(c.total)} entries</span></div>
-      <div class="edit-body">
-        <div class="field">
-          <label>Nexus thinks this source is</label>
+    <div class="rv-summary">
+      <div class="rv-source">${esc(d.source.name)} · ${num(c.total)} entries</div>
+      <div class="rv-role">Nexus thinks this source contains <b>${esc(ROLE_LABEL[role.role])}</b>${role.role === 'entity-material' && role.subject ? `, mostly ${esc(review.entities.get(role.subject).name)}` : ''}.</div>
+      <div class="why">${esc(d.source.proposedRole.evidence.map((v) => v.detail).join('. '))}.</div>
+      <button class="btn quiet" id="rv-change-role">${review.changingRole ? 'Keep this' : 'Change'}</button>
+      ${review.changingRole ? `
+        <div class="field" style="margin-top:10px">
+          <label>This source contains</label>
           <select id="rv-role">${Object.entries(ROLE_LABEL).map(([k, label]) => `<option value="${k}"${role.role === k ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>
         </div>
         ${role.role === 'entity-material' ? `
@@ -6822,19 +6898,20 @@ function renderReview() {
               <option value="">Choose someone</option>
               ${d.entities.map((x) => `<option value="${esc(x.ref)}"${role.subject === x.ref ? ' selected' : ''}>${esc(review.entities.get(x.ref).name)}</option>`).join('')}
             </select>
-          </div>` : ''}
-        <div class="why">${esc(d.source.proposedRole.evidence.map((v) => v.detail).join('. '))}.</div>
+          </div>` : ''}` : ''}
+      <div class="rv-tally">
+        ${[['clear', c.clear], ['likely', c.likely], ['decision', c.decision], ['unsorted', c.unsorted]]
+    .filter(([, n]) => n).map(([k, n]) => `<span class="rv-pip rv-${k}">${num(n)} ${esc(BUCKET[k].pip)}</span>`).join('')}
+        ${c.already ? `<span class="rv-pip">${num(c.already)} already saved</span>` : ''}
       </div>
     </div>
-    <div class="why" style="margin:2px 0 10px">
-      <b>${num(c.ready)} ready to save</b>${c.already ? ` · ${num(c.already)} already saved` : ''}${c.eye ? ` · ${num(c.eye)} need your eye` : ''}
-    </div>
-    ${c.clear ? `<div class="row-actions" style="margin-bottom:12px"><button class="btn" id="rv-accept-clear">Accept the ${num(c.clear)} clear ones</button></div>` : ''}
+    ${c.clearWaiting ? `<div class="row-actions" style="margin-bottom:12px"><button class="btn" id="rv-accept-clear">Accept the ${num(c.clearWaiting)} clear ${c.clearWaiting === 1 ? 'suggestion' : 'suggestions'}</button></div>` : ''}
     ${sections.map((s) => `
       <div class="edit-card" data-section="${esc(s.id)}">
         <div class="edit-head"><b>${esc(s.title)}</b><span class="n">${num(s.n)}</span>
           <button class="fold" aria-expanded="${review.open.has(s.id)}">▾</button></div>
-        <div class="edit-body"${review.open.has(s.id) ? '' : ' hidden'}>${review.open.has(s.id) ? s.rows.join('') : ''}</div>
+        <div class="edit-body"${review.open.has(s.id) ? '' : ' hidden'}>${review.open.has(s.id)
+    ? `${s.why ? `<div class="why">${esc(s.why)}</div>` : ''}${s.rows.join('')}${sectionLikely(s)}` : ''}</div>
       </div>`).join('')}
     <div class="sheet-actions">
       <button class="btn quiet" data-back>Not now</button>
@@ -6848,40 +6925,67 @@ function renderReview() {
 }
 
 /** One entry, said plainly, with everything technical folded away. */
-function entryCard(d, { choose = false }) {
+function entryCard(d, { choose = false, hideCategory = false, compact = false }) {
+  const kind = CATEGORY_LABEL[d.category] || d.category;
   const about = d.defines ? `Describes ${entityName(d.defines)}`
-    : d.subject ? `${CATEGORY_LABEL[d.category] || d.category} · about ${entityName(d.subject)}`
-      : `${CATEGORY_LABEL[d.category] || d.category}`;
-  const people = [...review.entities.values()].filter((x) => x.type === 'person');
-  const unsure = !isSettled(d) || d.confidence === 'low';
+    : d.subject ? (hideCategory ? `About ${entityName(d.subject)}` : `${kind} · about ${entityName(d.subject)}`)
+      : hideCategory ? '' : kind;
+  const bucket = bucketOf(d);
+  const unsure = bucket === 'decision' || bucket === 'unsorted';
+  // The people Nexus weighed, in its own order, then everyone else behind a choice.
+  const likelyPeople = (d.candidates || []).map((ref) => review.entities.get(ref)).filter(Boolean);
+  const others = [...review.entities.values()].filter((x) => x.type === 'person' && !likelyPeople.includes(x));
+  const connectable = [...review.entities.values()].filter((x) => x.ref !== d.subject && x.ref !== d.defines && !d.related.includes(x.ref));
   return `
     <div class="edit-card" data-entry-ref="${esc(d.ref)}">
       <div class="edit-head">
         ${d.current === 'approved' ? '<span class="card-badge">saved</span>'
     : `<button class="switch" data-tick="${esc(d.ref)}" aria-pressed="${d.approve}"></button>`}
         <b>${esc(d.title || 'Untitled')}</b>
-        <span class="n">${esc(about)}</span>
+        <span class="n">${esc(about)}${d.reclassified ? ' <i class="rv-flag">reclassified</i>' : ''}</span>
         <button class="fold" aria-expanded="false">▾</button>
       </div>
       <div class="edit-body" hidden>
         ${unsure ? `<div class="why"><b>Nexus isn't sure${d.unresolved.length ? ':' : '.'}</b> ${esc(d.unresolved.join('. '))}</div>` : ''}
+        ${bucket === 'likely' && !d.approve ? `
+          <div class="rv-suggest">
+            <div>Nexus suggests: <b>${esc(about || kind)}</b></div>
+            <button class="btn" data-use="${esc(d.ref)}">Use this suggestion</button>
+          </div>` : ''}
+        ${d.reclassified ? `<div class="why">The original file called this “${esc(d.storedKind)}”. Nexus reads it as ${esc(d.defines ? `a ${TYPE_LABEL[review.entities.get(d.defines)?.type]?.toLowerCase() || 'thing'}` : kind.toLowerCase())}. The file is not changed.</div>` : ''}
         ${choose || !isSettled(d) ? `
           <div class="field">
             <label>Who is this about?</label>
+            ${likelyPeople.length ? `<div class="rv-hint">Likely</div>` : ''}
             <div class="chips">
-              ${people.map((p) => `<button class="chip-tag" data-subject="${esc(d.ref)}" data-entity="${esc(p.ref)}" aria-pressed="${d.subject === p.ref}">${esc(p.name)}</button>`).join('')}
+              ${likelyPeople.map((p) => `<button class="chip-tag" data-subject="${esc(d.ref)}" data-entity="${esc(p.ref)}" aria-pressed="${d.subject === p.ref}">${esc(p.name)}</button>`).join('')}
               <button class="chip-tag" data-subject="${esc(d.ref)}" data-entity="" aria-pressed="${!d.subject && !d.defines}">Nobody in particular</button>
             </div>
+            ${others.length ? `
+              <div class="rv-hint" style="margin-top:8px">Someone else</div>
+              <select data-subject-other="${esc(d.ref)}">
+                <option value="">Choose someone else…</option>
+                ${others.map((p) => `<option value="${esc(p.ref)}"${d.subject === p.ref ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}
+              </select>` : ''}
           </div>` : ''}
+        ${hideCategory && isSettled(d) ? '' : `
+          <div class="field">
+            <label>What kind of thing it is</label>
+            <select data-category="${esc(d.ref)}">
+              ${Object.entries(CATEGORY_LABEL).map(([k, label]) => `<option value="${k}"${d.category === k ? ' selected' : ''}>${esc(label)}</option>`).join('')}
+            </select>
+          </div>`}
         <div class="field">
-          <label>What kind of thing it is</label>
-          <select data-category="${esc(d.ref)}">
-            ${Object.entries(CATEGORY_LABEL).map(([k, label]) => `<option value="${k}"${d.category === k ? ' selected' : ''}>${esc(label)}</option>`).join('')}
-          </select>
+          <label>Also connected to</label>
+          ${d.related.length ? `<div class="chips">
+            ${d.related.map((r) => `<button class="chip-tag" data-unrelate="${esc(d.ref)}" data-entity="${esc(r)}" aria-pressed="true">${esc(entityName(r))} ✕</button>`).join('')}
+          </div>` : '<div class="why">Nobody else.</div>'}
+          ${connectable.length ? `<select data-relate="${esc(d.ref)}">
+            <option value="">+ Add connection…</option>
+            ${connectable.map((x) => `<option value="${esc(x.ref)}">${esc(x.name)}</option>`).join('')}
+          </select>` : ''}
+          <div class="why">${d.subject ? `This entry is mainly about ${esc(entityName(d.subject))}; anyone connected is involved but not the point of it.` : 'Anyone connected is involved in this, without it being about them.'}</div>
         </div>
-        ${d.related.length ? `<div class="field"><label>Also involves</label><div class="chips">
-          ${d.related.map((r) => `<button class="chip-tag" data-unrelate="${esc(d.ref)}" data-entity="${esc(r)}" aria-pressed="true">${esc(entityName(r))} ✕</button>`).join('')}
-        </div><div class="why">Tap one to say it is not really involved.</div></div>` : ''}
         <details><summary>Why Nexus says this</summary>
           ${d.evidence.map((v) => `<div class="fired-row"><span class="t">${esc(v.detail)}</span></div>`).join('')}
         </details>
@@ -6892,28 +6996,40 @@ function entryCard(d, { choose = false }) {
           <div class="fired-row"><span class="t">Switched on</span><span class="w">${d.activation.enabled ? 'yes' : 'no'}${d.phase ? ` · ${esc(String(d.phase).slice(0, 30))}` : ''}</span></div>
           <div class="why" style="margin-top:6px">Organising never changes any of this.</div>
         </details>
+        ${compact ? '' : ''}
       </div>
     </div>`;
 }
 
+/**
+ * A person, place or group as a summary rather than a form: what it is, what it
+ * rests on, and the entries that describe it — including their own tick, so no
+ * decision is counted in Save that cannot be looked at here.
+ */
 function entityCard(x) {
   const state = review.entities.get(x.ref);
-  const profiles = x.profileEntries.length;
+  const profiles = x.profileEntries.map((ref) => review.entries.get(ref)).filter(Boolean);
+  const editing = review.editingEntity === x.ref;
   return `
     <div class="edit-card">
       <div class="edit-head"><b>${esc(state.name)}</b>
-        <span class="n">${esc(TYPE_LABEL[state.type])}${profiles > 1 ? ` · ${profiles} versions` : ''}${x.mentionedIn ? ` · in ${x.mentionedIn} entries` : ''}</span>
+        <span class="n">${esc(TYPE_LABEL[state.type])} · ${profiles.length ? `${plural(profiles.length, 'profile entry', 'profile entries')} · ` : ''}${esc(plural(x.mentionedIn, 'entry', 'entries'))}</span>
         <button class="fold" aria-expanded="false">▾</button></div>
       <div class="edit-body" hidden>
-        <div class="field"><label>Name</label><input data-entity-name="${esc(x.ref)}" value="${esc(state.name)}"></div>
-        <div class="field">
-          <label>What they are</label>
-          <select data-entity-type="${esc(x.ref)}">
-            ${Object.entries(TYPE_LABEL).map(([k, label]) => `<option value="${k}"${state.type === k ? ' selected' : ''}>${esc(label)}</option>`).join('')}
-          </select>
-        </div>
-        ${state.aliases.length ? `<div class="field"><label>Also called</label><div class="why">${esc(state.aliases.join(', '))}</div></div>` : ''}
-        ${profiles > 1 ? `<div class="why">${profiles} entries describe ${esc(state.name)}. They stay separate entries; Nexus only notes that they are about the same one.</div>` : ''}
+        ${profiles.length ? `
+          <div class="rv-hint">${profiles.length > 1 ? 'Based on these entries, which stay separate' : 'Based on this entry'}</div>
+          ${profiles.map((p) => entryCard(p, { compact: true, hideCategory: true })).join('')}`
+    : '<div class="why">No entry in this source describes them directly; they are only mentioned.</div>'}
+        ${state.aliases.length ? `<div class="why">Also called ${esc(state.aliases.join(', '))}.</div>` : ''}
+        <details${editing ? ' open' : ''}><summary>Change the name or what they are</summary>
+          <div class="field"><label>Name</label><input data-entity-name="${esc(x.ref)}" value="${esc(state.name)}"></div>
+          <div class="field">
+            <label>What they are</label>
+            <select data-entity-type="${esc(x.ref)}">
+              ${Object.entries(TYPE_LABEL).map(([k, label]) => `<option value="${k}"${state.type === k ? ' selected' : ''}>${esc(label)}</option>`).join('')}
+            </select>
+          </div>
+        </details>
         <details><summary>Why Nexus says this</summary>
           ${x.evidence.map((v) => `<div class="fired-row"><span class="t">${esc(v.detail)}</span></div>`).join('')}
         </details>
@@ -6994,14 +7110,31 @@ function onReviewClick(e) {
     renderReview();
     return;
   }
-  if (e.target.closest('#rv-accept-clear')) {
+  const use = e.target.closest('[data-use]');
+  if (use) { review.entries.get(use.dataset.use).approve = true; renderReview(); return; }
+
+  const acceptSection = e.target.closest('[data-accept-section]');
+  if (acceptSection) {
+    // Only the likely suggestions in the section you are looking at, never all of them at once.
+    const id = acceptSection.dataset.acceptSection;
+    review.open.add(id);
     for (const d of review.entries.values()) {
-      if (d.confidence === 'high' && isSettled(d) && d.current !== 'approved') d.approve = true;
+      if (bucketOf(d) === 'likely' && d.current !== 'approved' && sectionOfEntry(d) === id) d.approve = true;
     }
     renderReview();
     return;
   }
-  if (e.target.closest('#rv-save')) { saveReview(); return; }
+
+  if (e.target.closest('#rv-change-role')) { review.changingRole = !review.changingRole; renderReview(); return; }
+
+  if (e.target.closest('#rv-accept-clear')) {
+    for (const d of review.entries.values()) {
+      if (bucketOf(d) === 'clear' && d.current !== 'approved') d.approve = true;
+    }
+    renderReview();
+    return;
+  }
+  if (e.target.closest('#rv-save')) { confirmSave(); return; }
 
   // Anywhere else on a card's header opens or closes it: the row is the target,
   // the chevron only says which way it will go.
@@ -7025,7 +7158,37 @@ function onReviewClick(e) {
   }
 }
 
+/** Which section an entry is drawn in, so a section can accept its own suggestions. */
+function sectionOfEntry(d) {
+  if (!isSettled(d)) return null;
+  if (d.subject) return `know-${d.subject}`;
+  if (d.defines) return `ent-${review.entities.get(d.defines)?.type}`;
+  if (d.category === 'direction') return 'directives';
+  if (d.category === 'reference') return 'reference';
+  return 'world';
+}
+
 function onReviewChange(e) {
+  const other = e.target.closest('[data-subject-other]');
+  if (other) {
+    const d = review.entries.get(other.dataset.subjectOther);
+    if (other.value) {
+      d.scope = 'entity';
+      d.subject = other.value;
+      d.defines = null;
+      d.related = d.related.filter((r) => r !== other.value);
+      d.approve = true;
+    }
+    renderReview();
+    return;
+  }
+  const relate = e.target.closest('[data-relate]');
+  if (relate) {
+    const d = review.entries.get(relate.dataset.relate);
+    if (relate.value && !d.related.includes(relate.value)) d.related = [...d.related, relate.value];
+    renderReview();
+    return;
+  }
   const cat = e.target.closest('[data-category]');
   if (cat) { review.entries.get(cat.dataset.category).category = cat.value; return; }
   const type = e.target.closest('[data-entity-type]');
@@ -7046,6 +7209,29 @@ function onReviewChange(e) {
     return;
   }
   if (e.target.id === 'rv-role-subject') { review.role.subject = e.target.value || null; renderReview(); }
+}
+
+/** What "Save 61 decisions" actually means, before it happens. */
+function confirmSave() {
+  const ticked = [...review.entries.values()].filter((d) => d.approve);
+  const by = (name) => ticked.filter((d) => bucketOf(d) === name).length;
+  const decided = ticked.filter((d) => ['decision', 'unsorted'].includes(bucketOf(d))).length;
+  const left = [...review.entries.values()].filter((d) => !d.approve && d.current !== 'approved').length;
+  subSheet('Save these decisions', `
+    <div class="why" style="margin-bottom:12px">Saving records what this material means. It never changes the entries themselves.</div>
+    <div class="fired">
+      <div class="fired-row"><span class="t">Clear suggestions</span><span class="w">${num(by('clear'))}</span></div>
+      <div class="fired-row"><span class="t">Likely suggestions you accepted</span><span class="w">${num(by('likely'))}</span></div>
+      <div class="fired-row"><span class="t">Ones you decided yourself</span><span class="w">${num(decided)}</span></div>
+      <div class="fired-row"><span class="t"><b>Saved in total</b></span><span class="w"><b>${num(ticked.length)}</b></span></div>
+    </div>
+    ${left ? `<div class="why" style="margin-top:10px">${plural(left, 'entry', 'entries')} you did not decide will stay unorganised. You can come back to them.</div>` : ''}
+    <div class="sheet-actions">
+      <button class="btn quiet" data-back>Back</button>
+      <button class="btn primary" id="rv-confirm">Save ${plural(ticked.length, 'decision')}</button>
+    </div>`, (root) => {
+    $('#rv-confirm', root).addEventListener('click', saveReview);
+  }, renderReview);
 }
 
 /** Send only what was decided. Everything left undecided stays as it was. */
