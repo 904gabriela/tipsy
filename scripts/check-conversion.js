@@ -343,8 +343,11 @@ console.log('\nN  through the server: read-only, and no model');
     const again = await J(`/api/lorebooks/${sid}/semantic-preview`, {});
     ok('previewing again changes nothing', again.status === 200);
     ok('an unknown source is a 404', (await J('/api/lorebooks/no-such-book/semantic-preview', {})).status === 404);
-    ok('there is no apply route yet', (await J(`/api/lorebooks/${sid}/semantic-apply`, {})).status === 404
-      && (await J(`/api/lorebooks/${sid}/semantic-preview/apply`, {})).status === 404);
+    // Applying is a separate, explicit act (P4). Previewing never becomes applying,
+    // and an apply with nothing decided writes nothing.
+    const empty = await J(`/api/lorebooks/${sid}/semantic-apply`, {});
+    ok('previewing never applies, and an empty review writes nothing', empty.status === 200 && empty.body.entries.length === 0
+      && empty.body.organization.coverage === 'unorganized');
     ok('no request reached the model provider', providerCalls === 0, `${providerCalls} calls`);
     const check = open(path);
     ok('the library is unchanged after previewing', createHash('sha256').update(JSON.stringify(check.raw.prepare('SELECT * FROM lore_entries ORDER BY id').all())).digest('hex') === before);

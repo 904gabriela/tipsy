@@ -30,7 +30,12 @@ async function api(path, opts = {}) {
     // A session that ran out mid-use should put the lock screen up rather than
     // scatter failures across whatever you were doing.
     if (res.status === 401 && body?.locked) { showGate(); throw new Error(body.error); }
-    throw new Error(body?.error || `Something went wrong (${res.status}).`);
+    // The whole answer rides along: some failures say more than one sentence,
+    // like a review that lists which entries changed underneath it.
+    const err = new Error(body?.error || `Something went wrong (${res.status}).`);
+    err.status = res.status;
+    err.body = body;
+    throw err;
   }
   return body;
 }
@@ -4909,6 +4914,7 @@ function renderLore() {
       ${(b.groups[k] || []).map(cardHtml).join('')}
     </div>`).join('') || `<div class="empty">Nothing here yet.</div>`)
     + `<div style="margin-top:40px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+         <button class="btn" data-organize="${esc(b.id)}">Understand this source</button>
          <button class="btn quiet" data-reclassify="${esc(b.id)}">Sort entries by type again</button>
          <button class="btn quiet" data-delete-book="${esc(b.id)}">Delete this lorebook</button>
        </div>`;
@@ -4994,6 +5000,9 @@ $('#lore-groups').addEventListener('click', async (e) => {
     editEntry(card.dataset.entry);
     return;
   }
+
+  const organize = e.target.closest('[data-organize]');
+  if (organize) { openSourceReview(organize.dataset.organize); return; }
 
   const again = e.target.closest('[data-reclassify]');
   if (again) { reclassify(again.dataset.reclassify); return; }
@@ -6684,4 +6693,395 @@ function shrinkToBlob(file, maxWide = 1600) {
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('That file is not an image we can read.')); };
     img.src = url;
   });
+}
+
+// ========================================================================
+// Understanding a source: read what Nexus worked out, then save what you agree
+// with. Nothing here decides anything on its own, and saving never changes the
+// entries themselves — only what they are understood to mean.
+// ========================================================================
+
+const review = { bookId: null, draft: null, entries: new Map(), entities: new Map(), role: null, matches: new Map(), open: new Set(['eye']), saving: false };
+
+const CATEGORY_LABEL = {
+  identity: 'Identity', appearance: 'Appearance', personality: 'Personality', speech: 'Speech',
+  behavior: 'Behaviour', backstory: 'Backstory', psychology: 'Psychology', relationship: 'Relationships',
+  secret: 'Secrets', goal: 'Goals', skill: 'Skills', ability: 'Abilities', equipment: 'Equipment',
+  belief: 'Beliefs', habit: 'Habits', profile: 'Profile', background: 'Background', rule: 'Rules',
+  event: 'Events', item: 'Items', direction: 'Directives', reference: 'Reference', other: 'Other',
+};
+const PERSON_CATEGORY = ['identity', 'appearance', 'personality', 'speech', 'behavior', 'backstory', 'psychology',
+  'relationship', 'secret', 'goal', 'skill', 'ability', 'equipment', 'belief', 'habit', 'profile'];
+const ROLE_LABEL = {
+  'entity-material': 'Everything about one person or place',
+  world: 'A world', scenario: 'A scenario', 'story-package': 'A whole story',
+  'narrative-framework': 'Narrative framework — how to tell any story',
+  'reference-pack': 'Reference pack — knowledge for when it comes up',
+  mixed: 'Mixed material',
+};
+const TYPE_LABEL = { person: 'Person', place: 'Place', faction: 'Group', item: 'Thing', event: 'Event', concept: 'Idea' };
+const TYPE_SECTION = { person: 'People', place: 'Places', faction: 'Groups', item: 'Things', event: 'Events', concept: 'Ideas' };
+
+const entityName = (ref) => review.entities.get(ref)?.name || ref;
+const isSettled = (d) => d.scope !== 'entity' || !!d.subject || !!d.defines;
+
+/** Open the review for one source. Reading it writes nothing. */
+async function openSourceReview(bookId) {
+  review.bookId = bookId;
+  subSheet('Understanding this source', `${backRow()}<div class="empty">Reading this source…</div>`, null, () => openLorebook(bookId));
+  let draft;
+  try {
+    draft = await post(`/api/lorebooks/${bookId}/semantic-preview`, {});
+  } catch (err) {
+    sheet('Understanding this source', `${backRow()}<div class="empty">${esc(err.message || 'That source could not be read.')}</div>`);
+    return;
+  }
+  review.draft = draft;
+  review.open = new Set(['eye']);
+  review.entities = new Map(draft.entities.map((x) => [x.ref, { ...x, decision: 'new' }]));
+  review.entries = new Map(draft.entries.filter((e) => e.proposal).map((e) => [e.ref, {
+    ...e.proposal,
+    ref: e.ref, entryId: e.entryId, hash: e.hash, title: e.title, confidence: e.confidence,
+    storedKind: e.storedKind, activation: e.activation, evidence: e.evidence, unresolved: e.unresolved,
+    current: e.current, phase: e.phase,
+    // Only what Nexus is sure of starts ticked. Everything else waits for you.
+    approve: e.confidence === 'high' && isSettled(e.proposal) && e.current !== 'approved',
+  }]));
+  review.role = { role: draft.source.proposedRole.role, subject: draft.source.proposedRole.subject };
+  review.matches = new Map(draft.matches.map((m, i) => [`${m.entity}:${i}`, { ...m, decision: 'later' }]));
+  renderReview();
+}
+
+function reviewCounts() {
+  const list = [...review.entries.values()];
+  return {
+    total: review.draft.entries.length,
+    eye: list.filter((d) => !isSettled(d) || d.confidence === 'low').length,
+    ready: list.filter((d) => d.approve).length,
+    already: list.filter((d) => d.current === 'approved').length,
+    clear: list.filter((d) => d.confidence === 'high' && isSettled(d) && d.current !== 'approved').length,
+  };
+}
+
+function renderReview() {
+  const d = review.draft;
+  const c = reviewCounts();
+  const role = review.role;
+  const people = d.entities.filter((x) => review.entities.get(x.ref).type === 'person');
+  const eye = [...review.entries.values()].filter((x) => !isSettled(x) || x.confidence === 'low');
+
+  // Where an entry appears follows what the source is FOR, not only its scope:
+  // a framework's entries are directives, never world building.
+  const sections = [];
+  if (eye.length) sections.push({ id: 'eye', title: 'Needs your eye', n: eye.length, rows: eye.map((x) => entryCard(x, { choose: true })) });
+
+  for (const type of ['person', 'place', 'faction', 'item', 'event', 'concept']) {
+    const found = d.entities.filter((x) => review.entities.get(x.ref).type === type);
+    if (found.length) sections.push({ id: `ent-${type}`, title: TYPE_SECTION[type], n: found.length, rows: found.map(entityCard) });
+  }
+  for (const person of people) {
+    const about = [...review.entries.values()].filter((x) => x.subject === person.ref && isSettled(x));
+    if (!about.length) continue;
+    const groups = new Map();
+    for (const x of about) {
+      const label = (x.displayPath && x.displayPath[0]) || CATEGORY_LABEL[x.category] || 'Other';
+      groups.set(label, [...(groups.get(label) || []), x]);
+    }
+    sections.push({
+      id: `know-${person.ref}`,
+      title: `What this says about ${review.entities.get(person.ref).name}`,
+      n: about.length,
+      rows: [...groups.entries()].map(([label, rows]) => `<div class="sec-head">${esc(label)}</div>${rows.map((x) => entryCard(x, {})).join('')}`),
+    });
+  }
+  const rest = [...review.entries.values()].filter((x) => isSettled(x) && !x.subject && !x.defines);
+  const directives = rest.filter((x) => x.category === 'direction');
+  const refs = rest.filter((x) => x.category === 'reference');
+  const world = rest.filter((x) => !['direction', 'reference'].includes(x.category));
+  if (directives.length) sections.push({ id: 'directives', title: 'Directives — how to tell it', n: directives.length, rows: directives.map((x) => entryCard(x, {})) });
+  if (refs.length) sections.push({ id: 'reference', title: 'Reference — knowledge for when it comes up', n: refs.length, rows: refs.map((x) => entryCard(x, {})) });
+  if (world.length) sections.push({ id: 'world', title: 'The world and everything else', n: world.length, rows: world.map((x) => entryCard(x, {})) });
+
+  if (d.variantGroups.length) sections.push({ id: 'variants', title: 'Versions of the same thing', n: d.variantGroups.length, rows: d.variantGroups.map(variantCard) });
+  const matches = [...review.matches.entries()];
+  if (matches.length) sections.push({ id: 'matches', title: 'Possibly the same elsewhere', n: matches.length, rows: matches.map(([key, m]) => matchCard(key, m)) });
+
+  const html = `
+    ${backRow()}
+    <div class="edit-card">
+      <div class="edit-head"><b>${esc(d.source.name)}</b><span class="n">${num(c.total)} entries</span></div>
+      <div class="edit-body">
+        <div class="field">
+          <label>Nexus thinks this source is</label>
+          <select id="rv-role">${Object.entries(ROLE_LABEL).map(([k, label]) => `<option value="${k}"${role.role === k ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>
+        </div>
+        ${role.role === 'entity-material' ? `
+          <div class="field">
+            <label>Mostly about</label>
+            <select id="rv-role-subject">
+              <option value="">Choose someone</option>
+              ${d.entities.map((x) => `<option value="${esc(x.ref)}"${role.subject === x.ref ? ' selected' : ''}>${esc(review.entities.get(x.ref).name)}</option>`).join('')}
+            </select>
+          </div>` : ''}
+        <div class="why">${esc(d.source.proposedRole.evidence.map((v) => v.detail).join('. '))}.</div>
+      </div>
+    </div>
+    <div class="why" style="margin:2px 0 10px">
+      <b>${num(c.ready)} ready to save</b>${c.already ? ` · ${num(c.already)} already saved` : ''}${c.eye ? ` · ${num(c.eye)} need your eye` : ''}
+    </div>
+    ${c.clear ? `<div class="row-actions" style="margin-bottom:12px"><button class="btn" id="rv-accept-clear">Accept the ${num(c.clear)} clear ones</button></div>` : ''}
+    ${sections.map((s) => `
+      <div class="edit-card" data-section="${esc(s.id)}">
+        <div class="edit-head"><b>${esc(s.title)}</b><span class="n">${num(s.n)}</span>
+          <button class="fold" aria-expanded="${review.open.has(s.id)}">▾</button></div>
+        <div class="edit-body"${review.open.has(s.id) ? '' : ' hidden'}>${review.open.has(s.id) ? s.rows.join('') : ''}</div>
+      </div>`).join('')}
+    <div class="sheet-actions">
+      <button class="btn quiet" data-back>Not now</button>
+      <button class="btn primary" id="rv-save"${c.ready ? '' : ' disabled'}>Save ${num(c.ready)} ${c.ready === 1 ? 'decision' : 'decisions'}</button>
+    </div>`;
+
+  sheet('Understanding this source', html, (root) => {
+    root.addEventListener('click', onReviewClick);
+    root.addEventListener('change', onReviewChange);
+  });
+}
+
+/** One entry, said plainly, with everything technical folded away. */
+function entryCard(d, { choose = false }) {
+  const about = d.defines ? `Describes ${entityName(d.defines)}`
+    : d.subject ? `${CATEGORY_LABEL[d.category] || d.category} · about ${entityName(d.subject)}`
+      : `${CATEGORY_LABEL[d.category] || d.category}`;
+  const people = [...review.entities.values()].filter((x) => x.type === 'person');
+  const unsure = !isSettled(d) || d.confidence === 'low';
+  return `
+    <div class="edit-card" data-entry-ref="${esc(d.ref)}">
+      <div class="edit-head">
+        ${d.current === 'approved' ? '<span class="card-badge">saved</span>'
+    : `<button class="switch" data-tick="${esc(d.ref)}" aria-pressed="${d.approve}"></button>`}
+        <b>${esc(d.title || 'Untitled')}</b>
+        <span class="n">${esc(about)}</span>
+        <button class="fold" aria-expanded="false">▾</button>
+      </div>
+      <div class="edit-body" hidden>
+        ${unsure ? `<div class="why"><b>Nexus isn't sure${d.unresolved.length ? ':' : '.'}</b> ${esc(d.unresolved.join('. '))}</div>` : ''}
+        ${choose || !isSettled(d) ? `
+          <div class="field">
+            <label>Who is this about?</label>
+            <div class="chips">
+              ${people.map((p) => `<button class="chip-tag" data-subject="${esc(d.ref)}" data-entity="${esc(p.ref)}" aria-pressed="${d.subject === p.ref}">${esc(p.name)}</button>`).join('')}
+              <button class="chip-tag" data-subject="${esc(d.ref)}" data-entity="" aria-pressed="${!d.subject && !d.defines}">Nobody in particular</button>
+            </div>
+          </div>` : ''}
+        <div class="field">
+          <label>What kind of thing it is</label>
+          <select data-category="${esc(d.ref)}">
+            ${Object.entries(CATEGORY_LABEL).map(([k, label]) => `<option value="${k}"${d.category === k ? ' selected' : ''}>${esc(label)}</option>`).join('')}
+          </select>
+        </div>
+        ${d.related.length ? `<div class="field"><label>Also involves</label><div class="chips">
+          ${d.related.map((r) => `<button class="chip-tag" data-unrelate="${esc(d.ref)}" data-entity="${esc(r)}" aria-pressed="true">${esc(entityName(r))} ✕</button>`).join('')}
+        </div><div class="why">Tap one to say it is not really involved.</div></div>` : ''}
+        <details><summary>Why Nexus says this</summary>
+          ${d.evidence.map((v) => `<div class="fired-row"><span class="t">${esc(v.detail)}</span></div>`).join('')}
+        </details>
+        <details><summary>The entry as it is stored</summary>
+          <div class="fired-row"><span class="t">Stored in the original file as</span><span class="w">${esc(d.storedKind)}</span></div>
+          <div class="fired-row"><span class="t">Trigger words</span><span class="w">${d.activation.keys.length ? esc(d.activation.keys.slice(0, 6).join(', ')) : 'none'}</span></div>
+          <div class="fired-row"><span class="t">Always on</span><span class="w">${d.activation.constant ? 'yes' : 'no'}</span></div>
+          <div class="fired-row"><span class="t">Switched on</span><span class="w">${d.activation.enabled ? 'yes' : 'no'}${d.phase ? ` · ${esc(String(d.phase).slice(0, 30))}` : ''}</span></div>
+          <div class="why" style="margin-top:6px">Organising never changes any of this.</div>
+        </details>
+      </div>
+    </div>`;
+}
+
+function entityCard(x) {
+  const state = review.entities.get(x.ref);
+  const profiles = x.profileEntries.length;
+  return `
+    <div class="edit-card">
+      <div class="edit-head"><b>${esc(state.name)}</b>
+        <span class="n">${esc(TYPE_LABEL[state.type])}${profiles > 1 ? ` · ${profiles} versions` : ''}${x.mentionedIn ? ` · in ${x.mentionedIn} entries` : ''}</span>
+        <button class="fold" aria-expanded="false">▾</button></div>
+      <div class="edit-body" hidden>
+        <div class="field"><label>Name</label><input data-entity-name="${esc(x.ref)}" value="${esc(state.name)}"></div>
+        <div class="field">
+          <label>What they are</label>
+          <select data-entity-type="${esc(x.ref)}">
+            ${Object.entries(TYPE_LABEL).map(([k, label]) => `<option value="${k}"${state.type === k ? ' selected' : ''}>${esc(label)}</option>`).join('')}
+          </select>
+        </div>
+        ${state.aliases.length ? `<div class="field"><label>Also called</label><div class="why">${esc(state.aliases.join(', '))}</div></div>` : ''}
+        ${profiles > 1 ? `<div class="why">${profiles} entries describe ${esc(state.name)}. They stay separate entries; Nexus only notes that they are about the same one.</div>` : ''}
+        <details><summary>Why Nexus says this</summary>
+          ${x.evidence.map((v) => `<div class="fired-row"><span class="t">${esc(v.detail)}</span></div>`).join('')}
+        </details>
+      </div>
+    </div>`;
+}
+
+function variantCard(g) {
+  const titleOf = (ref) => review.draft.entries.find((e) => e.ref === ref)?.title || ref;
+  return `
+    <div class="edit-card">
+      <div class="edit-head"><b>${esc(titleOf(g.entries[0].entry))}</b><span class="n">${g.entries.length} versions</span>
+        <button class="fold" aria-expanded="false">▾</button></div>
+      <div class="edit-body" hidden>
+        <div class="why">${esc(g.note)}</div>
+        ${g.entries.map((x) => `<div class="fired-row"><span class="t">${esc(titleOf(x.entry))}</span><span class="w">${x.enabled ? 'on' : 'off'}${x.phase ? ` · ${esc(String(x.phase).slice(0, 24))}` : ''}</span></div>`).join('')}
+      </div>
+    </div>`;
+}
+
+function matchCard(key, m) {
+  return `
+    <div class="edit-card">
+      <div class="edit-head"><b>${esc(entityName(m.entity))}</b><span class="n">${esc(m.candidate.sourceName || 'another source')}</span>
+        <button class="fold" aria-expanded="false">▾</button></div>
+      <div class="edit-body" hidden>
+        <div class="why">Nexus thinks this may be the same ${esc(TYPE_LABEL[m.candidate.type] || 'thing')} as “${esc(m.candidate.name)}”. A shared name can also belong to another version of a world, so nothing is joined unless you say so.</div>
+        ${m.evidence.map((v) => `<div class="fired-row"><span class="t">${esc(v.detail)}</span></div>`).join('')}
+        ${m.candidate.entityId ? `
+          <div class="row-actions" style="margin-top:10px">
+            <button class="btn${m.decision === 'same' ? ' primary' : ' quiet'}" data-match="${esc(key)}" data-decision="same">Same one</button>
+            <button class="btn${m.decision === 'separate' ? ' primary' : ' quiet'}" data-match="${esc(key)}" data-decision="separate">Keep separate</button>
+            <button class="btn${m.decision === 'later' ? ' primary' : ' quiet'}" data-match="${esc(key)}" data-decision="later">Decide later</button>
+          </div>`
+    : '<div class="why">That source has not been organised yet, so there is nothing to join it to.</div>'}
+      </div>
+    </div>`;
+}
+
+function onReviewClick(e) {
+  const tick = e.target.closest('[data-tick]');
+  if (tick) {
+    const d = review.entries.get(tick.dataset.tick);
+    if (!d.approve && !isSettled(d)) { toast('Say who this is about first.'); return; }
+    d.approve = !d.approve;
+    renderReview();
+    return;
+  }
+  const subject = e.target.closest('[data-subject]');
+  if (subject) {
+    const d = review.entries.get(subject.dataset.subject);
+    const ref = subject.dataset.entity;
+    if (ref) {
+      d.scope = 'entity';
+      d.subject = ref;
+      d.defines = null;
+      d.related = d.related.filter((r) => r !== ref);
+    } else {
+      d.scope = 'world';
+      d.subject = null;
+      if (PERSON_CATEGORY.includes(d.category)) d.category = 'background';
+    }
+    d.approve = true;
+    renderReview();
+    return;
+  }
+  const unrelate = e.target.closest('[data-unrelate]');
+  if (unrelate) {
+    const d = review.entries.get(unrelate.dataset.unrelate);
+    d.related = d.related.filter((r) => r !== unrelate.dataset.entity);
+    renderReview();
+    return;
+  }
+  const match = e.target.closest('[data-match]');
+  if (match) {
+    review.matches.get(match.dataset.match).decision = match.dataset.decision;
+    review.open.add('matches');
+    renderReview();
+    return;
+  }
+  if (e.target.closest('#rv-accept-clear')) {
+    for (const d of review.entries.values()) {
+      if (d.confidence === 'high' && isSettled(d) && d.current !== 'approved') d.approve = true;
+    }
+    renderReview();
+    return;
+  }
+  if (e.target.closest('#rv-save')) { saveReview(); return; }
+
+  // Anywhere else on a card's header opens or closes it: the row is the target,
+  // the chevron only says which way it will go.
+  if (e.target.closest('button:not(.fold), select, input, textarea, summary, a')) return;
+  const head = e.target.closest('.edit-head');
+  const card = head && head.closest('.edit-card');
+  if (!card) return;
+  // The card this header belongs to, never the section it sits inside: opening
+  // one entry must not fold away everything around it.
+  if (card.dataset.section) {
+    const id = card.dataset.section;
+    if (review.open.has(id)) review.open.delete(id); else review.open.add(id);
+    renderReview();
+    return;
+  }
+  const body = $('.edit-body', card);
+  if (body) {
+    body.hidden = !body.hidden;
+    const chevron = $('.fold', head);
+    if (chevron) chevron.setAttribute('aria-expanded', String(!body.hidden));
+  }
+}
+
+function onReviewChange(e) {
+  const cat = e.target.closest('[data-category]');
+  if (cat) { review.entries.get(cat.dataset.category).category = cat.value; return; }
+  const type = e.target.closest('[data-entity-type]');
+  if (type) { review.entities.get(type.dataset.entityType).type = type.value; renderReview(); return; }
+  const name = e.target.closest('[data-entity-name]');
+  if (name) {
+    const state = review.entities.get(name.dataset.entityName);
+    state.name = name.value.trim() || state.name;
+    renderReview();
+    return;
+  }
+  if (e.target.id === 'rv-role') {
+    review.role.role = e.target.value;
+    if (review.role.role === 'entity-material' && !review.role.subject) {
+      review.role.subject = [...review.entities.values()].find((x) => x.type === 'person')?.ref || null;
+    }
+    renderReview();
+    return;
+  }
+  if (e.target.id === 'rv-role-subject') { review.role.subject = e.target.value || null; renderReview(); }
+}
+
+/** Send only what was decided. Everything left undecided stays as it was. */
+async function saveReview() {
+  if (review.saving) return;
+  review.saving = true;
+  const decisions = {
+    role: review.role.role === 'entity-material' && !review.role.subject ? null : review.role,
+    entities: [...review.entities.values()].map((x) => ({ ref: x.ref, type: x.type, name: x.name, aliases: x.aliases, decision: x.decision, entityId: x.entityId })),
+    entries: [...review.entries.values()].filter((d) => d.approve).map((d) => ({
+      ref: d.ref, entryId: d.entryId, hash: d.hash, approve: true, confidence: d.confidence,
+      scope: d.scope, category: d.category, defines: d.defines, subject: d.subject, related: d.related, displayPath: d.displayPath,
+    })),
+    // A match against a source nobody has organised yet has nothing to point at.
+    matches: [...review.matches.values()].filter((m) => m.decision !== 'later' && m.candidate.entityId)
+      .map((m) => ({ entity: m.entity, entityId: m.candidate.entityId, decision: m.decision })),
+    evidence: Object.fromEntries([...review.entries.values()].map((d) => [d.ref, d.evidence])),
+  };
+  try {
+    const result = await post(`/api/lorebooks/${review.bookId}/semantic-apply`, decisions);
+    const said = { organized: 'All of it is organised.', partial: 'Part of it is organised.', unorganized: 'Nothing is organised yet.' }[result.organization.coverage];
+    toast(`Saved ${num(result.entries.length)}. ${said}`, { kind: 'good' });
+    closeSheet();
+    await openLorebook(review.bookId, { keepPlace: true });
+  } catch (err) {
+    const stale = err.body?.stale || [];
+    if (stale.length) {
+      sheet('This source changed', `
+        <div class="why">Some entries changed while this review was open, so the proposals no longer match what is there. Nothing was saved.</div>
+        ${stale.slice(0, 8).map((s) => `<div class="fired-row"><span class="t">${esc(s.title || s.ref)}</span><span class="w">${esc(s.reason)}</span></div>`).join('')}
+        <div class="sheet-actions"><button class="btn quiet" data-close>Close</button><button class="btn primary" id="rv-again">Look again</button></div>`,
+      (root) => { $('#rv-again', root).addEventListener('click', () => openSourceReview(review.bookId)); });
+    } else {
+      toast(err.message || 'That could not be saved.', { kind: 'bad' });
+    }
+  } finally {
+    review.saving = false;
+  }
 }

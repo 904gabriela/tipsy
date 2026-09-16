@@ -739,6 +739,40 @@ There is no apply route, and there is no UI.
 
 ---
 
+## 25. Review and Apply, P4 (branch `feature/semantic-model`)
+
+"Understand this source" on a lorebook opens the review: the P3 draft, said in
+plain words, with an explicit Save. Nothing is written until you save, and
+saving never touches the entries.
+
+- **Screen** (`openSourceReview` in `public/app.js`): what the source is, with a
+  role picker; counts; "Accept the clear ones"; then folded sections — **Needs
+  your eye** first, then People / Places / Groups, what the source says about
+  each person (grouped by display path or category), Directives, Reference, the
+  world, variant groups, and possible matches elsewhere. Sections render only
+  when opened, so a 197-entry source is not two hundred open cards.
+- **Presentation follows the package role, not the scope.** A narrative
+  framework's entries are Directives and a reference pack's are Reference,
+  though both are `scope: world` underneath. `scope: world` only means "not
+  about one particular entity".
+- **Plain language throughout**: "About Patrick", "Nexus isn't sure", "Stored in
+  the original file as". Evidence and stored activation live behind folds.
+- **Apply** (`src/conversion/apply.js`, `POST /api/lorebooks/:id/semantic-apply`):
+  one transaction; `status: approved`, `origin: converted`; the P3 evidence is
+  stored as the reason. Refuses a stale review (409, listing what changed),
+  refuses decisions that do not make sense (400, listing them), and rolls back
+  whole. Entries left undecided stay unorganised, so organising can be partial.
+  Re-applying the same decisions changes nothing; changing one replaces it
+  without leaving duplicates.
+- **Entities**: a draft ref that was applied before is recognised by its
+  declaration, so entities are reused rather than multiplied. "Same one" reuses
+  an existing entity; "Keep separate" writes an `entity_distinctions` row; the
+  default is to decide later, which joins nothing.
+- Tests: `npm run conversion:check` (74) and `npm run review-apply:check` (45),
+  plus a headless pass over the real sources on a snapshot at 390px and 320px.
+
+---
+
 ## NEXT AGENT INSTRUCTIONS
 
 1. Read this file.

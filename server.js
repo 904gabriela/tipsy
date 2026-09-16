@@ -25,6 +25,7 @@ import { semanticViews, sourceOrganization } from './src/semantics/store.js';
 import { inspectPackage, importPackage } from './src/package/import.js';
 import { exportStory, exportSources } from './src/package/export.js';
 import { analyzeSource } from './src/conversion/analyze.js';
+import { applyReview } from './src/conversion/apply.js';
 import {
   planComposition, writeComposition, applyToStory, sourceRemovalPreview, removeSource,
 } from './src/import/compose-apply.js';
@@ -676,6 +677,20 @@ route('POST', '/api/lorebooks/:id/semantic-preview', async (req, res, { id }) =>
   const { compareWith = [] } = await readJson(req);
   if (!Array.isArray(compareWith)) throw new HttpError(400, 'compareWith is a list of source ids.');
   return analyzeSource(db, id, { compareWith: compareWith.filter((x) => typeof x === 'string') });
+});
+
+/**
+ * Save what a person decided in the review.
+ *
+ * The only path by which a legacy source becomes organised. It takes the
+ * reviewed draft, not a fresh analysis, refuses it if the source has changed
+ * since, and writes everything in one transaction. Entries left undecided stay
+ * unorganised: a source can be organised a piece at a time.
+ */
+route('POST', '/api/lorebooks/:id/semantic-apply', async (req, res, { id }) => {
+  const decisions = await readJson(req);
+  const result = applyReview(db, id, decisions);
+  return { ...result, organization: sourceOrganization(db, id) };
 });
 
 // --- Nexus Story Package v1
@@ -2977,7 +2992,13 @@ const server = createServer(async (req, res) => {
         const status = e.status || (e instanceof ModelError ? 502 : 500);
         if (!e.status && !(e instanceof ModelError)) console.error(e);
         // A package error lists every problem, not just the first.
-        json(res, status, { error: e.message || 'Something went wrong.', ...(Array.isArray(e.errors) && e.errors.length ? { errors: e.errors } : {}) });
+        json(res, status, {
+          error: e.message || 'Something went wrong.',
+          ...(Array.isArray(e.errors) && e.errors.length ? { errors: e.errors } : {}),
+          // A review that cannot be saved says which decisions, or which entries moved under it.
+          ...(Array.isArray(e.problems) && e.problems.length ? { problems: e.problems } : {}),
+          ...(Array.isArray(e.stale) && e.stale.length ? { stale: e.stale } : {}),
+        });
       }
       return;
     }

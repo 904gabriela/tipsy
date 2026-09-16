@@ -834,6 +834,9 @@ function finalize(ctx) {
   const entries = ctx.entries.map((e) => ({
     ref: e.ref,
     entryId: e.id,
+    // The entry as it was when this draft was made. Applying a decision checks it
+    // still matches, so a draft reviewed against older text is refused, not applied.
+    hash: entryHash({ title: e.title, content: e.content, keys: e.keys }),
     title: e.title,
     name: e.name,
     phase: e.phase,

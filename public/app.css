@@ -1774,6 +1774,16 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .edit-head:active { background: var(--surface-2); }
 .fold { pointer-events: none; }
 
+/* Review cards. The tick is a real control, so it is thumb-sized rather than
+   relying on an invisible margin the card's rounded corners would clip; the
+   chevron stays small on purpose, because the whole header row is the target. */
+.edit-head .switch { width: 50px; height: 32px; border-radius: 16px; }
+.edit-head .switch::after { width: 24px; height: 24px; }
+.edit-head .switch[aria-pressed="true"]::after { transform: translateX(18px); }
+/* A long section name wraps rather than pushing its count off the side. */
+.edit-head b { min-width: 0; overflow-wrap: anywhere; }
+.edit-head .n { flex: 0 1 auto; min-width: 0; margin-left: auto; text-align: right; }
+
 /* The name is already the sheet's title; repeating it beside the art was the
    same three words twice in one glance. The space goes to what it is for. */
 .hero-text { display: flex; flex-direction: column; gap: var(--s2); justify-content: center; align-self: stretch; }
