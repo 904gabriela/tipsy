@@ -7629,8 +7629,14 @@ async function openEntityProfile(entityId, { storyId = null, back = null, title 
   renderEntityProfile(p, { storyId, back });
 }
 
-/** One thing known about them, closed until asked for. */
-function knowledgeItem(x) {
+/**
+ * One thing known about them, closed until asked for.
+ *
+ * `as` renames the row for display only, where an entry's own title would
+ * repeat the group it sits in — "Fluid Domain / Fluid Domain". The entry keeps
+ * its title, which is shown with the rest of its provenance.
+ */
+function knowledgeItem(x, { as = null } = {}) {
   const flags = [
     x.needsRecheck ? '<span class="ent-flag warn">needs review</span>' : '',
     !x.activation.enabled ? '<span class="ent-flag">switched off</span>' : '',
@@ -7638,7 +7644,7 @@ function knowledgeItem(x) {
   return `
     <div class="edit-card">
       <div class="edit-head">
-        <b>${esc(x.title)}</b>
+        <b>${esc(as || x.title)}</b>
         <span class="n">${esc(CATEGORY_PILL[x.category] || x.category)}${flags}</span>
         <button class="fold" aria-expanded="false">▾</button>
       </div>
@@ -7649,6 +7655,7 @@ function knowledgeItem(x) {
           ${x.related.map((r) => `<button class="chip-tag" data-go-entity="${esc(r.id)}">${esc(r.name)}</button>`).join('')}
         </div>` : ''}
         <details><summary>Where this comes from</summary>
+          ${as ? `<div class="fired-row"><span class="t">Its own title</span><span class="w">${esc(x.title)}</span></div>` : ''}
           <div class="fired-row"><span class="t">From</span><span class="w">${esc(x.provenance.sourceName)}</span></div>
           <div class="fired-row"><span class="t">Originally stored as</span><span class="w">${esc(x.provenance.storedKind)}</span></div>
           <div class="fired-row"><span class="t">Reaches the story</span><span class="w">${x.activation.constant ? 'always' : x.activation.keys.length ? 'when it comes up' : 'not on its own'}</span></div>
@@ -7668,7 +7675,8 @@ function knowledgeItem(x) {
  */
 function coreSlot(label, value) {
   const text = String(value || '').trim();
-  const cut = text.length > 300 ? text.slice(0, 300).replace(/\s+\S*$/, '') : text;
+  // Short enough that two or three slots still fit a phone screen together.
+  const cut = text.length > 220 ? text.slice(0, 220).replace(/\s+\S*$/, '') : text;
   return `
     <div class="ent-slot">
       <div class="ent-slot-label">${esc(label)}</div>
@@ -7677,6 +7685,9 @@ function coreSlot(label, value) {
     </div>`;
 }
 
+/** Two names that would read as a repetition if stacked. */
+const sameName = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+
 /** A display group, with whatever it nests inside it. */
 function knowledgeGroup(g) {
   return `
@@ -7684,8 +7695,8 @@ function knowledgeGroup(g) {
       <div class="edit-head"><b>${esc(g.name)}</b><span class="n">${num(g.count)}</span>
         <button class="fold" aria-expanded="false">▾</button></div>
       <div class="edit-body" hidden>
-        ${g.items.map(knowledgeItem).join('')}
-        ${g.sub.map((s) => `<div class="sec-head">${esc(s.name)}</div>${s.items.map(knowledgeItem).join('')}`).join('')}
+        ${g.items.map((x) => knowledgeItem(x, { as: sameName(x.title, g.name) ? 'Overview' : null })).join('')}
+        ${g.sub.map((s) => `<div class="sec-head">${esc(s.name)}</div>${s.items.map((x) => knowledgeItem(x, { as: sameName(x.title, s.name) ? 'Overview' : null })).join('')}`).join('')}
       </div>
     </div>`;
 }
@@ -7695,38 +7706,54 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
   const persona = p.resources.persona;
   // What they are here: a card a story plays, someone you play, or someone who
   // exists only in what has been written about them.
-  const standing = card ? 'Character card' : persona ? 'Played by you' : 'Lore-backed person';
+  // What they are here, in the words a reader uses. The semantic type is only
+  // worth saying when no resource stands behind them and it is not a person.
+  const standing = card ? 'Character'
+    : persona ? 'Played by you'
+      : p.entity.type === 'person' ? 'Lore-backed person' : `${ENTITY_WORD[p.entity.type] || 'Person'} in your lore`;
   const face = card?.avatar || persona?.avatar || null;
   const core = p.core ? CORE_SLOTS.filter(([k]) => String(p.core[k] || '').trim()) : [];
+  // An older card keeps who they are, how they look and how they talk in one
+  // field. Calling that "Who they are" would claim a tidiness it does not have,
+  // so it is shown as what it is: the original profile, whole and unsplit.
+  const structured = ['appearance', 'behavior', 'speechStyle'].some((k) => String(p.core?.[k] || '').trim());
+  const labelFor = (k, label) => (k === 'identity' && !structured ? 'Overview' : label);
 
   const html = `
     ${backRow()}
-    <div class="hero ent-hero">
-      <span class="hero-art">${face ? `<img src="${esc(face)}" alt="">` : `<span class="letter">${esc(p.entity.name[0].toUpperCase())}</span>`}</span>
-      <div class="hero-text">
-        <div class="ent-kind">${esc(ENTITY_WORD[p.entity.type] || 'Person')} · ${esc(standing)}</div>
-        ${p.entity.aliases.length ? `<div class="hero-alias">Also called ${esc(p.entity.aliases.slice(0, 4).join(', '))}</div>` : ''}
-        ${p.story ? `<div class="ent-where">Read as ${esc(p.story.title)} sees them</div>` : ''}
+    ${/* The name is already the sheet's title. This row says what they are and
+         where you are reading them from, and then gets out of the way. */''}
+    <div class="ent-hero">
+      <span class="ent-face">${face ? `<img src="${esc(face)}" alt="">` : `<span class="letter">${esc(p.entity.name[0].toUpperCase())}</span>`}</span>
+      <div class="ent-head-text">
+        <div class="ent-kind">${esc(standing)}</div>
+        ${p.entity.aliases.length ? `<div class="ent-alias">Also called ${esc(p.entity.aliases.slice(0, 4).join(', '))}</div>` : ''}
+        ${p.story ? `<div class="ent-where">In ${esc(p.story.title)}</div>` : ''}
       </div>
     </div>
 
+    ${/* The card's own fields, and only that card's: one person may be written
+         more than once, and this page shows the representation in hand. */''}
     ${core.length ? `
-      <div class="band">Always true of them</div>
+      <div class="band">Core profile</div>
       <div class="ent-core">
-        ${core.map(([k, label]) => coreSlot(label, p.core[k])).join('')}
+        ${core.map(([k, label]) => coreSlot(labelFor(k, label), p.core[k])).join('')}
       </div>` : ''}
 
+    ${/* "Reusable" is the promise: it can be used again, not that it follows them
+         everywhere. A story reads only the sources it carries. */''}
     ${p.knowledge.reusable.length ? `
-      <div class="band">What is known about them${p.story ? ', wherever they go' : ''}</div>
+      <div class="band">Reusable knowledge</div>
+      <div class="why" style="margin-bottom:10px">Knowledge that can be used across stories.${p.story ? ' Only material attached to this story is shown here.' : ''}</div>
       ${p.knowledge.reusable.map(knowledgeGroup).join('')}` : ''}
 
     ${p.knowledge.story.length ? `
       <div class="band">In ${esc(p.story.title)}</div>
-      <div class="why" style="margin-bottom:10px">True in this story only. It travels nowhere else.</div>
+      <div class="why" style="margin-bottom:10px">Only true in this story.</div>
       ${p.knowledge.story.map(knowledgeGroup).join('')}` : ''}
 
     ${!p.knowledge.reusable.length && !p.knowledge.story.length ? `
-      <div class="empty">Nothing has been organised about ${esc(p.entity.name)} yet.${core.length ? ' What their card says is above.' : ''}</div>` : ''}
+      <div class="empty">Nothing has been organised about ${esc(p.entity.name)} yet.${core.length ? ' Their core profile is above.' : ''}</div>` : ''}
 
     ${p.related.length ? `
       <div class="band">People and places around them</div>

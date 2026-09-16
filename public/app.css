@@ -2188,12 +2188,24 @@ button.cast-name[data-entry-open] { text-decoration: underline; text-decoration-
 
 /* ---------------------------------------------------------- a person, in full
 
-   A dossier, not a database view: what is always true of them first, in short
-   blocks, then everything known folded away by group. Depth is available, never
-   dumped on the screen. */
-.ent-hero { align-items: center; }
-.ent-kind { font-size: 12.5px; color: var(--ink-faint); letter-spacing: .02em; }
-.ent-where { font-size: 12.5px; color: var(--accent); margin-top: 3px; }
+   A dossier, not a database view: the core in short blocks, then everything
+   known folded away by group. Depth is available, never dumped on the screen.
+
+   The head is one line tall on purpose. The name is already the sheet's title,
+   and a phone screen is worth more spent on what it says about them than on a
+   large empty square where a picture may one day go. */
+.ent-hero { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.ent-face {
+  flex: none; width: 52px; height: 52px; border-radius: 14px; overflow: hidden;
+  background: var(--surface-2); border: 1px solid var(--line);
+  display: flex; align-items: center; justify-content: center;
+}
+.ent-face img { width: 100%; height: 100%; object-fit: cover; }
+.ent-face .letter { font: 400 22px/1 Newsreader, Georgia, serif; color: var(--ink-faint); }
+.ent-head-text { min-width: 0; }
+.ent-kind { font-size: 14px; color: var(--ink); }
+.ent-alias { font-size: 12.5px; color: var(--ink-faint); margin-top: 2px; overflow-wrap: break-word; }
+.ent-where { font-size: 12.5px; color: var(--accent); margin-top: 2px; }
 .ent-core { display: flex; flex-direction: column; gap: 1px; margin-bottom: 4px; }
 .ent-slot { padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 2px; }
 .ent-core .ent-slot:first-child { border-radius: var(--r) var(--r) 2px 2px; }
