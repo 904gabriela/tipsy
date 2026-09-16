@@ -6724,10 +6724,10 @@ const ROLE_LABEL = {
 
 /** The four things a proposal can be, from a reader's point of view. */
 const BUCKET = {
-  clear: { title: 'Clear', pip: 'clear', why: 'Nexus is sure about these.' },
+  clear: { title: 'Understood', pip: 'understood', why: 'Nexus is sure about these.' },
   likely: { title: 'Likely', pip: 'likely', why: 'Nexus has a suggestion, on weaker evidence.' },
-  decision: { title: 'Needs your decision', pip: 'need your decision', why: 'Nexus has more than one reading and cannot choose between them.' },
-  unsorted: { title: "Nexus couldn't place these yet", pip: 'not placed yet', why: 'Not enough in the text to suggest anything useful.' },
+  decision: { title: 'Need your decision', pip: 'need your decision', why: 'Nexus has more than one reading and cannot choose between them.' },
+  unsorted: { title: 'Not understood yet', pip: 'not understood yet', why: 'Not enough in the text to suggest anything useful.' },
 };
 const bucketOf = (d) => {
   if (!isSettled(d)) return d.candidates?.length >= 2 ? 'decision' : 'unsorted';
@@ -6741,6 +6741,13 @@ const TYPE_SECTION = { person: 'People', place: 'Places', faction: 'Groups', ite
 const entityName = (ref) => review.entities.get(ref)?.name || ref;
 const isSettled = (d) => d.scope !== 'entity' || !!d.subject || !!d.defines;
 const plural = (n, one, many = `${one}s`) => `${num(n)} ${n === 1 ? one : many}`;
+
+/**
+ * One candidate you can choose. Accent means chosen, everywhere and only there:
+ * an entry Nexus has not resolved shows no accented choice at all, so the colour
+ * never stands for "this is where the list starts".
+ */
+const choiceChip = (entryRef, entityRef, label, selected) => `<button class="chip-tag rv-choice" data-subject="${esc(entryRef)}" data-entity="${esc(entityRef)}" aria-pressed="${!!selected}">${selected ? '<span class="rv-check" aria-hidden="true">✓</span>' : ''}${esc(label)}</button>`;
 
 /** The likely suggestions still waiting in one section, so it can offer them together. */
 const likelyIn = (entries) => entries.filter((x) => bucketOf(x) === 'likely' && !x.approve && x.current !== 'approved').map((x) => x.ref);
@@ -6813,6 +6820,33 @@ function reviewCounts() {
   };
 }
 
+/**
+ * What the source is mostly made of, said in words. The counting behind it is
+ * unchanged and still on show under "Why Nexus says this"; percentages are
+ * evidence, not the thing you read first.
+ */
+function roleSummary() {
+  const counts = new Map();
+  for (const d of review.entries.values()) {
+    if (!isSettled(d)) continue;
+    const who = d.defines || d.subject;
+    if (who) counts.set(`information about ${entityName(who)}`, (counts.get(`information about ${entityName(who)}`) || 0) + 1);
+    else {
+      const label = d.category === 'direction' ? 'instructions for how the story is told'
+        : d.category === 'reference' ? 'reference knowledge' : 'world information';
+      counts.set(label, (counts.get(label) || 0) + 1);
+    }
+  }
+  const total = [...counts.values()].reduce((a, b) => a + b, 0);
+  if (!total) return 'Nexus could not tell what most of it is for.';
+  // Only the parts big enough to be worth naming, and never more than three.
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).filter(([, n]) => n / total >= 0.08).slice(0, 3);
+  const names = top.map(([label]) => label);
+  if (names.length === 1) return `Mostly ${names[0]}.`;
+  const last = names.pop();
+  return `Mostly ${names.join(', ')}, and some ${last}.`;
+}
+
 function renderReview() {
   const d = review.draft;
   const c = reviewCounts();
@@ -6864,7 +6898,7 @@ function renderReview() {
       title: `What this says about ${review.entities.get(person.ref).name}`,
       n: about.length,
       likely: likelyIn(about),
-      rows: [...groups.entries()].map(([label, rows]) => `<div class="sec-head">${esc(label)}</div>${rows.map((x) => entryCard(x, { hideCategory: CATEGORY_LABEL[x.category] === label })).join('')}`),
+      rows: [...groups.entries()].map(([label, rows]) => `<div class="sec-head">${esc(label)}</div>${rows.map((x) => entryCard(x, { hideCategory: CATEGORY_LABEL[x.category] === label, hideSubject: true })).join('')}`),
     });
   }
   const rest = [...review.entries.values()].filter((x) => isSettled(x) && !x.subject && !x.defines && placed(x));
@@ -6883,9 +6917,16 @@ function renderReview() {
     ${backRow()}
     <div class="rv-summary">
       <div class="rv-source">${esc(d.source.name)} · ${num(c.total)} entries</div>
-      <div class="rv-role">Nexus thinks this source contains <b>${esc(ROLE_LABEL[role.role])}</b>${role.role === 'entity-material' && role.subject ? `, mostly ${esc(review.entities.get(role.subject).name)}` : ''}.</div>
-      <div class="why">${esc(d.source.proposedRole.evidence.map((v) => v.detail).join('. '))}.</div>
-      <button class="btn quiet" id="rv-change-role">${review.changingRole ? 'Keep this' : 'Change'}</button>
+      <div class="rv-said">Nexus thinks this is:</div>
+      <div class="rv-role"><b>${esc(ROLE_LABEL[role.role])}</b>${role.role === 'entity-material' && role.subject ? `, mostly ${esc(review.entities.get(role.subject).name)}` : ''}</div>
+      <div class="why">${esc(roleSummary())}</div>
+      ${/* The scoring that produced this is evidence, not the headline. */''}
+      <div class="rv-verdict-row">
+        <details class="rv-why"><summary>Why Nexus says this</summary>
+          ${d.source.proposedRole.evidence.map((v) => `<div class="fired-row"><span class="t">${esc(v.detail)}</span></div>`).join('')}
+        </details>
+        <button class="btn quiet" id="rv-change-role">${review.changingRole ? 'Keep this' : 'Change'}</button>
+      </div>
       ${review.changingRole ? `
         <div class="field" style="margin-top:10px">
           <label>This source contains</label>
@@ -6915,7 +6956,9 @@ function renderReview() {
       </div>`).join('')}
     <div class="sheet-actions">
       <button class="btn quiet" data-back>Not now</button>
-      <button class="btn primary" id="rv-save"${c.ready ? '' : ' disabled'}>Save ${num(c.ready)} ${c.ready === 1 ? 'decision' : 'decisions'}</button>
+      ${/* What the button does, with how much it covers beside it: the exact
+           breakdown belongs on the confirmation, not on a pinned bar. */''}
+      <button class="btn primary" id="rv-save"${c.ready ? '' : ' disabled'}>Save organisation${c.ready ? ` · ${num(c.ready)}` : ''}</button>
     </div>`;
 
   sheet('Understanding this source', html, (root) => {
@@ -6925,10 +6968,14 @@ function renderReview() {
 }
 
 /** One entry, said plainly, with everything technical folded away. */
-function entryCard(d, { choose = false, hideCategory = false, compact = false }) {
+function entryCard(d, { choose = false, hideCategory = false, hideSubject = false, compact = false }) {
   const kind = CATEGORY_LABEL[d.category] || d.category;
+  // Inside "What this says about Patrick", every row saying "about Patrick" is
+  // the same three words forty times. Only what the section does not already
+  // say gets repeated here, which also leaves the meta column room to breathe.
+  const said = d.subject ? [hideCategory ? '' : kind, hideSubject ? '' : `about ${entityName(d.subject)}`].filter(Boolean).join(' · ') : '';
   const about = d.defines ? `Describes ${entityName(d.defines)}`
-    : d.subject ? (hideCategory ? `About ${entityName(d.subject)}` : `${kind} · about ${entityName(d.subject)}`)
+    : d.subject ? said.charAt(0).toUpperCase() + said.slice(1)
       : hideCategory ? '' : kind;
   const bucket = bucketOf(d);
   const unsure = bucket === 'decision' || bucket === 'unsorted';
@@ -6940,9 +6987,13 @@ function entryCard(d, { choose = false, hideCategory = false, compact = false })
     <div class="edit-card" data-entry-ref="${esc(d.ref)}">
       <div class="edit-head">
         ${d.current === 'approved' ? '<span class="card-badge">saved</span>'
-    : `<button class="switch" data-tick="${esc(d.ref)}" aria-pressed="${d.approve}"></button>`}
+    // Accepting a reading is not switching a Lore entry on: the control is a tick,
+    // deliberately unlike the enable/disable switch the rest of the app uses.
+    : `<button class="rv-tick" data-tick="${esc(d.ref)}" aria-pressed="${d.approve}" aria-label="${d.approve ? 'Accepted' : 'Accept this reading'}"></button>`}
         <b>${esc(d.title || 'Untitled')}</b>
-        <span class="n">${esc(about)}${d.reclassified ? ' <i class="rv-flag">reclassified</i>' : ''}</span>
+        ${/* With nothing left to say, the column goes too, instead of holding a
+             blank line open beside the title. */''}
+        ${about || d.reclassified ? `<span class="n">${esc(about)}${d.reclassified ? ` <i class="rv-flag">changed from ${esc(d.storedKind)}</i>` : ''}</span>` : ''}
         <button class="fold" aria-expanded="false">▾</button>
       </div>
       <div class="edit-body" hidden>
@@ -6952,14 +7003,15 @@ function entryCard(d, { choose = false, hideCategory = false, compact = false })
             <div>Nexus suggests: <b>${esc(about || kind)}</b></div>
             <button class="btn" data-use="${esc(d.ref)}">Use this suggestion</button>
           </div>` : ''}
-        ${d.reclassified ? `<div class="why">The original file called this “${esc(d.storedKind)}”. Nexus reads it as ${esc(d.defines ? `a ${TYPE_LABEL[review.entities.get(d.defines)?.type]?.toLowerCase() || 'thing'}` : kind.toLowerCase())}. The file is not changed.</div>` : ''}
+        ${d.reclassified ? `<div class="why">The original file called this “${esc(d.storedKind)}”. Nexus reads it as ${esc(d.defines ? `a ${TYPE_LABEL[review.entities.get(d.defines)?.type]?.toLowerCase() || 'thing'}` : kind.toLowerCase())}. The original file is not changed.</div>` : ''}
         ${choose || !isSettled(d) ? `
           <div class="field">
             <label>Who is this about?</label>
             ${likelyPeople.length ? `<div class="rv-hint">Likely</div>` : ''}
             <div class="chips">
-              ${likelyPeople.map((p) => `<button class="chip-tag" data-subject="${esc(d.ref)}" data-entity="${esc(p.ref)}" aria-pressed="${d.subject === p.ref}">${esc(p.name)}</button>`).join('')}
-              <button class="chip-tag" data-subject="${esc(d.ref)}" data-entity="" aria-pressed="${!d.subject && !d.defines}">Nobody in particular</button>
+              ${likelyPeople.map((p) => choiceChip(d.ref, p.ref, p.name, d.subject === p.ref)).join('')}
+              ${/* Accent means chosen. Until the entry has a reading, nothing is accented. */''}
+              ${choiceChip(d.ref, '', 'Nobody in particular', !d.subject && !d.defines && isSettled(d))}
             </div>
             ${others.length ? `
               <div class="rv-hint" style="margin-top:8px">Someone else</div>
@@ -6970,7 +7022,7 @@ function entryCard(d, { choose = false, hideCategory = false, compact = false })
           </div>` : ''}
         ${hideCategory && isSettled(d) ? '' : `
           <div class="field">
-            <label>What kind of thing it is</label>
+            <label>Type of information</label>
             <select data-category="${esc(d.ref)}">
               ${Object.entries(CATEGORY_LABEL).map(([k, label]) => `<option value="${k}"${d.category === k ? ' selected' : ''}>${esc(label)}</option>`).join('')}
             </select>
