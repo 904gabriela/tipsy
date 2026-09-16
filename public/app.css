@@ -475,7 +475,9 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .fired-row { display: flex; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--line); }
 .fired-row:last-child { border-bottom: 0; }
 .fired-row .t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fired-row .w { flex: 0 0 auto; color: var(--ink-faint); font-size: 12px; }
+/* The value gives way before the row does: a long list of trigger words wraps
+   onto its own lines rather than pushing the narrowest phone sideways. */
+.fired-row .w { flex: 0 1 auto; min-width: 0; color: var(--ink-faint); font-size: 12px; text-align: right; overflow-wrap: break-word; }
 .fired-row.no .t { color: var(--ink-faint); }
 
 /* --------------------------------------------------------------- toasts */
@@ -1832,6 +1834,35 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
   padding: 9px 10px; margin: 8px 0; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2);
 }
 .rv-suggest .btn { flex: none; }
+
+/* A closer look. Deliberately unlike a decision: a marked-off aside that says
+   where it came from, sitting beside the ordinary choice rather than replacing
+   it. Nothing in here is ticked until someone presses a button. */
+.card-badge.look { color: var(--accent); border-color: var(--accent); }
+.rv-look { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
+/* Secondary, but still plainly a button: a quiet control with no edge at all
+   reads as a caption on a phone. */
+.rv-look .btn { flex: none; border-color: var(--line); }
+.rv-hint-inline { font-size: 11.5px; color: var(--ink-faint); line-height: 1.35; }
+.rv-second {
+  margin: 10px 0; padding: 9px 11px; border-radius: 9px;
+  border: 1px dashed var(--line-strong); background: var(--surface-2);
+}
+.rv-second.taken { border-style: solid; border-color: var(--accent); }
+.rv-second.waiting { display: flex; align-items: center; gap: 8px; color: var(--ink-soft); font-size: 13.5px; }
+.rv-second-head {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--ink-faint); margin-bottom: 4px;
+}
+.rv-second-said { font-size: 14.5px; line-height: 1.4; margin-bottom: 4px; }
+.rv-second .row-actions { flex-wrap: wrap; gap: 6px; margin-bottom: 0; }
+.rv-dot {
+  width: 10px; height: 10px; border-radius: 50%; flex: none;
+  border: 2px solid var(--line-strong); border-top-color: var(--accent);
+  animation: rv-spin 700ms linear infinite;
+}
+@keyframes rv-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .rv-dot { animation: none; } }
 
 /* The name is already the sheet's title; repeating it beside the art was the
    same three words twice in one glance. The space goes to what it is for. */

@@ -6701,7 +6701,16 @@ function shrinkToBlob(file, maxWide = 1600) {
 // entries themselves — only what they are understood to mean.
 // ========================================================================
 
-const review = { bookId: null, draft: null, entries: new Map(), entities: new Map(), role: null, matches: new Map(), open: new Set(['decision']), saving: false, changingRole: false };
+const review = {
+  bookId: null, draft: null, entries: new Map(), entities: new Map(), role: null, matches: new Map(),
+  open: new Set(['decision']), saving: false, changingRole: false,
+  // A closer look lives here and nowhere else: suggestions belong to this draft,
+  // are never semantics, and go when the review is closed.
+  suggestions: new Map(), looking: new Set(), trouble: new Map(), spent: [],
+  // Which entry cards are open. Held here rather than in the DOM alone, so a
+  // card you opened is still open after the screen redraws under you.
+  opened: new Set(),
+};
 
 const CATEGORY_LABEL = {
   identity: 'Identity', appearance: 'Appearance', personality: 'Personality', speech: 'Speech',
@@ -6760,6 +6769,21 @@ const sectionLikely = (s) => (s.likely?.length
   ? `<div class="row-actions" style="margin-top:10px"><button class="btn quiet" data-accept-section="${esc(s.id)}">Use the ${plural(s.likely.length, 'likely suggestion')} here</button></div>`
   : '');
 
+/** How many entries one press of "Help with these" may ask about. */
+const HELP_AT_ONCE = 12;
+/**
+ * A section of unresolved material may be handed to the model together, in one
+ * deliberate press. Nothing here happens on its own.
+ */
+const sectionHelp = (s) => {
+  if (!s.help?.length) return '';
+  const n = Math.min(s.help.length, HELP_AT_ONCE);
+  return `<div class="rv-look" style="margin-top:10px">
+    <button class="btn quiet" data-help="${esc(s.id)}">Help with ${n === s.help.length ? 'these' : `${num(n)} of these`} ${n === 1 ? 'entry' : 'entries'}</button>
+    <span class="rv-hint-inline">Asks your AI provider to read ${n === 1 ? 'it' : 'them'} again.</span>
+  </div>`;
+};
+
 /** Open the review for one source. Reading it writes nothing. */
 async function openSourceReview(bookId) {
   review.bookId = bookId;
@@ -6800,6 +6824,12 @@ async function openSourceReview(bookId) {
     // Only what Nexus is sure of starts ticked. Everything else waits for you.
     approve: e.confidence === 'high' && isSettled(e.proposal) && e.current !== 'approved',
   }]));
+  // Nothing is asked of any model by opening this screen.
+  review.suggestions = new Map();
+  review.looking = new Set();
+  review.trouble = new Map();
+  review.spent = [];
+  review.opened = new Set();
   review.role = { role: draft.source.proposedRole.role, subject: draft.source.proposedRole.subject };
   review.matches = new Map(draft.matches.map((m, i) => [`${m.entity}:${i}`, { ...m, decision: 'later' }]));
   renderReview();
@@ -6862,12 +6892,15 @@ function renderReview() {
   // Where an entry appears follows what the source is FOR, not only its scope:
   // a framework's entries are directives, never world building.
   const sections = [];
+  // What a closer look could still be asked about here.
+  const unasked = (rows) => rows.filter((x) => !review.suggestions.has(x.ref) && !review.looking.has(x.ref)).map((x) => x.ref);
   if (decision.length) {
     sections.push({
       id: 'decision',
       title: BUCKET.decision.title,
       n: decision.length,
       why: BUCKET.decision.why,
+      help: unasked(decision),
       rows: decision.map((x) => entryCard(x, { choose: true })),
     });
   }
@@ -6877,6 +6910,7 @@ function renderReview() {
       title: BUCKET.unsorted.title,
       n: unsorted.length,
       why: BUCKET.unsorted.why,
+      help: unasked(unsorted),
       rows: unsorted.map((x) => entryCard(x, { choose: true })),
     });
   }
@@ -6952,7 +6986,7 @@ function renderReview() {
         <div class="edit-head"><b>${esc(s.title)}</b><span class="n">${num(s.n)}</span>
           <button class="fold" aria-expanded="${review.open.has(s.id)}">▾</button></div>
         <div class="edit-body"${review.open.has(s.id) ? '' : ' hidden'}>${review.open.has(s.id)
-    ? `${s.why ? `<div class="why">${esc(s.why)}</div>` : ''}${s.rows.join('')}${sectionLikely(s)}` : ''}</div>
+    ? `${s.why ? `<div class="why">${esc(s.why)}</div>` : ''}${sectionHelp(s)}${s.rows.join('')}${sectionLikely(s)}` : ''}</div>
       </div>`).join('')}
     <div class="sheet-actions">
       <button class="btn quiet" data-back>Not now</button>
@@ -6965,6 +6999,59 @@ function renderReview() {
     root.addEventListener('click', onReviewClick);
     root.addEventListener('change', onReviewChange);
   });
+}
+
+/**
+ * A closer look at one entry: the offer, the waiting, or what came back.
+ *
+ * Nothing here is a decision. A suggestion is drawn as something said about the
+ * entry, next to the ordinary choice rather than in place of it, and the entry
+ * is only ticked when a person accepts it.
+ */
+function closerLook(d, bucket) {
+  const open = bucket === 'decision' || bucket === 'unsorted';
+  // Unresolved material is what this is for; a likely reading can be questioned
+  // on purpose. Anything Nexus is sure of, or you have already saved, is not offered.
+  if (!open && !(bucket === 'likely' && !d.approve)) return '';
+  if (d.current === 'approved') return '';
+
+  if (review.looking.has(d.ref)) return '<div class="rv-second waiting"><span class="rv-dot"></span>Looking closer at this…</div>';
+  const s = review.suggestions.get(d.ref);
+  const trouble = review.trouble.get(d.ref);
+  if (!s) {
+    return `
+      <div class="rv-look">
+        <button class="btn quiet" data-look="${esc(d.ref)}">Look closer</button>
+        <span class="rv-hint-inline">${trouble ? esc(trouble) : 'Asks your AI provider to read this one entry again.'}</span>
+      </div>`;
+  }
+
+  const name = (ref) => review.entities.get(ref)?.name || ref;
+  const said = s.unresolved ? '' : s.defines ? `this is ${name(s.defines)}’s own entry`
+    : s.subject ? `it is about ${name(s.subject)}`
+      : s.category ? `it is ${(CATEGORY_LABEL[s.category] || s.category).toLowerCase()}` : '';
+  const quotes = s.evidence.filter((v) => v.type === 'quote');
+  return `
+    <div class="rv-second${s.accepted ? ' taken' : ''}">
+      <div class="rv-second-head">A closer look${s.accepted ? ' — you used this' : ''}</div>
+      ${s.unresolved
+    ? `<div class="rv-second-said">It still can’t tell who this is about.</div>
+       ${s.category ? `<div class="rv-second-said">It does read it as <b>${esc(CATEGORY_LABEL[s.category] || s.category)}</b>.</div>` : ''}`
+    : `<div class="rv-second-said">Suggests <b>${esc(said)}</b>${s.category && (s.subject || s.defines) ? `, filed under ${esc(CATEGORY_LABEL[s.category] || s.category)}` : ''}.</div>`}
+      <div class="why">${esc(s.explanation)}</div>
+      ${s.related.length ? `<div class="why">Also involved: ${esc(s.related.map(name).join(', '))}.</div>` : ''}
+      ${s.proposedEntities.length ? `<div class="why">It thinks this source is missing ${esc(s.proposedEntities.map((p) => `${p.name} (${TYPE_LABEL[p.type]?.toLowerCase() || p.type})`).join(', '))}. Nothing is added unless you add it.</div>` : ''}
+      ${quotes.length ? `<details><summary>The words it went on</summary>
+        ${quotes.map((v) => `<div class="fired-row"><span class="t">“${esc(v.quote)}”</span></div>`).join('')}
+      </details>` : ''}
+      ${s.accepted ? '' : `
+        <div class="row-actions" style="margin-top:8px">
+          ${s.subject || s.defines ? `<button class="btn" data-take="${esc(d.ref)}">Use ${esc(name(s.subject || s.defines))}</button>`
+    : s.category ? `<button class="btn" data-take="${esc(d.ref)}">File it as ${esc(CATEGORY_LABEL[s.category] || s.category)}</button>` : ''}
+          <button class="btn quiet" data-else="${esc(d.ref)}">${s.subject || s.defines ? 'Choose someone else' : 'Decide it yourself'}</button>
+          <button class="btn quiet" data-drop="${esc(d.ref)}">Leave undecided</button>
+        </div>`}
+    </div>`;
 }
 
 /** One entry, said plainly, with everything technical folded away. */
@@ -6994,17 +7081,23 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
         ${/* With nothing left to say, the column goes too, instead of holding a
              blank line open beside the title. */''}
         ${about || d.reclassified ? `<span class="n">${esc(about)}${d.reclassified ? ` <i class="rv-flag">changed from ${esc(d.storedKind)}</i>` : ''}</span>` : ''}
-        <button class="fold" aria-expanded="false">▾</button>
+        ${/* So a closer look asked for by the section is not lost inside a closed card. */''}
+        ${review.suggestions.has(d.ref) && !review.suggestions.get(d.ref).accepted ? '<span class="card-badge look">a closer look</span>' : ''}
+        <button class="fold" aria-expanded="${review.opened.has(d.ref)}">▾</button>
       </div>
-      <div class="edit-body" hidden>
+      <div class="edit-body"${review.opened.has(d.ref) ? '' : ' hidden'}>
+        ${/* A reading you saved is not replaced by anything on this screen —
+             not by Nexus reading again, and not by a closer look. */''}
+        ${d.current === 'recheck' ? '<div class="why"><b>You saved a reading for this before.</b> The entry has changed since, so Nexus is reading it again. What you saved stays exactly as it is until you save a replacement.</div>' : ''}
         ${unsure ? `<div class="why"><b>Nexus isn't sure${d.unresolved.length ? ':' : '.'}</b> ${esc(d.unresolved.join('. '))}</div>` : ''}
         ${bucket === 'likely' && !d.approve ? `
           <div class="rv-suggest">
             <div>Nexus suggests: <b>${esc(about || kind)}</b></div>
             <button class="btn" data-use="${esc(d.ref)}">Use this suggestion</button>
           </div>` : ''}
+        ${closerLook(d, bucket)}
         ${d.reclassified ? `<div class="why">The original file called this “${esc(d.storedKind)}”. Nexus reads it as ${esc(d.defines ? `a ${TYPE_LABEL[review.entities.get(d.defines)?.type]?.toLowerCase() || 'thing'}` : kind.toLowerCase())}. The original file is not changed.</div>` : ''}
-        ${choose || !isSettled(d) ? `
+        ${choose || d.pick || !isSettled(d) ? `
           <div class="field">
             <label>Who is this about?</label>
             ${likelyPeople.length ? `<div class="rv-hint">Likely</div>` : ''}
@@ -7165,6 +7258,34 @@ function onReviewClick(e) {
   const use = e.target.closest('[data-use]');
   if (use) { review.entries.get(use.dataset.use).approve = true; renderReview(); return; }
 
+  // ---- a closer look, and what is done with what comes back
+  const look = e.target.closest('[data-look]');
+  if (look) {
+    const d = review.entries.get(look.dataset.look);
+    lookCloser([look.dataset.look], { force: bucketOf(d) === 'likely' });
+    return;
+  }
+  const help = e.target.closest('[data-help]');
+  if (help) {
+    const id = help.dataset.help;
+    review.open.add(id);
+    const rows = [...review.entries.values()].filter((d) => d.current !== 'approved' && bucketOf(d) === id);
+    lookCloser(rows.filter((d) => !review.suggestions.has(d.ref)).map((d) => d.ref).slice(0, HELP_AT_ONCE));
+    return;
+  }
+  const take = e.target.closest('[data-take]');
+  if (take) { takeSuggestion(take.dataset.take); renderReview(); return; }
+  const chooseElse = e.target.closest('[data-else]');
+  if (chooseElse) {
+    // Put the ordinary chooser in front of them, and take the suggestion away.
+    review.suggestions.delete(chooseElse.dataset.else);
+    review.entries.get(chooseElse.dataset.else).pick = true;
+    renderReview();
+    return;
+  }
+  const drop = e.target.closest('[data-drop]');
+  if (drop) { review.suggestions.delete(drop.dataset.drop); renderReview(); return; }
+
   const acceptSection = e.target.closest('[data-accept-section]');
   if (acceptSection) {
     // Only the likely suggestions in the section you are looking at, never all of them at once.
@@ -7204,10 +7325,84 @@ function onReviewClick(e) {
   }
   const body = $('.edit-body', card);
   if (body) {
+    // Toggled in place rather than by redrawing, so a source of two hundred
+    // entries opens one card as fast as it opens one of six. The set below is
+    // what a later redraw reads to leave it where it was.
     body.hidden = !body.hidden;
     const chevron = $('.fold', head);
     if (chevron) chevron.setAttribute('aria-expanded', String(!body.hidden));
+    const ref = card.dataset.entryRef;
+    if (ref) { if (body.hidden) review.opened.delete(ref); else review.opened.add(ref); }
   }
+}
+
+/**
+ * Ask the model to read some entries again.
+ *
+ * The only thing in this screen that reaches a provider, and only from a press.
+ * What comes back is put beside the entry; nothing is ticked, and nothing is
+ * saved, until someone accepts it.
+ */
+async function lookCloser(refs, { force = false } = {}) {
+  const todo = [...new Set(refs)].filter((r) => !review.looking.has(r));
+  if (!todo.length) return;
+  for (const r of todo) { review.looking.add(r); review.trouble.delete(r); }
+  renderReview();
+  try {
+    const out = await post(`/api/lorebooks/${review.bookId}/semantic-assist`, { refs: todo, force });
+    for (const s of out.suggestions || []) review.suggestions.set(s.entryRef, s);
+    for (const p of out.problems || []) {
+      if (p.entryRef && !review.suggestions.has(p.entryRef)) review.trouble.set(p.entryRef, saidPlainly(p));
+    }
+    review.spent.push(...(out.usage || []));
+    const got = todo.filter((r) => review.suggestions.has(r)).length;
+    if (!got) toast(review.trouble.get(todo[0]) || 'Nothing usable came back.', { kind: 'bad' });
+    else if (todo.length > 1) toast(`Read ${num(got)} of ${num(todo.length)} again.`, { kind: 'good' });
+  } catch (err) {
+    for (const r of todo) review.trouble.set(r, err.message || 'That could not be done.');
+    toast(err.message || 'That could not be done.', { kind: 'bad' });
+  } finally {
+    for (const r of todo) review.looking.delete(r);
+    renderReview();
+  }
+}
+
+/** Why a closer look came back with nothing, in words worth reading. */
+const saidPlainly = (p) => ({
+  skipped: p.reason,
+  failed: `That did not come back: ${p.reason}`,
+  missing: 'It did not answer for this one.',
+  rejected: `Nexus could not use that answer: ${p.reason}`,
+  dropped: p.reason,
+  unreadable: 'The answer did not make sense.',
+}[p.kind] || p.reason);
+
+/**
+ * Accept a suggestion. This is the moment it becomes a decision — because a
+ * person made it, not because a model said it.
+ */
+function takeSuggestion(ref) {
+  const d = review.entries.get(ref);
+  const s = review.suggestions.get(ref);
+  if (!d || !s) return;
+  // An answer that could not say who may still have said what; taking that part
+  // files the entry without settling who it is about, which is honest.
+  if (s.unresolved && !s.category) return;
+  if (s.defines) {
+    d.scope = 'entity'; d.defines = s.defines; d.subject = null; d.category = s.category || 'profile';
+  } else if (s.subject) {
+    d.scope = 'entity'; d.subject = s.subject; d.defines = null;
+    if (s.category) d.category = s.category;
+  } else if (s.category) {
+    d.category = s.category;
+  }
+  if (s.related?.length) d.related = [...new Set([...d.related, ...s.related])];
+  d.related = d.related.filter((r) => r !== d.subject && r !== d.defines);
+  if (s.displayPath) d.displayPath = s.displayPath;
+  s.accepted = true;
+  // Only a settled reading can be saved; a category on its own does not settle
+  // an entry that is still about nobody in particular.
+  if (isSettled(d)) d.approve = true;
 }
 
 /** Which section an entry is drawn in, so a section can accept its own suggestions. */

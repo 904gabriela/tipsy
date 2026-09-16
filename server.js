@@ -26,6 +26,7 @@ import { inspectPackage, importPackage } from './src/package/import.js';
 import { exportStory, exportSources } from './src/package/export.js';
 import { analyzeSource } from './src/conversion/analyze.js';
 import { applyReview } from './src/conversion/apply.js';
+import { assist } from './src/conversion/assist.js';
 import {
   planComposition, writeComposition, applyToStory, sourceRemovalPreview, removeSource,
 } from './src/import/compose-apply.js';
@@ -677,6 +678,58 @@ route('POST', '/api/lorebooks/:id/semantic-preview', async (req, res, { id }) =>
   const { compareWith = [] } = await readJson(req);
   if (!Array.isArray(compareWith)) throw new HttpError(400, 'compareWith is a list of source ids.');
   return analyzeSource(db, id, { compareWith: compareWith.filter((x) => typeof x === 'string') });
+});
+
+/**
+ * Which model gives a second opinion, and how it is asked.
+ *
+ * The Story Builder's model, because it is already the one chosen for thinking
+ * rather than for prose. A `semantics` setting may name a different one without
+ * touching anything else; nothing here is tied to the model a story writes with.
+ * Cool, because this is reading, not writing.
+ */
+function assistSettings() {
+  const saved = db.getSetting('semantics', {});
+  const builder = builderSettings();
+  return {
+    model: saved.model || builder.model,
+    temperature: Number.isFinite(saved.temperature) ? saved.temperature : 0.2,
+    provider: saved.provider || builder.provider,
+    configured: !!saved.model,
+  };
+}
+
+function assistModel() {
+  const key = apiKey();
+  if (!key) throw new HttpError(400, 'Add your OpenRouter key in Settings before asking for a closer look.');
+  const s = assistSettings();
+  return async ({ messages, schema, maxTokens, signal }) => completeJson({
+    apiKey: key, model: s.model, messages, schema, maxTokens, signal,
+    temperature: s.temperature, provider: s.provider, title: 'Tipsy semantic assist',
+  });
+}
+
+/**
+ * A closer look at entries the deterministic pass could not settle.
+ *
+ * Only ever for the entries asked for by name, and only the unresolved ones
+ * unless the reader deliberately asks about a likely one. What comes back is a
+ * suggestion for the review draft: nothing is written here, nothing is
+ * approved, and a suggestion becomes a reading only when someone accepts it and
+ * saves through semantic-apply.
+ */
+route('POST', '/api/lorebooks/:id/semantic-assist', async (req, res, { id }) => {
+  if (!db.getLorebook(id)) throw new HttpError(404, 'No such lorebook.');
+  const { refs = [], force = false } = await readJson(req);
+  if (!Array.isArray(refs) || !refs.length) throw new HttpError(400, 'Say which entries to look at.');
+  const wanted = refs.filter((x) => typeof x === 'string');
+  if (!wanted.length) throw new HttpError(400, 'Say which entries to look at.');
+  // A bound on one request, so a slip of the finger cannot spend a fortune.
+  if (wanted.length > 24) throw new HttpError(400, 'That is more than one look can cover. Do a section at a time.');
+  const draft = analyzeSource(db, id);
+  const contents = new Map(db.raw.prepare('SELECT id, content FROM lore_entries WHERE lorebook_id=?').all(id).map((r) => [r.id, r.content || '']));
+  const out = await assist({ draft, contents, refs: wanted, complete: assistModel(), force: !!force });
+  return { ...out, model: assistSettings().model };
 });
 
 /**
