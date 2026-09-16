@@ -19,6 +19,7 @@
     "builder:check": "node scripts/check-builder.js",
     "semantic-model:check": "node scripts/check-semantic-model.js",
     "preset-safety:check": "node scripts/check-preset-safety.js",
-    "package:check": "node scripts/check-package.js"
+    "package:check": "node scripts/check-package.js",
+    "conversion:check": "node scripts/check-conversion.js"
   }
 }

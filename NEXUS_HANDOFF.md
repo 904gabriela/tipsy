@@ -699,6 +699,46 @@ No UI yet.
 
 ---
 
+## 24. Legacy semantic conversion, P3 (branch `feature/semantic-model`)
+
+`src/conversion/` turns a legacy source into a **review draft** and stops there.
+`analyzeSource(db, lorebookId, { compareWith })`, or `POST /api/lorebooks/:id/semantic-preview`.
+There is no apply route, and there is no UI.
+
+- **Read-only, physically:** the analyser switches the connection to
+  `PRAGMA query_only` for the whole of its work and back afterwards. Tests
+  fingerprint every table before and after.
+- **No model, ever:** the module imports no provider and no classifier; a counting
+  stand-in provider sees 0 requests.
+- **Evidence, not scores:** every proposal carries readable evidence
+  (`profile-pattern`, `possessive-title`, `first-sentence-subject`,
+  `explicit-name-in-content`, `repeated-name`, `alias-in-keywords`,
+  `entity-title-pattern`, `place-language`, `faction-language`, `person-language`,
+  `relationship-language`, `instruction-language`, `narration-language`,
+  `reference-language`, `category-language`, `source-context`, `legacy-kind`,
+  `legacy-link-evidence`, `mentioned-only`, `variant-of-profile`, `no-signal`)
+  and a confidence of high, medium or low.
+- **Stored `kind` is evidence, never truth,** and is never rewritten. Disagreements
+  are reported as warnings.
+- **Subject vs related:** a person is a candidate wherever named; a place or group
+  only when the title names it. Related needs a reason (title, twice, possessive,
+  or relationship language), so a passing mention stays `mentioned-only`.
+- **Honest uncertainty:** when two people could be meant, the subject stays null,
+  both candidates are listed with their points, and confidence is low.
+- **Legacy links** are weak historical evidence worth 0 points; they can never
+  create a subject or a high confidence.
+- **Variants are grouped, never merged**: same profile, same title, or the same
+  keywords plus much of the same wording. Nothing is enabled, disabled, retitled,
+  rewritten or chosen as canonical.
+- **Cross-source matches** are candidates only; `entity_distinctions` suppresses a
+  pair already decided to be different.
+- **No real names in the engine.** `scripts/check-conversion.js` fails if a name
+  from the real library appears in `src/conversion/`.
+- Tests: `npm run conversion:check` (synthetic library, invented names). Real
+  sources are only ever read, from snapshots.
+
+---
+
 ## NEXT AGENT INSTRUCTIONS
 
 1. Read this file.

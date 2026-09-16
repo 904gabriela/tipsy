@@ -24,6 +24,7 @@ import { isDirection, semanticSection } from './src/semantics/authority.js';
 import { semanticViews, sourceOrganization } from './src/semantics/store.js';
 import { inspectPackage, importPackage } from './src/package/import.js';
 import { exportStory, exportSources } from './src/package/export.js';
+import { analyzeSource } from './src/conversion/analyze.js';
 import {
   planComposition, writeComposition, applyToStory, sourceRemovalPreview, removeSource,
 } from './src/import/compose-apply.js';
@@ -661,6 +662,20 @@ route('DELETE', '/api/entries/:id', async (req, res, { id }) => { db.deleteEntry
 route('GET', '/api/lorebooks/:id/organization', async (req, res, { id }) => {
   if (!db.getLorebook(id)) throw new HttpError(404, 'No such lorebook.');
   return sourceOrganization(db, id);
+});
+
+/**
+ * What conversion would propose for a legacy source, and why.
+ *
+ * Read-only in the strongest sense: the analyser switches the connection to
+ * query-only while it works, so nothing here can write. It proposes; nothing is
+ * approved, and there is no apply route yet — review comes later.
+ */
+route('POST', '/api/lorebooks/:id/semantic-preview', async (req, res, { id }) => {
+  if (!db.getLorebook(id)) throw new HttpError(404, 'No such lorebook.');
+  const { compareWith = [] } = await readJson(req);
+  if (!Array.isArray(compareWith)) throw new HttpError(400, 'compareWith is a list of source ids.');
+  return analyzeSource(db, id, { compareWith: compareWith.filter((x) => typeof x === 'string') });
 });
 
 // --- Nexus Story Package v1
