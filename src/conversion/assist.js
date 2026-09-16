@@ -17,6 +17,16 @@
 
 import { ENTITY_TYPES } from '../semantics/authority.js';
 
+/**
+ * The parts of a reading, each settled or left open on its own.
+ *
+ * A second opinion is rarely all or nothing: "it is backstory, but I cannot
+ * tell whose" is a real answer, and so is "it is about her, but I cannot tell
+ * what kind of thing it is". Each part is validated against what was sent
+ * independently of the others.
+ */
+export const DIMENSIONS = ['category', 'subject', 'defines', 'related', 'displayPath'];
+
 /** The categories an entry may be filed under. Frozen: the model picks from these or nothing. */
 export const CATEGORIES = [
   'identity', 'appearance', 'personality', 'speech', 'behavior', 'backstory',
@@ -180,13 +190,17 @@ const SYSTEM = [
   '',
   'SUBJECT is who or what the entry is primarily about: remove them and the entry has no reason to exist.',
   'RELATED are entities meaningfully involved without the entry being about them. A name merely appearing in the text is NOT enough to make someone related, and never enough to make them the subject.',
-  'DEFINES is for an entry that introduces an entity — its own profile — rather than saying something about it. Such an entry has defines and no subject; whatever it belongs to or sits inside goes in related. Never fill both subject and defines.',
+  'DEFINES is for an entry that introduces an entity — its own profile — rather than saying something about it. Such an entry may give the same ref as both defines and subject, because a profile is about the one it introduces; it must never give different refs for the two. Whatever it belongs to or sits inside goes in related.',
+  '',
+  'ANSWER EACH PART SEPARATELY. What kind of information an entry holds, who it is about, who else is involved and how it is grouped are different questions. Settle the ones the material settles, and for the rest put their names in unresolvedFields (any of: category, subject, defines, related, displayPath), leave those fields null or empty, and set unresolved to true. "It is backstory, but I cannot tell whose" is a good answer. So is "it is about her, but I cannot tell what kind of thing it is".',
+  '',
+  'AN ENTRY MAY BE ABOUT NOBODY. World description, rules and instructions for the narrator have no subject: subject null with unresolved false is a complete answer, not a failure. Do not reach for a person to fill the field.',
   '',
   'Rules you must follow:',
   '- Choose entities by the ref you were given (for example "person-1"), never by name alone. Refs you were not given do not exist.',
   '- Choose a category only from the list you are given. Do not invent categories: a universe\'s own word ("quirk", "trauma", "magic") maps onto the closest given category, and may be offered separately as a display group.',
   '- Every claim needs evidence. A "quote" must be text copied exactly from the material you were given; if you cannot copy it exactly, do not call it a quote. Use "contextual" for reasoning across the supplied facts, and name the refs it rests on.',
-  '- If the material does not settle it, answer with unresolved: true and explain what is missing. That is a correct and useful answer. Never guess a subject, a category or a relation to fill the field.',
+  '- If the material does not settle a part, name that part in unresolvedFields and explain what is missing. That is a correct and useful answer. Never guess a subject, a category or a relation to fill a field.',
   '- Propose a missing entity only when the supplied text plainly introduces someone or something that is not in the list, and quote the words that do it. Never invent a ref for it: leave subject and defines null and describe it under proposedEntities.',
   '- Quote only the entry\'s own words and the excerpts you were given, never the labels around them.',
   '',
@@ -205,6 +219,7 @@ export const REPLY_SCHEMA = {
         properties: {
           entryRef: { type: 'string' },
           unresolved: { type: 'boolean' },
+          unresolvedFields: { type: 'array', items: { type: 'string', enum: DIMENSIONS } },
           subject: { type: ['string', 'null'] },
           defines: { type: ['string', 'null'] },
           related: { type: 'array', items: { type: 'string' } },
@@ -291,7 +306,7 @@ export const normalizeQuote = (s) => String(s || '')
   .trim()
   .toLowerCase();
 
-const READING_KEYS = new Set(['entryRef', 'unresolved', 'subject', 'defines', 'related', 'category',
+const READING_KEYS = new Set(['entryRef', 'unresolved', 'unresolvedFields', 'subject', 'defines', 'related', 'category',
   'displayPath', 'proposedEntities', 'evidence', 'explanation']);
 const EVIDENCE_KEYS = new Set(['type', 'quote', 'refs', 'explanation']);
 const PROPOSAL_KEYS = new Set(['type', 'name', 'reason', 'evidence']);
@@ -343,7 +358,13 @@ export function readReply(payload, asked) {
     if (Array.isArray(subject)) { refuse(ref, 'more than one subject'); continue; }
     if (subject !== null && typeof subject !== 'string') { refuse(ref, 'the subject was not a ref'); continue; }
     if (defines !== null && typeof defines !== 'string') { refuse(ref, 'defines was not a ref'); continue; }
-    if (subject && defines) { refuse(ref, 'an entry is either about an entity or the entity\'s own entry, not both'); continue; }
+    // An entry that introduces someone is also about them; saying both of the
+    // same entity is consistent, and is how a profile reads. Two different
+    // entities is not something an entry can be, so that is refused.
+    if (subject && defines && subject !== defines) {
+      refuse(ref, 'it said the entry introduces one entity and is about a different one');
+      continue;
+    }
     if (subject && !ctx.entities.has(subject)) { refuse(ref, `"${subject}" is not one of the entities it was given`); continue; }
     if (defines && !ctx.entities.has(defines)) { refuse(ref, `"${defines}" is not one of the entities it was given`); continue; }
 
@@ -365,13 +386,28 @@ export function readReply(payload, asked) {
       displayPath = displayPath.map((s) => s.trim());
     }
 
-    // Saying it cannot tell who this is about and then naming someone is not an
-    // answer. Saying "I cannot tell who, but it is backstory" is one: what kind
-    // of information an entry holds is a different question from whose it is,
-    // and an honest half-answer is worth more than a guess at the other half.
-    const named = !!(subject || defines || displayPath || (raw.proposedEntities || []).length || related.length);
-    if (raw.unresolved && named) { refuse(ref, 'it said it could not tell and then named someone anyway'); continue; }
-    if (!raw.unresolved && !subject && !defines && !category) { refuse(ref, 'it said it could tell but named nothing'); continue; }
+    // ---- which parts it says it could not settle, checked one at a time
+    let unresolvedFields = raw.unresolvedFields === undefined || raw.unresolvedFields === null ? [] : raw.unresolvedFields;
+    if (!Array.isArray(unresolvedFields) || unresolvedFields.some((f) => typeof f !== 'string')) {
+      refuse(ref, 'it did not say plainly which parts were left open'); continue;
+    }
+    unresolvedFields = [...new Set(unresolvedFields)];
+    const strange = unresolvedFields.find((f) => !DIMENSIONS.includes(f));
+    if (strange) { refuse(ref, `"${strange}" is not one of the parts of a reading`); continue; }
+    // Saying a part is open and then answering it is a contradiction — but only
+    // about that part. Everything else it settled still stands.
+    const value = { category, subject, defines, related, displayPath };
+    const filled = (f) => (f === 'related' ? related.length > 0 : value[f] !== null && value[f] !== undefined);
+    const contradiction = unresolvedFields.find(filled);
+    if (contradiction) { refuse(ref, `it said the ${contradiction} was open and then answered it`); continue; }
+
+    // A reading has to say something. An entry about nobody in particular is a
+    // complete answer — world material has no subject — so a category alone,
+    // or a connection alone, counts; only an empty answer does not.
+    const conclusion = !!(subject || defines || category || displayPath || related.length || (raw.proposedEntities || []).length);
+    if (!raw.unresolved && !unresolvedFields.length && !conclusion) { refuse(ref, 'it said it could tell and named nothing'); continue; }
+    // Listing an open part means the reading is partial, whatever the flag said.
+    const unresolved = !!raw.unresolved || unresolvedFields.length > 0;
 
     // ---- evidence, checked against the words that were actually sent
     const evidence = [];
@@ -432,7 +468,7 @@ export function readReply(payload, asked) {
     }
 
     // ---- nothing may stand on evidence that did not survive
-    const claims = !!(subject || defines || category || displayPath || proposedEntities.length);
+    const claims = !!(subject || defines || category || displayPath || keptRelated.length || proposedEntities.length);
     if (claims && !evidence.length) {
       refuse(ref, 'nothing in the supplied material backed that up');
       continue;
@@ -444,7 +480,8 @@ export function readReply(payload, asked) {
 
     suggestions.push({
       entryRef: ref,
-      unresolved: !!raw.unresolved,
+      unresolved,
+      unresolvedFields,
       subject: subject || null,
       defines: defines || null,
       related: keptRelated,

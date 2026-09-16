@@ -1855,6 +1855,8 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
   color: var(--ink-faint); margin-bottom: 4px;
 }
 .rv-second-said { font-size: 14.5px; line-height: 1.4; margin-bottom: 4px; }
+/* What it could not settle, said as plainly as what it could. */
+.rv-second-open { font-size: 14px; line-height: 1.4; color: var(--ink-soft); margin-bottom: 4px; }
 .rv-second .row-actions { flex-wrap: wrap; gap: 6px; margin-bottom: 0; }
 .rv-dot {
   width: 10px; height: 10px; border-radius: 50%; flex: none;

@@ -109,7 +109,8 @@ ok('the request says what the source is and which categories exist',
 ok('the request explains subject against related',
   /SUBJECT is who or what the entry is primarily about/.test(req.messages[0].content)
   && /A name merely appearing in the text is NOT enough/.test(req.messages[0].content));
-ok('the request says that being unsure is an answer', /unresolved: true/.test(req.messages[0].content));
+ok('the request says which parts may be left open', /unresolvedFields \(any of: category, subject, defines, related, displayPath\)/.test(req.messages[0].content));
+ok('the request says an entry may be about nobody', /AN ENTRY MAY BE ABOUT NOBODY/.test(req.messages[0].content));
 
 section('batching');
 const many = Array.from({ length: 13 }, (_, i) => ({ text: 'x'.repeat(600), entry: { ref: `e${i}` } }));
@@ -147,9 +148,62 @@ const quote = { type: 'quote', quote: 'grew up above a bakery on the quay', expl
 {
   // Whose it is and what it is are two questions. Answering one honestly while
   // refusing to guess the other is the most useful thing a second opinion does.
-  const r = read({ unresolved: true, category: 'backstory', evidence: [quote] });
+  const r = read({ unresolved: true, unresolvedFields: ['subject'], category: 'backstory', evidence: [quote] });
   ok('"I cannot tell who, but I can tell what" is kept whole',
     r.suggestions.length === 1 && r.suggestions[0].unresolved === true && r.suggestions[0].category === 'backstory' && !r.suggestions[0].subject);
+  ok('and it says which part it could not settle', r.suggestions[0].unresolvedFields.join(',') === 'subject');
+}
+
+section('parts of a reading, settled one at a time');
+{
+  // The First Kill shape: it is backstory, someone else is involved, and who it
+  // is mainly about is still open.
+  const r = read({ unresolved: true, unresolvedFields: ['subject'], category: 'backstory', related: ['nora-vale'],
+    evidence: [quote, { type: 'quote', quote: 'Nora Vale keeps the books', explanation: 'names the other one' }] });
+  const s = r.suggestions[0];
+  ok('an open subject with a known category and a connection is a real answer',
+    r.suggestions.length === 1 && s.unresolved && !s.subject && s.category === 'backstory', JSON.stringify(r.problems));
+  ok('the connection survives an open subject', s && s.related.includes('nora-vale'), (s?.related || []).join(', '));
+}
+{
+  const r = read({ unresolved: true, unresolvedFields: ['category'], subject: 'nora-vale', evidence: [quote] });
+  const s = r.suggestions[0];
+  ok('a known subject with an open category is a real answer',
+    r.suggestions.length === 1 && s.subject === 'nora-vale' && s.category === null && s.unresolvedFields[0] === 'category');
+}
+{
+  const r = read({ unresolved: false, category: 'background', subject: null, defines: null, evidence: [quote] });
+  const s = r.suggestions[0];
+  ok('world material about nobody is a complete reading, not a failure',
+    r.suggestions.length === 1 && !s.unresolved && s.category === 'background' && !s.subject && !s.unresolvedFields.length);
+}
+{
+  const r = read({ unresolved: false, defines: 'nora-vale', subject: 'nora-vale', category: 'profile', evidence: [quote] });
+  ok('an entry may introduce someone and be about that same someone',
+    r.suggestions.length === 1 && r.suggestions[0].defines === 'nora-vale', JSON.stringify(r.problems));
+}
+{
+  const r = read({ unresolved: false, defines: 'nora-vale', subject: 'ilya-vale', category: 'profile', evidence: [quote] });
+  ok('but not introduce one and be about another',
+    r.suggestions.length === 0 && r.problems.some((p) => /a different one/.test(p.reason)), r.problems.map((p) => p.reason).join(' | '));
+}
+{
+  const r = read({ unresolved: true, unresolvedFields: ['subject'], subject: 'nora-vale', category: 'backstory', evidence: [quote] });
+  ok('saying one part is open and then answering that part is refused',
+    r.suggestions.length === 0 && r.problems.some((p) => /said the subject was open/.test(p.reason)), r.problems.map((p) => p.reason).join(' | '));
+}
+{
+  const r = read({ unresolved: false, unresolvedFields: ['subject'], category: 'backstory', evidence: [quote] });
+  ok('naming an open part makes the reading partial, whatever the flag said',
+    r.suggestions.length === 1 && r.suggestions[0].unresolved === true);
+}
+{
+  const r = read({ unresolved: true, unresolvedFields: ['vibe'], category: 'backstory', evidence: [quote] });
+  ok('a part of a reading it invented is refused', r.suggestions.length === 0 && r.problems.some((p) => /not one of the parts/.test(p.reason)));
+}
+{
+  const r = read({ unresolved: false, evidence: [quote] });
+  ok('a reading that concludes nothing at all is still refused', r.suggestions.length === 0);
 }
 {
   const r = read({ subject: 'nora-vale', related: ['ilya-vale'], category: 'backstory', evidence: [quote] });
@@ -174,7 +228,6 @@ refused('two subjects at once', { subject: ['nora-vale', 'ilya-vale'], category:
 refused('a subject and a definition at once', { subject: 'nora-vale', defines: 'ilya-vale', category: 'profile', evidence: [quote] }, (s) => !!s.subject);
 refused('a quotation that was never written', { subject: 'nora-vale', category: 'backstory', evidence: [{ type: 'quote', quote: 'Nora confessed to the harbourmaster', explanation: 'it says so' }] }, (s) => !!s.subject);
 refused('a claim with no evidence at all', { subject: 'nora-vale', category: 'backstory', evidence: [] }, (s) => !!s.subject);
-refused('saying it cannot tell and then telling', { unresolved: true, subject: 'nora-vale', category: 'backstory', evidence: [quote] }, (s) => !!s.subject);
 refused('saying it can tell and naming nothing', { evidence: [quote] }, (s) => !s.unresolved);
 refused('a display group that is a paragraph', { subject: 'nora-vale', category: 'backstory', displayPath: ['a'.repeat(80)], evidence: [quote] }, (s) => !!s.displayPath);
 refused('a display group nested five deep', { subject: 'nora-vale', category: 'backstory', displayPath: ['a', 'b', 'c'], evidence: [quote] }, (s) => !!s.displayPath);
@@ -358,11 +411,11 @@ const MUTANTS = [
     slips: (s) => s.evidence.some((v) => /harbourmaster/.test(v.quote || '')),
   },
   {
-    name: 'without the contradiction check',
-    from: 'if (raw.unresolved && named) { refuse(ref, \'it said it could not tell and then named someone anyway\'); continue; }',
+    name: 'without the per-part contradiction check',
+    from: 'if (contradiction) { refuse(ref, `it said the ${contradiction} was open and then answered it`); continue; }',
     to: '',
-    hostile: { unresolved: true, subject: 'nora-vale', category: 'backstory', evidence: [quote] },
-    slips: (s) => s.unresolved && !!s.subject,
+    hostile: { unresolved: true, unresolvedFields: ['subject'], subject: 'nora-vale', category: 'backstory', evidence: [quote] },
+    slips: (s) => s.unresolvedFields.includes('subject') && !!s.subject,
   },
   {
     name: 'without requiring the answer to be about an entry we asked about',

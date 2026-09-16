@@ -7002,6 +7002,34 @@ function renderReview() {
 }
 
 /**
+ * The parts a closer look says it could not settle.
+ *
+ * It names them itself. If it only said "not all of it", the empty parts are
+ * the open ones — which is safe to read that way only because it said so;
+ * for a settled reading, an empty subject means "nobody in particular".
+ */
+function openParts(s) {
+  if (s.unresolvedFields?.length) return new Set(s.unresolvedFields);
+  if (!s.unresolved) return new Set();
+  const open = new Set();
+  if (!s.subject && !s.defines) open.add('subject');
+  if (!s.category) open.add('category');
+  return open;
+}
+
+/** The open parts, said as a sentence a person would say. */
+function stillOpen(open) {
+  const bits = [];
+  if (open.has('subject') || open.has('defines')) bits.push('who it is mainly about');
+  if (open.has('category')) bits.push('what kind of information it is');
+  if (open.has('related')) bits.push('who else is involved');
+  if (open.has('displayPath')) bits.push('where it belongs');
+  if (!bits.length) return '';
+  const last = bits.pop();
+  return `Nexus still can’t tell ${bits.length ? `${bits.join(', ')}, or ${last}` : last}.`;
+}
+
+/**
  * A closer look at one entry: the offer, the waiting, or what came back.
  *
  * Nothing here is a decision. A suggestion is drawn as something said about the
@@ -7009,10 +7037,10 @@ function renderReview() {
  * is only ticked when a person accepts it.
  */
 function closerLook(d, bucket) {
-  const open = bucket === 'decision' || bucket === 'unsorted';
+  const unsettled = bucket === 'decision' || bucket === 'unsorted';
   // Unresolved material is what this is for; a likely reading can be questioned
   // on purpose. Anything Nexus is sure of, or you have already saved, is not offered.
-  if (!open && !(bucket === 'likely' && !d.approve)) return '';
+  if (!unsettled && !(bucket === 'likely' && !d.approve)) return '';
   if (d.current === 'approved') return '';
 
   if (review.looking.has(d.ref)) return '<div class="rv-second waiting"><span class="rv-dot"></span>Looking closer at this…</div>';
@@ -7027,19 +7055,25 @@ function closerLook(d, bucket) {
   }
 
   const name = (ref) => review.entities.get(ref)?.name || ref;
-  const said = s.unresolved ? '' : s.defines ? `this is ${name(s.defines)}’s own entry`
-    : s.subject ? `it is about ${name(s.subject)}`
-      : s.category ? `it is ${(CATEGORY_LABEL[s.category] || s.category).toLowerCase()}` : '';
   const quotes = s.evidence.filter((v) => v.type === 'quote');
+  // What it settled, and what it says it could not. A reading is rarely all or
+  // nothing, and a part it could not settle must never read as solved.
+  const open = openParts(s);
+  const kindOf = s.category ? (CATEGORY_LABEL[s.category] || s.category) : '';
+  const whose = s.defines ? `${name(s.defines)}’s own entry`
+    : s.subject ? `about ${name(s.subject)}`
+      : (!s.unresolved && !open.size) ? 'about nobody in particular' : '';
+  const settled = kindOf && whose ? `This appears to be <b>${esc(kindOf)}</b>, ${esc(whose)}.`
+    : kindOf ? `This appears to be <b>${esc(kindOf)}</b>.`
+      : whose ? `This appears to be <b>${esc(whose)}</b>.` : '';
   return `
     <div class="rv-second${s.accepted ? ' taken' : ''}">
       <div class="rv-second-head">A closer look${s.accepted ? ' — you used this' : ''}</div>
-      ${s.unresolved
-    ? `<div class="rv-second-said">It still can’t tell who this is about.</div>
-       ${s.category ? `<div class="rv-second-said">It does read it as <b>${esc(CATEGORY_LABEL[s.category] || s.category)}</b>.</div>` : ''}`
-    : `<div class="rv-second-said">Suggests <b>${esc(said)}</b>${s.category && (s.subject || s.defines) ? `, filed under ${esc(CATEGORY_LABEL[s.category] || s.category)}` : ''}.</div>`}
+      ${settled ? `<div class="rv-second-said">${settled}</div>` : ''}
+      ${open.size ? `<div class="rv-second-open">${esc(stillOpen(open))}</div>`
+    : s.unresolved ? '<div class="rv-second-open">It could not settle every part of this.</div>' : ''}
       <div class="why">${esc(s.explanation)}</div>
-      ${s.related.length ? `<div class="why">Also involved: ${esc(s.related.map(name).join(', '))}.</div>` : ''}
+      ${s.related.length ? `<div class="why">Also connected to: ${esc(s.related.map(name).join(', '))}.</div>` : ''}
       ${s.proposedEntities.length ? `<div class="why">It thinks this source is missing ${esc(s.proposedEntities.map((p) => `${p.name} (${TYPE_LABEL[p.type]?.toLowerCase() || p.type})`).join(', '))}. Nothing is added unless you add it.</div>` : ''}
       ${quotes.length ? `<details><summary>The words it went on</summary>
         ${quotes.map((v) => `<div class="fired-row"><span class="t">“${esc(v.quote)}”</span></div>`).join('')}
@@ -7047,7 +7081,8 @@ function closerLook(d, bucket) {
       ${s.accepted ? '' : `
         <div class="row-actions" style="margin-top:8px">
           ${s.subject || s.defines ? `<button class="btn" data-take="${esc(d.ref)}">Use ${esc(name(s.subject || s.defines))}</button>`
-    : s.category ? `<button class="btn" data-take="${esc(d.ref)}">File it as ${esc(CATEGORY_LABEL[s.category] || s.category)}</button>` : ''}
+    : s.category ? `<button class="btn" data-take="${esc(d.ref)}">Use what it found</button>`
+      : s.related.length ? `<button class="btn" data-take="${esc(d.ref)}">Connect ${esc(name(s.related[0]))}</button>` : ''}
           <button class="btn quiet" data-else="${esc(d.ref)}">${s.subject || s.defines ? 'Choose someone else' : 'Decide it yourself'}</button>
           <button class="btn quiet" data-drop="${esc(d.ref)}">Leave undecided</button>
         </div>`}
@@ -7385,16 +7420,21 @@ function takeSuggestion(ref) {
   const d = review.entries.get(ref);
   const s = review.suggestions.get(ref);
   if (!d || !s) return;
-  // An answer that could not say who may still have said what; taking that part
-  // files the entry without settling who it is about, which is honest.
-  if (s.unresolved && !s.category) return;
+  // Whatever it settled is taken; whatever it left open stays open, and the
+  // parts it never answered are not filled in on its behalf.
   if (s.defines) {
+    // A profile is about the one it introduces, so an entry that does both is
+    // stored the one way that says it: as that entity's own entry.
     d.scope = 'entity'; d.defines = s.defines; d.subject = null; d.category = s.category || 'profile';
   } else if (s.subject) {
     d.scope = 'entity'; d.subject = s.subject; d.defines = null;
     if (s.category) d.category = s.category;
   } else if (s.category) {
     d.category = s.category;
+    // "This is world material, about nobody in particular" is a whole reading,
+    // and only then does the entry settle. A subject it could not settle leaves
+    // the entry open, however sure it was of the category.
+    if (!openParts(s).has('subject') && !PERSON_CATEGORY.includes(s.category)) { d.scope = 'world'; d.subject = null; }
   }
   if (s.related?.length) d.related = [...new Set([...d.related, ...s.related])];
   d.related = d.related.filter((r) => r !== d.subject && r !== d.defines);
