@@ -2184,3 +2184,43 @@ button.cast-name[data-entry-open] { text-decoration: underline; text-decoration-
   .cast-role { max-width: 100%; width: 100%; }
   .rv-row { padding: 10px 12px; }
 }
+
+
+/* ---------------------------------------------------------- a person, in full
+
+   A dossier, not a database view: what is always true of them first, in short
+   blocks, then everything known folded away by group. Depth is available, never
+   dumped on the screen. */
+.ent-hero { align-items: center; }
+.ent-kind { font-size: 12.5px; color: var(--ink-faint); letter-spacing: .02em; }
+.ent-where { font-size: 12.5px; color: var(--accent); margin-top: 3px; }
+.ent-core { display: flex; flex-direction: column; gap: 1px; margin-bottom: 4px; }
+.ent-slot { padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 2px; }
+.ent-core .ent-slot:first-child { border-radius: var(--r) var(--r) 2px 2px; }
+.ent-core .ent-slot:last-child { border-radius: 2px 2px var(--r) var(--r); }
+.ent-core .ent-slot + .ent-slot { border-top: 0; }
+.ent-slot-label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--ink-faint); margin-bottom: 4px;
+}
+.ent-slot .prose-plain { margin: 0; font-size: 14.5px; line-height: 1.5; }
+.ent-group > .edit-head b { font-size: 15px; }
+.ent-flag {
+  display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px;
+  font-size: 10.5px; letter-spacing: .04em; background: var(--surface-2);
+  color: var(--ink-faint); border: 1px solid var(--line);
+}
+.ent-flag.warn { color: var(--warn); border-color: var(--warn); }
+.ent-near { display: flex; flex-direction: column; gap: 1px; }
+.ent-near-row {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+  width: 100%; text-align: left; padding: 11px 12px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 2px;
+}
+.ent-near:first-child .ent-near-row:first-child { border-radius: var(--r) var(--r) 2px 2px; }
+.ent-near-row + .ent-near-row { border-top: 0; }
+.ent-near-row:last-child { border-radius: 2px 2px var(--r) var(--r); }
+.ent-near-row:active { background: var(--surface-2); }
+.ent-near-name { font-size: 15px; font-weight: 500; overflow-wrap: break-word; }
+.ent-near-why { font-size: 12.5px; color: var(--ink-faint); margin-left: auto; }
+.ent-details { margin-top: 18px; }

@@ -27,6 +27,7 @@ import { exportStory, exportSources } from './src/package/export.js';
 import { analyzeSource } from './src/conversion/analyze.js';
 import { applyReview } from './src/conversion/apply.js';
 import { assist } from './src/conversion/assist.js';
+import { entityProfile } from './src/semantics/profile.js';
 import {
   planComposition, writeComposition, applyToStory, sourceRemovalPreview, removeSource,
 } from './src/import/compose-apply.js';
@@ -638,6 +639,25 @@ route('POST', '/api/characters', async (req) => {
 });
 
 // --- lorebooks
+
+/**
+ * One person, place or group, as everything known about them.
+ *
+ * The resource (a card, a persona), the entity (who they are), and the
+ * knowledge (what is said about them) are three things, and this route keeps
+ * them apart while handing back all three. Read-only: it reports what has been
+ * approved and changes nothing, and nothing here reaches a prompt.
+ *
+ * With ?storyId, it is read as that story sees it: the story's own material,
+ * and only the reusable sources that story actually carries.
+ */
+route('GET', '/api/entities/:id/profile', async (req, res, { id }, url) => {
+  const storyId = url.searchParams.get('storyId') || null;
+  if (storyId && !db.getStory(storyId)) throw new HttpError(404, 'No such story.');
+  const profile = entityProfile(db, id, { storyId });
+  if (!profile) throw new HttpError(404, 'Nobody by that name is organised yet.');
+  return profile;
+});
 
 route('GET', '/api/lorebooks/:id', async (req, res, { id }) => {
   const b = db.getLorebook(id);
@@ -1617,6 +1637,9 @@ route('GET', '/api/stories/:id/playable', async (req, res, { id }) => {
   const saved = db.listPersonas().map((p) => ({
     id: p.id, name: p.name, description: p.description, avatar: p.avatar,
     fromEntry: p.from_entry || null, missingEntry: !!p.missingEntry,
+    // Whether this is someone Nexus knows in full, so the panel can offer their
+    // profile without another round trip.
+    entityId: p.entity_id || null,
   }));
   const linked = new Set(saved.map((p) => p.fromEntry).filter(Boolean));
 

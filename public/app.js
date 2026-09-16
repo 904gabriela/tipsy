@@ -3976,6 +3976,14 @@ async function showCharacter(id) {
     ${c.system_prompt ? fold('Their own instructions', c.system_prompt, 'replaces yours') : ''}
     ${c.linked_world ? `<div class="notice" style="margin-top:12px">Expects a lorebook called “${esc(c.linked_world)}”. Import that too, or its lore will be missing.</div>` : ''}
 
+    ${/* A card is what the model is told. The profile is everything known about
+         them, which is a larger thing and lives on its own page. */''}
+    ${c.entity_id ? `
+      <div class="row-actions" style="margin-top:var(--s5)">
+        <button class="btn" id="deep-profile">Everything known about ${esc(c.name.split(' ')[0])}</button>
+      </div>`
+    : `<div class="notice" style="margin-top:var(--s5)">This card is not joined to what your sources say about them yet. Organise a source about ${esc(c.name.split(' ')[0])} and Nexus can show them in full.</div>`}
+
     <div class="row-actions" style="margin-top:var(--s5)">
       <button class="btn" id="edit-char">Edit</button>
       <button class="btn" id="copy-char">Make a copy</button>
@@ -3985,6 +3993,16 @@ async function showCharacter(id) {
       <button class="btn primary" data-close>Close</button>
     </div>`, (root) => {
     wireFolds(root);
+    const deep = $('#deep-profile', root);
+    if (deep) {
+      deep.addEventListener('click', () => {
+        // Inside a story they are part of, read them as that story sees them:
+        // what it carries, and what belongs to it alone. Everywhere else, the
+        // person as they travel.
+        const here = state.story && (state.story.characters || []).some((x) => x.id === id) ? state.story.id : null;
+        openEntityProfile(c.entity_id, { storyId: here, back: () => showCharacter(id), title: c.name });
+      });
+    }
     $('#start-here', root).addEventListener('click', () => {
       closeSheet();
       draft.title = '';
@@ -4238,6 +4256,11 @@ function renderPersonaArea(root, data, currentId) {
       </div>
       <button class="btn" id="edit-persona">${current && !current.fromEntry ? 'Edit' : current ? 'Open' : 'Create'}</button>
     </div>
+    ${/* Someone you play has as much to them as anyone the AI plays. */''}
+    ${current && current.entityId ? `
+      <div class="row-actions" style="margin-top:8px">
+        <button class="btn quiet" data-persona-profile="${esc(current.entityId)}">Everything known about ${esc(current.name.split(' ')[0])}</button>
+      </div>` : ''}
 
     ${personas.length ? `
       <div class="sec-head">Your characters</div>
@@ -4283,6 +4306,12 @@ function renderPersonaArea(root, data, currentId) {
   if (!area.dataset.wired) {
     area.dataset.wired = '1';
     area.addEventListener('click', async (e) => {
+      const deep = e.target.closest('[data-persona-profile]');
+      if (deep) {
+        // Read as this story sees them: their own knowledge, and this story's.
+        openEntityProfile(deep.dataset.personaProfile, { storyId: state.story?.id || null, back: panelPersona });
+        return;
+      }
       const pick = e.target.closest('[data-use-persona]');
       if (pick) {
         const fresh = await get(`/api/stories/${state.story.id}/playable`);
@@ -7557,4 +7586,189 @@ async function saveReview() {
   } finally {
     review.saving = false;
   }
+}
+
+// ========================================================================
+// A PERSON, IN FULL
+//
+// Three things that are not the same thing: the card or persona a story uses,
+// the person themselves, and everything that is known about them. This screen
+// shows all three without pretending they are one — and shows nothing else.
+//
+// Read-only. Nothing here organises material, edits it, or decides what a model
+// is told: being on someone's page is not being in the prompt.
+// ========================================================================
+
+const CATEGORY_PILL = {
+  identity: 'Identity', appearance: 'Appearance', personality: 'Personality', speech: 'Speech',
+  behavior: 'Behaviour', backstory: 'Backstory', psychology: 'Psychology', relationship: 'Relationship',
+  secret: 'Secret', goal: 'Goal', skill: 'Skill', ability: 'Ability', equipment: 'Equipment',
+  belief: 'Belief', habit: 'Habit', profile: 'Profile', background: 'Background', rule: 'Rule',
+  event: 'Event', item: 'Thing', direction: 'Directive', reference: 'Reference', other: 'Other',
+};
+const ENTITY_WORD = { person: 'Person', place: 'Place', faction: 'Group', item: 'Thing', event: 'Event', concept: 'Idea' };
+const CORE_SLOTS = [
+  ['identity', 'Who they are'], ['appearance', 'How they look'], ['personality', 'What they are like'],
+  ['behavior', 'How they act'], ['speechStyle', 'How they talk'],
+];
+
+/**
+ * Open someone's page. `back` says where the arrow goes, so this can be reached
+ * from a card, from a story, or from another person's page without losing the
+ * way home.
+ */
+async function openEntityProfile(entityId, { storyId = null, back = null, title = 'Profile' } = {}) {
+  subSheet(title, `${backRow()}<div class="empty">Reading everything known…</div>`, null, back);
+  let p;
+  try {
+    p = await get(`/api/entities/${entityId}/profile${storyId ? `?storyId=${encodeURIComponent(storyId)}` : ''}`);
+  } catch (err) {
+    sheet(title, `${backRow()}<div class="empty">${esc(err.message || 'That could not be read.')}</div>`);
+    return;
+  }
+  renderEntityProfile(p, { storyId, back });
+}
+
+/** One thing known about them, closed until asked for. */
+function knowledgeItem(x) {
+  const flags = [
+    x.needsRecheck ? '<span class="ent-flag warn">needs review</span>' : '',
+    !x.activation.enabled ? '<span class="ent-flag">switched off</span>' : '',
+  ].filter(Boolean).join('');
+  return `
+    <div class="edit-card">
+      <div class="edit-head">
+        <b>${esc(x.title)}</b>
+        <span class="n">${esc(CATEGORY_PILL[x.category] || x.category)}${flags}</span>
+        <button class="fold" aria-expanded="false">▾</button>
+      </div>
+      <div class="edit-body" hidden>
+        ${x.needsRecheck ? '<div class="why">The source text changed after this reading was saved. What you approved is still what stands.</div>' : ''}
+        <p class="prose-plain">${esc(x.text)}</p>
+        ${x.related.length ? `<div class="chips" style="margin-top:8px">
+          ${x.related.map((r) => `<button class="chip-tag" data-go-entity="${esc(r.id)}">${esc(r.name)}</button>`).join('')}
+        </div>` : ''}
+        <details><summary>Where this comes from</summary>
+          <div class="fired-row"><span class="t">From</span><span class="w">${esc(x.provenance.sourceName)}</span></div>
+          <div class="fired-row"><span class="t">Originally stored as</span><span class="w">${esc(x.provenance.storedKind)}</span></div>
+          <div class="fired-row"><span class="t">Reaches the story</span><span class="w">${x.activation.constant ? 'always' : x.activation.keys.length ? 'when it comes up' : 'not on its own'}</span></div>
+          ${x.activation.keys.length ? `<div class="fired-row"><span class="t">Trigger words</span><span class="w">${esc(x.activation.keys.slice(0, 8).join(', '))}</span></div>` : ''}
+          <div class="fired-row"><span class="t">Switched on</span><span class="w">${x.activation.enabled ? 'yes' : 'no'}</span></div>
+          <div class="why" style="margin-top:6px">Being on this page does not put it in the story. Each entry still decides that for itself.</div>
+        </details>
+      </div>
+    </div>`;
+}
+
+/**
+ * One core slot: enough to know them at a glance, and the rest a tap away.
+ *
+ * Cards carry whole essays in a single field. Printing one in full turns the
+ * top of the page into a wall, which is the opposite of what a profile is for.
+ */
+function coreSlot(label, value) {
+  const text = String(value || '').trim();
+  const cut = text.length > 300 ? text.slice(0, 300).replace(/\s+\S*$/, '') : text;
+  return `
+    <div class="ent-slot">
+      <div class="ent-slot-label">${esc(label)}</div>
+      <p class="prose-plain">${esc(cut)}${cut.length < text.length ? '…' : ''}</p>
+      ${cut.length < text.length ? `<details class="ent-more"><summary>The rest of it</summary><p class="prose-plain">${esc(text)}</p></details>` : ''}
+    </div>`;
+}
+
+/** A display group, with whatever it nests inside it. */
+function knowledgeGroup(g) {
+  return `
+    <div class="edit-card ent-group">
+      <div class="edit-head"><b>${esc(g.name)}</b><span class="n">${num(g.count)}</span>
+        <button class="fold" aria-expanded="false">▾</button></div>
+      <div class="edit-body" hidden>
+        ${g.items.map(knowledgeItem).join('')}
+        ${g.sub.map((s) => `<div class="sec-head">${esc(s.name)}</div>${s.items.map(knowledgeItem).join('')}`).join('')}
+      </div>
+    </div>`;
+}
+
+function renderEntityProfile(p, { storyId = null, back = null } = {}) {
+  const card = p.resources.character;
+  const persona = p.resources.persona;
+  // What they are here: a card a story plays, someone you play, or someone who
+  // exists only in what has been written about them.
+  const standing = card ? 'Character card' : persona ? 'Played by you' : 'Lore-backed person';
+  const face = card?.avatar || persona?.avatar || null;
+  const core = p.core ? CORE_SLOTS.filter(([k]) => String(p.core[k] || '').trim()) : [];
+
+  const html = `
+    ${backRow()}
+    <div class="hero ent-hero">
+      <span class="hero-art">${face ? `<img src="${esc(face)}" alt="">` : `<span class="letter">${esc(p.entity.name[0].toUpperCase())}</span>`}</span>
+      <div class="hero-text">
+        <div class="ent-kind">${esc(ENTITY_WORD[p.entity.type] || 'Person')} · ${esc(standing)}</div>
+        ${p.entity.aliases.length ? `<div class="hero-alias">Also called ${esc(p.entity.aliases.slice(0, 4).join(', '))}</div>` : ''}
+        ${p.story ? `<div class="ent-where">Read as ${esc(p.story.title)} sees them</div>` : ''}
+      </div>
+    </div>
+
+    ${core.length ? `
+      <div class="band">Always true of them</div>
+      <div class="ent-core">
+        ${core.map(([k, label]) => coreSlot(label, p.core[k])).join('')}
+      </div>` : ''}
+
+    ${p.knowledge.reusable.length ? `
+      <div class="band">What is known about them${p.story ? ', wherever they go' : ''}</div>
+      ${p.knowledge.reusable.map(knowledgeGroup).join('')}` : ''}
+
+    ${p.knowledge.story.length ? `
+      <div class="band">In ${esc(p.story.title)}</div>
+      <div class="why" style="margin-bottom:10px">True in this story only. It travels nowhere else.</div>
+      ${p.knowledge.story.map(knowledgeGroup).join('')}` : ''}
+
+    ${!p.knowledge.reusable.length && !p.knowledge.story.length ? `
+      <div class="empty">Nothing has been organised about ${esc(p.entity.name)} yet.${core.length ? ' What their card says is above.' : ''}</div>` : ''}
+
+    ${p.related.length ? `
+      <div class="band">People and places around them</div>
+      <div class="ent-near">
+        ${p.related.map((r) => `
+          <button class="ent-near-row" data-go-entity="${esc(r.id)}">
+            <span class="ent-near-name">${esc(r.name)}</span>
+            <span class="ent-near-why">${esc(ENTITY_WORD[r.type] || 'Person')} · ${esc(plural(r.entries.length, 'entry', 'entries'))}</span>
+          </button>`).join('')}
+      </div>` : ''}
+
+    <details class="ent-details">
+      <summary>Details</summary>
+      <div class="fired-row"><span class="t">Knowledge shown</span><span class="w">${num(p.counts.total)}</span></div>
+      ${p.story ? `<div class="fired-row"><span class="t">Of that, this story's own</span><span class="w">${num(p.counts.story)}</span></div>` : ''}
+      ${p.counts.hidden ? `<div class="fired-row"><span class="t">Not shown here</span><span class="w">${num(p.counts.hidden)} from sources this view does not carry</span></div>` : ''}
+      ${p.attention.recheck ? `<div class="fired-row"><span class="t">Changed since you approved them</span><span class="w">${num(p.attention.recheck)}</span></div>` : ''}
+      ${p.attention.disabled ? `<div class="fired-row"><span class="t">Switched off</span><span class="w">${num(p.attention.disabled)}</span></div>` : ''}
+      ${card ? `<div class="fired-row"><span class="t">Character card</span><span class="w">${esc(card.name)}</span></div>` : ''}
+      ${persona ? `<div class="fired-row"><span class="t">Persona</span><span class="w">${esc(persona.name)}</span></div>` : ''}
+      ${p.attention.unorganisedSources.length ? `
+        <div class="why" style="margin-top:8px">Some of their material has not been organised yet:</div>
+        ${p.attention.unorganisedSources.map((s) => `
+          <div class="row-actions" style="margin-top:6px">
+            <button class="btn quiet" data-organise-source="${esc(s.sourceId)}">Review ${esc(s.name)}</button>
+            <span class="rv-hint-inline">${num(s.organised)} of ${num(s.entries)} organised</span>
+          </div>`).join('')}` : ''}
+    </details>
+
+    <div class="sheet-actions"><button class="btn primary" data-close>Close</button></div>`;
+
+  sheet(p.entity.name, html, (root) => {
+    wireFolds(root);
+    root.addEventListener('click', (e) => {
+      const go = e.target.closest('[data-go-entity]');
+      if (go) {
+        // Walking from one person to another keeps the way back through them.
+        openEntityProfile(go.dataset.goEntity, { storyId, back: () => renderEntityProfile(p, { storyId, back }) });
+        return;
+      }
+      const organise = e.target.closest('[data-organise-source]');
+      if (organise) { openSourceReview(organise.dataset.organiseSource); return; }
+    });
+  });
 }
