@@ -7876,6 +7876,7 @@ const AUTHOR_CATEGORIES = [
   ['equipment', 'Equipment'], ['secret', 'Secret'], ['event', 'Event'], ['item', 'Thing'],
   ['background', 'Background'], ['other', 'Other'],
 ];
+const CAT_LABEL = Object.fromEntries(AUTHOR_CATEGORIES);
 
 /** Words worth offering as triggers, from the title, never from their name. */
 function suggestTriggers(title, avoidNames = []) {
@@ -7936,17 +7937,20 @@ function openKnowledgeForm({ profile, storyId = null, preset = {}, entry = null,
         ${AUTHOR_CATEGORIES.map(([k, label]) => `<option value="${k}"${k === cat ? ' selected' : ''}>${esc(label)}</option>`).join('')}
       </select>
     </div>
+    ${/* Where it appears on their page. Said as placement, because that is all
+         it is — a person filling this in never needs the word displayPath. */''}
     <div class="field">
-      <label for="kn-group">Group</label>
+      <label for="kn-group">Show under</label>
       <select id="kn-group">
-        <option value="">Its type is enough</option>
+        <option value="">Directly under ${esc(CAT_LABEL[cat] || 'its type')}</option>
         ${groups.map((g) => `<option value="${esc(g.path.join('›'))}"${path && path.join('›') === g.path.join('›') ? ' selected' : ''}>${esc(g.label)}</option>`).join('')}
         ${path && !groups.some((g) => g.path.join('›') === path.join('›')) ? `<option value="${esc(path.join('›'))}" selected>${esc(path.join(' › '))}</option>` : ''}
-        <option value="__new">A group of your own…</option>
+        <option value="__new">A heading of your own…</option>
       </select>
       <input type="text" id="kn-new-group" placeholder="Quirk, Magic, Clan…" hidden autocomplete="off">
-      <div class="why">A group is your own word for where this belongs. It changes nothing about what it means.</div>
+      <div class="why">Only where it sits on their page. It changes nothing about what it means.</div>
     </div>
+    <div id="kn-rel-main"${cat === 'relationship' ? '' : ' hidden'}></div>
 
     <div class="field">
       <label>When should Nexus use this?</label>
@@ -7978,13 +7982,15 @@ function openKnowledgeForm({ profile, storyId = null, preset = {}, entry = null,
             <span class="opt-why">Adds it to ${esc(p.entity.name.split(' ')[0])}'s reusable knowledge. Stories still use reusable material only when it is attached to them.</span>
           </button>
         </div>` : ''}
-      <div class="field" style="margin-top:10px">
-        <label>Connected to</label>
+      ${/* One block, and it moves: a relationship's first question is who it is
+           with, so for that type this stands in the form itself. */''}
+      <div id="kn-rel-home"><div class="field" id="kn-rel-block" style="margin-top:10px">
+        <label id="kn-rel-label">Connected to</label>
         ${known.length ? `<div class="chips" id="kn-related">
           ${known.map((k) => `<button type="button" class="chip-tag" data-relate-entity="${esc(k.id)}" aria-pressed="${chosenRelated.has(k.id)}">${esc(k.name)}</button>`).join('')}
         </div>` : '<div class="why">Nobody else is on this profile yet.</div>'}
-        <div class="why">Someone else who is involved, without this being about them.</div>
-      </div>
+        <div class="why" id="kn-rel-why">Someone else who is involved, without this being about them.</div>
+      </div></div>
       <div class="field">
         <label for="kn-prob">How often it is used, when it is triggered</label>
         <input type="number" id="kn-prob" min="1" max="100" value="${entry?.activation?.probability ?? 100}">
@@ -8025,10 +8031,14 @@ function openKnowledgeForm({ profile, storyId = null, preset = {}, entry = null,
       if (rel) { rel.setAttribute('aria-pressed', rel.getAttribute('aria-pressed') === 'true' ? 'false' : 'true'); return; }
       const reuse = e.target.closest('#kn-reusable');
       if (reuse) {
+        // The sentence at the top is the scope. It moves the moment the choice
+        // does, so what Save will do is never a surprise — and it does not
+        // promise attachment, because reusable material is not attached to
+        // anything by being written.
         const on = reuse.getAttribute('aria-pressed') !== 'true';
         reuse.setAttribute('aria-pressed', String(on));
         $('#kn-scope', root).innerHTML = on
-          ? `About <b>${esc(p.entity.name)}</b>. It can be used across stories, and this story will use it because it is theirs and attached.`
+          ? `About <b>${esc(p.entity.name)}</b>. Saved to their reusable knowledge, for use across stories. A story uses it only when that knowledge is attached.`
           : `About <b>${esc(p.entity.name)}</b>. It belongs to <b>${esc(p.story.title)}</b> and stays there.`;
       }
     });
@@ -8040,9 +8050,29 @@ function openKnowledgeForm({ profile, storyId = null, preset = {}, entry = null,
       if (!newGroup.hidden) newGroup.focus();
     });
 
-    const del = $('#kn-del', root);
-    if (del) {
-      del.addEventListener('click', async () => {
+    // The type steers two things beside itself: what "directly under" means,
+    // and whether the who-is-it-with question belongs in the form proper.
+    const catSel = $('#kn-cat', root);
+    const relBlock = $('#kn-rel-block', root);
+    const relMain = $('#kn-rel-main', root);
+    const relHome = $('#kn-rel-home', root);
+    const placeRel = () => {
+      const isRel = catSel.value === 'relationship';
+      $('#kn-rel-label', root).textContent = isRel ? 'Who is this relationship with?' : 'Connected to';
+      $('#kn-rel-why', root).textContent = isRel
+        ? 'Optional. A relationship can be written before the other person has a page.'
+        : 'Someone else who is involved, without this being about them.';
+      (isRel ? relMain : relHome).appendChild(relBlock);
+      relMain.hidden = !isRel;
+      groupSel.options[0].textContent = `Directly under ${CAT_LABEL[catSel.value] || 'its type'}`;
+    };
+    catSel.addEventListener('change', placeRel);
+    placeRel();
+
+    // Named apart from the fetch helper it calls, which a shadow would silently break.
+    const delBtn = $('#kn-del', root);
+    if (delBtn) {
+      delBtn.addEventListener('click', async () => {
         if (!confirm('Delete this? What it says goes with it.')) return;
         try {
           const out = await del(`/api/entities/${p.entity.id}/knowledge/${entry.entryId}${storyId ? `?storyId=${encodeURIComponent(storyId)}` : ''}`);
@@ -8076,7 +8106,12 @@ function openKnowledgeForm({ profile, storyId = null, preset = {}, entry = null,
         const out = editing
           ? await patch(`/api/entities/${p.entity.id}/knowledge/${entry.entryId}`, body)
           : await post(`/api/entities/${p.entity.id}/knowledge`, body);
-        toast(editing ? 'Saved.' : `Added to ${p.entity.name.split(' ')[0]}.`, { kind: 'good' });
+        // The toast repeats the scope, so where it went is confirmed rather
+        // than assumed: this story's own material, or their reusable knowledge.
+        const first = p.entity.name.split(' ')[0];
+        toast(editing ? 'Saved.'
+          : body.storyId ? `Added to ${first} in ${p.story.title}.`
+            : `Added to ${first}'s reusable knowledge.`, { kind: 'good' });
         renderEntityProfile(out.profile, { storyId, back });
       } catch (err) { toast(err.message || 'That could not be saved.', { kind: 'bad' }); }
     });
