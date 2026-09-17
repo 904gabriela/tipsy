@@ -102,6 +102,19 @@ export function storyMaterialSource(db, storyId, { create = true } = {}) {
     db.raw.prepare('INSERT OR IGNORE INTO story_lorebooks (story_id,lorebook_id) VALUES (?,?)').run(storyId, found.id);
     return found.id;
   }
+  // A story built before this existed already has one of these, under the old
+  // Builder's marker. It is the same thing by another name, so it is adopted
+  // rather than duplicated — a second container would give the reader two
+  // identical "Story material" rows and let the two drift apart. Nothing about
+  // the old one is rewritten; it is only recognised.
+  const legacy = db.raw.prepare(`
+    SELECT id FROM lorebooks
+     WHERE json_valid(original) AND json_extract(original, '$.generatedFor') = ?
+     ORDER BY created_at LIMIT 1`).get(storyId);
+  if (legacy) {
+    db.raw.prepare('INSERT OR IGNORE INTO story_lorebooks (story_id,lorebook_id) VALUES (?,?)').run(storyId, legacy.id);
+    return legacy.id;
+  }
   if (!create) return null;
   const story = db.raw.prepare('SELECT id, title FROM stories WHERE id=?').get(storyId);
   if (!story) throw new AuthoringError('That story is not in your library.');

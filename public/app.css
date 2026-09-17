@@ -2057,6 +2057,9 @@ body:has(#screen-library[hidden]) #toasts { bottom: calc(var(--s5) + env(safe-ar
 .rv-row-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .rv-row-label { font-size: 15px; font-weight: 500; overflow-wrap: anywhere; }
 .rv-row-sub { font-size: 12.5px; color: var(--ink-soft); line-height: 1.35; overflow-wrap: anywhere; }
+/* What tells two same-named sources apart. Quiet: it is a disambiguator, not
+   a fact anybody came here for. */
+.rv-row-tell { display: block; font-size: 12.5px; font-weight: 400; color: var(--ink-faint); }
 .rv-count { flex: 0 0 auto; font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .rv-chev { flex: 0 0 auto; color: var(--ink-faint); font-size: 20px; line-height: 1; }
 

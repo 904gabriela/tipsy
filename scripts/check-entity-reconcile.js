@@ -65,7 +65,7 @@ section('what never merges');
   ok('even an explicit ref cannot cross types', refCross.decision === 'new', refCross.reason);
   const ghostly = classifyGenerated({ name: 'The Ghost', type: 'person' }, INVENTORY);
   ok('an exact match against a guess is a question, not a merge',
-    ghostly.decision === 'possible' && /not confirmed/.test(ghostly.candidates[0].why), ghostly.candidates[0].why);
+    ghostly.decision === 'possible' && /nobody has confirmed/.test(ghostly.candidates[0].why), ghostly.candidates[0].why);
   const far = classifyGenerated({ name: 'Rosa Delgado', type: 'person' }, INVENTORY);
   ok('mere similarity of feel is nothing', far.decision === 'new');
 }

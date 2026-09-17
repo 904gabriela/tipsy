@@ -18,6 +18,7 @@ import { planComposition, writeComposition, sourceRemovalPreview, removeSource, 
 import { planGenerated, writeGenerated, storyPackage } from '../src/builder/apply.js';
 import { readCompositionMaterial, entityInventory, setEntityExclusion, backfillNpcIdentities } from '../src/semantics/composition.js';
 import { createEntity, declareInSource, setEntrySemantics, setRelation, setSourceRole, bindPersonaEntity, resolveNpcEntity, areDistinct, semanticViews } from '../src/semantics/store.js';
+import { organizationState } from '../src/semantics/authority.js';
 import { createEntityKnowledge } from '../src/semantics/authoring.js';
 
 let pass = 0; let fail = 0;
@@ -145,6 +146,33 @@ ok('reference-pack material is reference, not world dumping', inSection('other')
 ok('the roles are named for the screen', draft.sourceRoles?.[framework] === 'narrative-framework' && draft.sourceRoles?.[refpack] === 'reference-pack');
 ok('a framework invents no cast, no places, no factions',
   !cast.some((r) => [fw1, fw2].includes(r.entryId)) && !inSection('places').includes('Stay in the scene') && !inSection('factions').includes('Loose note'));
+
+section('a role places an entry; it does not organise one');
+// Where an entry is shown and what anybody has decided it MEANS are two
+// different facts. A role settles the first and must never settle the second:
+// an unorganised directive sitting under Directions is still unorganised, and
+// the source it came from is still only partly organised. Otherwise approving
+// one role would silently launder a hundred entries into canon.
+{
+  const roleOnly = db.raw.prepare('SELECT * FROM entry_semantics WHERE entry_id=?').get(fw2);
+  ok('the entry has no semantics row at all', !roleOnly, JSON.stringify(roleOnly));
+  ok('so it has no approved category', !roleOnly?.category);
+  ok('and no approved subject or defines',
+    db.raw.prepare("SELECT COUNT(*) c FROM entry_relations WHERE entry_id=? AND status='approved'").get(fw2).c === 0
+    && !roleOnly?.defines_entity_id);
+  const fwEntries = db.listEntries(framework);
+  const fwViews = readCompositionMaterial(db, [framework]).views;
+  const view = fwViews.get(fw2);
+  ok('the authority layer still calls it unorganised', view.state === 'none' && view.authoritative === false, view.state);
+  // And the source's own state stays truthful: one approved entry of two.
+  const state = organizationState(fwEntries, fwViews, []);
+  ok('the source is partial, not organised, however clear its role is',
+    state.coverage === 'partial' && state.approved === 1 && state.unresolved === 1,
+    `${state.coverage}: ${state.approved} of ${state.total} approved`);
+  ok('and its approved role changed none of those numbers',
+    readCompositionMaterial(db, [framework]).sources.get(framework).role.role === 'narrative-framework'
+    && state.coverage === 'partial');
+}
 
 section('the person you play');
 const withPersona = composeAll([book], { personaEntityId: reiko });
@@ -353,6 +381,35 @@ ok('and the invented person does not exist yet', !one("SELECT 1 x FROM lore_enti
 db.transaction(() => writeGenerated(db, bstory, previewed, { title: 'Built', builder: { mode: 'build' } }));
 ok('only accepting it makes it so', one("SELECT COUNT(*) c FROM entry_semantics WHERE origin='generated' AND status='approved'").c > before
   && !!one("SELECT 1 x FROM lore_entities WHERE canonical_name='Ines Aldabra'"));
+
+section('a story built before all this had one of these already');
+// The old Builder marked its container {"generatedFor": story}. A story that
+// carries one must not end up with a second container beside it: the reader
+// would see two rows both called "Story material", and the two would drift.
+// The old one is recognised, never rewritten, and never duplicated.
+{
+  const oldStory = db.createStory({ title: 'Built Long Ago' });
+  const oldBook = db.createLorebook('Built Long Ago — Story Builder', '');
+  db.raw.prepare("UPDATE lorebooks SET original=json_object('generatedFor', ?) WHERE id=?").run(oldStory, oldBook);
+  db.raw.prepare('INSERT OR IGNORE INTO story_lorebooks (story_id,lorebook_id) VALUES (?,?)').run(oldStory, oldBook);
+  const before = one('SELECT original o, name n FROM lorebooks WHERE id=?', oldBook);
+  const booksNow = () => q('SELECT lorebook_id FROM story_lorebooks WHERE story_id=?', oldStory).length;
+  const was = booksNow();
+
+  const written = createEntityKnowledge(db, {
+    entityId: carlo, storyId: oldStory, title: 'Something written by hand',
+    content: 'Added long after the story was built.',
+    category: 'habit', activation: { mode: 'always', keys: [] },
+  });
+  ok('hand-written material joins the container the story already had', written.lorebookId === oldBook, written.lorebookId);
+  ok('and no second one is made', booksNow() === was, `${was} → ${booksNow()}`);
+  const after = one('SELECT original o, name n FROM lorebooks WHERE id=?', oldBook);
+  ok('the old marker and name are left exactly as they were', after.o === before.o && after.n === before.n, after.o);
+  ok('so the story sheet has one Story-material row, not two',
+    q(`SELECT l.id FROM story_lorebooks sl JOIN lorebooks l ON l.id=sl.lorebook_id
+        WHERE sl.story_id=? AND COALESCE(json_extract(l.original,'$.generatedFor'), json_extract(l.original,'$.managedFor.storyId'))=?`,
+    oldStory, oldStory).length === 1);
+}
 
 section('reusable material stays where it was put');
 const reikoKnowledge = createEntityKnowledge(db, {

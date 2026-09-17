@@ -77,7 +77,13 @@ export function classifyGenerated(g, inventory, isSettled = () => false) {
     return {
       decision: 'possible',
       entity: null,
-      candidates: exact.map((x) => ({ id: x.id, name: x.name, why: x.status === 'unconfirmed' ? 'the same name, though that entity is not confirmed yet' : 'the same name' })),
+      candidates: exact.map((x) => ({
+        id: x.id,
+        name: x.name,
+        why: x.status === 'unconfirmed'
+          ? 'They have the same name, and nobody has confirmed that one yet.'
+          : 'They have the same name.',
+      })),
       reason: exact.length > 1 ? 'more than one entity answers to this name' : 'the matching entity is unconfirmed',
     };
   }
@@ -92,7 +98,15 @@ export function classifyGenerated(g, inventory, isSettled = () => false) {
     return {
       decision: 'possible',
       entity: null,
-      candidates: near.map((x) => ({ id: x.id, name: x.name, why: `“${g.name}” and “${x.name}” share a name` })),
+      // Said as what it is: one name sits inside the other. They are not the
+      // same words, and the card must not claim they are.
+      candidates: near.map((x) => ({
+        id: x.id,
+        name: x.name,
+        why: contains(g.name, x.name) || namesOf(x).some((n) => contains(g.name, n))
+          ? `“${x.name}” is part of the longer name “${g.name}”.`
+          : `“${g.name}” is part of the longer name “${x.name}”.`,
+      })),
       reason: 'it may be someone already here under a fuller or shorter name',
     };
   }

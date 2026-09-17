@@ -1151,6 +1151,11 @@ function startBlocker() {
   return '';
 }
 
+// How to name the thing in "this may be the same ___ as".
+const SAME_AS = {
+  person: 'person', place: 'place', faction: 'group', item: 'thing', event: 'event', concept: 'idea',
+};
+
 /**
  * The Builder said "Marco Rossi"; the story already knows Marco. Nobody merges
  * that but the reader, and nothing applies while the question stands.
@@ -1167,7 +1172,10 @@ function dupeCards() {
       <div class="edit-card rv-dupe">
         <div class="edit-head"><b>${esc(x.name)}</b><span class="n">${esc(x.type)}</span></div>
         <div class="edit-body" style="display:block">
-          <div class="why">This may be ${esc(x.candidates.map((c) => c.name).join(' or '))} — ${esc(x.candidates[0].why)}.</div>
+          ${/* What the question is, then why it is being asked. Never a claim
+                that two different names are the same words. */''}
+          <div class="why">This may be the same ${esc(SAME_AS[x.type] || 'one')} as ${esc(x.candidates.map((c) => c.name).join(' or '))}.</div>
+          <div class="why dim" style="margin-top:2px">${esc(x.candidates[0].why)}</div>
           <div class="row-actions" style="margin-top:8px">
             ${x.candidates.map((c) => `<button class="btn${chosen?.use === 'existing' && chosen.id === c.id ? ' primary' : ''}"
               data-dupe-use="${esc(x.draftId)}" data-dupe-id="${esc(c.id)}">Use ${esc(c.name)}</button>`).join('')}
@@ -1261,7 +1269,13 @@ function reviewRoot() {
       <div class="rv-label">Sources</div>
       ${d.sources?.length ? `<button class="rv-row" data-open="sources">
         <span class="rv-row-main">
-          ${d.sources.map((s) => `<span class="rv-row-label">${esc(s.name)}</span>`).join('')}
+          ${/* One line per source. Two sources can genuinely carry the same
+                name — the same pack saved twice, at different sizes — and two
+                identical lines say nothing, so those say how big each one is. */''}
+          ${d.sources.map((s) => {
+    const sameName = d.sources.filter((o) => o.name === s.name).length > 1;
+    return `<span class="rv-row-label">${esc(s.name)}${sameName ? `<span class="rv-row-tell">${num(s.entries)} entries</span>` : ''}</span>`;
+  }).join('')}
           <span class="rv-row-sub">${num(d.totals?.entries || 0)} entries, all of them still in their source</span>
         </span>
         <span class="rv-chev" aria-hidden="true">›</span>
