@@ -4308,7 +4308,7 @@ function renderPersonaArea(root, data, currentId) {
     area.addEventListener('click', async (e) => {
       const deep = e.target.closest('[data-persona-profile]');
       if (deep) {
-        // Read as this story sees them: their own knowledge, and this story's.
+        // In this story: their reusable knowledge that it carries, and its own.
         openEntityProfile(deep.dataset.personaProfile, { storyId: state.story?.id || null, back: panelPersona });
         return;
       }
@@ -7772,7 +7772,7 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
       ${p.counts.hidden ? `<div class="fired-row"><span class="t">Not shown here</span><span class="w">${num(p.counts.hidden)} from sources this view does not carry</span></div>` : ''}
       ${p.attention.recheck ? `<div class="fired-row"><span class="t">Changed since you approved them</span><span class="w">${num(p.attention.recheck)}</span></div>` : ''}
       ${p.attention.disabled ? `<div class="fired-row"><span class="t">Switched off</span><span class="w">${num(p.attention.disabled)}</span></div>` : ''}
-      ${card ? `<div class="fired-row"><span class="t">Character card</span><span class="w">${esc(card.name)}</span></div>` : ''}
+      ${card ? `<div class="fired-row"><span class="t">Character</span><span class="w">${esc(card.name)}</span></div>` : ''}
       ${persona ? `<div class="fired-row"><span class="t">Persona</span><span class="w">${esc(persona.name)}</span></div>` : ''}
       ${p.attention.unorganisedSources.length ? `
         <div class="why" style="margin-top:8px">Some of their material has not been organised yet:</div>
