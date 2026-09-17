@@ -447,6 +447,48 @@ section('the old one-tap Delete buttons obey the same rules');
   ok('something nothing stands on still goes in one tap', !db.getLorebook(spare) && r.deleted.length === 1);
 }
 
+section('deleting who you play never quietly changes a story');
+{
+  // The database would empty the slot in every story using it. That is a change
+  // to a story nobody asked for, so nothing is allowed to reach that cascade.
+  const reiko = db.savePersona({ name: 'Reiko', description: 'You.' });
+  const oneStory = db.createStory({ title: 'The Saint', personaId: reiko });
+  ok('a persona a story is played as is in use',
+    used('persona', reiko).used && /You play as Reiko in The Saint/.test(used('persona', reiko).reasons.map((r) => r.text).join('; ')),
+    used('persona', reiko).reasons.map((r) => r.text).join('; '));
+  const e = threw(() => deleteOneResource(db, 'persona', reiko));
+  ok('deleting it is refused', e instanceof LibraryDeleteError, e?.message);
+  ok('and the story still plays as them', one('SELECT persona_id p FROM stories WHERE id=?', oneStory).p === reiko);
+
+  const second = db.createStory({ title: 'A Saint-Like Story', personaId: reiko });
+  const e2 = threw(() => deleteOneResource(db, 'persona', reiko));
+  ok('with several stories, all of them are named',
+    /The Saint/.test(e2?.message || '') && /A Saint-Like Story/.test(e2?.message || ''), e2?.message);
+  ok('and none of them changed',
+    one('SELECT persona_id p FROM stories WHERE id=?', oneStory).p === reiko
+    && one('SELECT persona_id p FROM stories WHERE id=?', second).p === reiko);
+  ok('the refusal says nothing about the database',
+    !/FOREIGN KEY|constraint|persona_id|row id|SET NULL/i.test(e2?.message || ''), e2?.message);
+
+  // Who they are, and what is written about that person, are not theirs to take.
+  const reikoEntity = createEntity(db, { type: 'person', name: 'Reiko Ryuusui', aliases: [] });
+  db.raw.prepare('UPDATE personas SET entity_id=? WHERE id=?').run(reikoEntity, reiko);
+  const knowledgeOfReiko = createEntityKnowledge(db, {
+    entityId: reikoEntity, title: 'Advanced techniques', content: 'She reads a wake like a page.',
+    category: 'skill', activation: { mode: 'always', keys: [] },
+  });
+  // Taken out of both stories first, the way the refusal asks.
+  db.raw.prepare('UPDATE stories SET persona_id=NULL WHERE persona_id=?').run(reiko);
+  ok('once no story plays as them, it is unused', !used('persona', reiko).used);
+  const r = deleteOneResource(db, 'persona', reiko);
+  ok('and the persona goes', !db.getPersona(reiko) && r.deleted.length === 1);
+  ok('the person they were survives', !!one('SELECT 1 x FROM lore_entities WHERE id=?', reikoEntity));
+  ok('the knowledge written about that person survives',
+    !!db.getLorebook(knowledgeOfReiko.lorebookId) && db.listEntries(knowledgeOfReiko.lorebookId).length === 1);
+  ok('and both stories are still there, untouched but for the slot they emptied themselves',
+    !!db.getStory(oneStory) && !!db.getStory(second));
+}
+
 section('a persona never points at an entry that is gone');
 {
   const book = db.createLorebook('Persona source', '');

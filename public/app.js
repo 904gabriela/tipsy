@@ -802,8 +802,12 @@ async function showCopiesAndVersions() {
             ${/* "Spare" is only true once something else is definitely staying.
                  While the choice is still open, neither copy is the spare one. */''}
             <span class="del-why">${esc(tell(i))}${held.length && i.redundant ? ' · spare' : ''}</span>
-            ${i.used || i.protected ? '<span class="del-why in-use">in use</span>'
-      : `<button class="btn quiet" data-keep="${gi}:${ii}">Keep this one</button>`}
+            ${/* Where a story already keeps one, the choice is made: that row
+                 says so, and the spares beside it are not offered a button that
+                 would choose nothing. Where nothing is decided, every row
+                 offers the same choice and none is called spare. */''}
+            ${i.used || i.protected ? '<span class="del-why in-use">Keeping this one</span>'
+      : held.length ? '' : `<button class="btn quiet" data-keep="${gi}:${ii}">Keep this one</button>`}
           </div>`).join('')}
         </div>
       </div>`;

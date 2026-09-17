@@ -29,8 +29,14 @@ export class LibraryDeleteError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
 }
 
-const TABLE = { character: 'characters', source: 'lorebooks', scenario: 'scenarios', world: 'frameworks' };
-const THE = { character: 'person', source: 'source', scenario: 'scenario', world: 'world' };
+const TABLE = {
+  character: 'characters', source: 'lorebooks', scenario: 'scenarios',
+  world: 'frameworks', persona: 'personas',
+};
+const THE = {
+  character: 'person', source: 'source', scenario: 'scenario',
+  world: 'world', persona: 'persona',
+};
 
 /** The selection as the server will treat it: known kinds, real ids, no repeats. */
 function clean(selection) {
@@ -168,8 +174,10 @@ export function applyLibraryDelete(db, selection, token, { safeOnly = true } = {
     for (const item of now.safe) {
       // The mapping from an import to this resource is a mapping to a living
       // thing. It goes with the thing; the import itself is history and stays.
-      db.raw.prepare('DELETE FROM import_resources WHERE kind=? AND resource_id=?')
-        .run(importKind(item.kind), item.id);
+      if (importKind(item.kind)) {
+        db.raw.prepare('DELETE FROM import_resources WHERE kind=? AND resource_id=?')
+          .run(importKind(item.kind), item.id);
+      }
       if (item.kind === 'character') {
         // Anything that arrived inside them is material of its own. The schema
         // clears the provenance; this is only belt and braces for a database
@@ -189,6 +197,11 @@ export function applyLibraryDelete(db, selection, token, { safeOnly = true } = {
       } else if (item.kind === 'world') {
         db.raw.prepare('UPDATE stories SET framework_id=NULL WHERE framework_id=?').run(item.id);
         db.deleteFramework(item.id);
+      } else if (item.kind === 'persona') {
+        // Nothing to unhook: a persona no story is playing is holding nothing
+        // up. Who they are, and anything written about that person, are not
+        // this persona's to take with it.
+        db.deletePersona(item.id);
       }
       done.push({ kind: item.kind, id: item.id, name: item.name });
     }

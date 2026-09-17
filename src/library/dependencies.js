@@ -19,9 +19,12 @@
 
 import { managedSource } from '../semantics/authoring.js';
 
-export const KINDS = ['character', 'source', 'scenario', 'world'];
+export const KINDS = ['character', 'source', 'scenario', 'world', 'persona'];
 
-const TABLE = { character: 'characters', source: 'lorebooks', scenario: 'scenarios', world: 'frameworks' };
+const TABLE = {
+  character: 'characters', source: 'lorebooks', scenario: 'scenarios',
+  world: 'frameworks', persona: 'personas',
+};
 const key = (kind, id) => `${kind}:${id}`;
 
 /** "The Saint", "The Saint and 2 others" — never a bare count with no name. */
@@ -48,6 +51,7 @@ function survey(db) {
     entityCards: q('SELECT story_id, character_id, entity_id FROM story_entity_cards'),
     resourceBooks: q('SELECT owner_kind, owner_id, lorebook_id FROM resource_lorebooks'),
     storyWorlds: q('SELECT id, title, framework_id, scenario_id FROM stories WHERE framework_id IS NOT NULL OR scenario_id IS NOT NULL'),
+    storyPersonas: q('SELECT id, title, persona_id FROM stories WHERE persona_id IS NOT NULL'),
     scenarioWorlds: q('SELECT id, name, framework_id FROM scenarios WHERE framework_id IS NOT NULL'),
     ownedBooks: q("SELECT lorebook_id, owner_story_id FROM source_semantics WHERE owner_story_id IS NOT NULL"),
     npcBooks: q(`SELECT DISTINCT n.story_id, e.lorebook_id FROM story_npcs n JOIN lore_entries e ON e.id = n.entry_id`),
@@ -134,6 +138,19 @@ function examine(db, kind, id, s) {
   if (kind === 'scenario') {
     const used = s.storyWorlds.filter((r) => r.scenario_id === id);
     if (used.length) keep(`Started ${named(used)}`, storiesOf(used.map((r) => r.id)));
+  }
+
+  if (kind === 'persona') {
+    // Who you play. The database would quietly empty that slot in every story
+    // using it — `stories.persona_id` is SET NULL — which is a change to a
+    // story nobody asked for. It stays as the last line of defence; nothing
+    // should ever reach it, so the question is asked here first.
+    const played = s.storyPersonas.filter((r) => r.persona_id === id);
+    if (played.length) keep(`You play as ${out.name} in ${named(played)}`, storiesOf(played.map((r) => r.id)));
+    // What they were made from, and who they are, are both left alone: the
+    // knowledge written about that person belongs to the person, not to this
+    // persona, and outlives it.
+    if (row.from_entry) out.detaches.push('What they were made from stays in its source');
   }
 
   if (kind === 'world') {

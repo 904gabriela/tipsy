@@ -1726,7 +1726,7 @@ route('POST', '/api/stories/:id/playable/:entryId', async (req, res, { id, entry
   db.updateStory(id, { personaId });
   return { id: personaId, persona: db.getPersona(personaId) };
 });
-route('DELETE', '/api/personas/:id', async (req, res, { id }) => { db.deletePersona(id); return { ok: true }; });
+route('DELETE', '/api/personas/:id', async (req, res, { id }) => deleteOne('persona', id));
 
 // --- portraits
 
