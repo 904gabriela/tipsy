@@ -98,7 +98,7 @@ export function importPackage(db, pkg, { decisions = {}, baseSettings = {}, file
   const fail = (path, message) => problems.push({ path, message });
 
   return db.transaction(() => {
-    const out = { entities: {}, characters: {}, personas: {}, sources: {}, entries: {}, stories: {} };
+    const out = { entities: {}, characters: {}, personas: {}, sources: {}, entries: {}, stories: {}, skipped: [] };
     const entityType = new Map((pkg.entities || []).map((e) => [e.ref, e.type]));
     const entityByRef = new Map((pkg.entities || []).map((e) => [e.ref, e]));
 
@@ -257,8 +257,12 @@ export function importPackage(db, pkg, { decisions = {}, baseSettings = {}, file
       for (const a of st.sources) if (a.recursion === 'block') db.setStoryLorebookRecursion(storyId, out.sources[a.source], 'block');
       for (const x of st.exclusions || []) db.excludeEntry(storyId, out.entries[x.source][x.entry]);
       for (const n of st.npcs || []) {
-        const entryId = out.entries[n.source][n.entry];
-        db.setStoryNpc(storyId, entryId, n.role, resolveNpcEntity(db, entryId));
+        // Who this is: the package's own word first, else what approved
+        // semantics say about the entry. Neither, and there is nobody to cast.
+        const entryId = out.entries[n.source]?.[n.entry] || null;
+        const entityId = (n.entity && out.entities[n.entity]) || (entryId ? resolveNpcEntity(db, entryId) : null);
+        if (!entityId) { out.skipped.push(`Cast member "${n.entry}" in "${st.title}": the package does not say who they are.`); continue; }
+        db.setStoryNpc(storyId, { entityId, role: n.role, profileEntryId: entryId });
       }
       // Which card is which person here: the story's own statement, else the card's.
       const byRef = new Map((pkg.characters || []).map((c) => [c.ref, c]));

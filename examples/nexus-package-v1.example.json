@@ -211,7 +211,7 @@
         { "source": "saint-material", "recursion": "block" }
       ],
       "exclusions": [{ "source": "patrick-knowledge", "entry": "old-rumour" }],
-      "npcs": [{ "source": "patrick-knowledge", "entry": "salvatore", "role": "supporting" }],
+      "npcs": [{ "source": "patrick-knowledge", "entry": "salvatore", "role": "supporting", "entity": "salvatore" }],
       "directions": "Keep the harbour cold and the stakes personal.",
       "premise": "A hero student and a fixer share a debt neither will name."
     }

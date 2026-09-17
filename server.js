@@ -2252,7 +2252,7 @@ route('GET', '/api/stories/:id/bible', async (req, res, { id }) => {
   const knownPeople = pool.filter((e) => (views.get(e.id)?.authoritative ? sectionOf(e) === 'casting' : e.kind === 'character'));
   // People in the cast who have no card: chosen in review, standing on an entry.
   const npcs = db.storyNpcs(id).map((n) => ({
-    entryId: n.entry_id, name: nameFromTitle(n.title).name || n.title, role: n.role, lorebookId: n.lorebook_id,
+    entryId: n.entry_id, name: n.name || nameFromTitle(n.title).name || n.title, role: n.role, lorebookId: n.lorebook_id,
     tokens: Math.ceil((n.chars || 0) / 4),
   }));
 
@@ -2298,10 +2298,16 @@ route('GET', '/api/stories/:id/bible', async (req, res, { id }) => {
     persona: story.persona ? { id: story.persona.id, name: story.persona.name, avatar: story.persona.avatar } : null,
     cast,
     npcs,
-    // Material this story ignores. Still in its source, not in this story.
-    excluded: db.storyExclusions(id).map((x) => ({
-      entryId: x.entry_id, title: nameFromTitle(x.title).name || x.title, kind: x.kind, lorebookId: x.lorebook_id,
-    })),
+    // Material this story ignores. Still in its source, not in this story —
+    // entries left out as entries, and people left out as people.
+    excluded: [
+      ...db.storyExclusions(id).map((x) => ({
+        entryId: x.entry_id, title: nameFromTitle(x.title).name || x.title, kind: x.kind, lorebookId: x.lorebook_id,
+      })),
+      ...db.raw.prepare(`SELECT x.entity_id, e.canonical_name, e.type FROM story_entity_exclusions x
+        JOIN lore_entities e ON e.id = x.entity_id WHERE x.story_id=? ORDER BY e.canonical_name`).all(id)
+        .map((x) => ({ entityId: x.entity_id, title: x.canonical_name, kind: x.type, lorebookId: null })),
+    ],
     lead: cast.find((c) => c.role === 'lead') || null,
     knownPeople: { count: knownPeople.length, sample: knownPeople.slice(0, 12).map(brief) },
     sections,

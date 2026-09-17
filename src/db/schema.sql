@@ -357,11 +357,16 @@ CREATE INDEX IF NOT EXISTS idx_starts ON starting_points(owner_kind, owner_id, o
 -- lore entry; he does not need to become a reusable Character just to be in
 -- the room. Full cards stay in story_characters, which is unchanged.
 CREATE TABLE IF NOT EXISTS story_npcs (
-  story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
-  entry_id TEXT NOT NULL REFERENCES lore_entries(id) ON DELETE CASCADE,
-  role     TEXT NOT NULL DEFAULT 'background',   -- main | supporting | background
-  ord      INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (story_id, entry_id)
+  -- Who is in a story, keyed by who they are. An entry is where Nexus learned
+  -- about somebody; it is not the somebody. So identity is the entity, the
+  -- entry that introduced them is provenance that may go without them, and
+  -- there is one row per person per story.
+  story_id         TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+  entity_id        TEXT NOT NULL REFERENCES lore_entities(id) ON DELETE RESTRICT,
+  role             TEXT NOT NULL DEFAULT 'background',   -- main | supporting | background
+  ord              INTEGER NOT NULL DEFAULT 0,
+  profile_entry_id TEXT REFERENCES lore_entries(id) ON DELETE SET NULL,
+  PRIMARY KEY (story_id, entity_id)
 );
 CREATE INDEX IF NOT EXISTS idx_npc_story ON story_npcs(story_id, role);
 

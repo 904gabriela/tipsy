@@ -2,6 +2,8 @@
 // there is nothing to install and nothing to break.
 
 import { DatabaseSync } from 'node:sqlite';
+import { npcTableShape, npcMigrationReadiness, applyNpcMigration } from '../semantics/npc-migration.js';
+import { resolveEntryPerson } from '../semantics/store.js';
 import { readFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -129,9 +131,12 @@ function migrateSourceProvenance(db) {
 }
 
 function migrateSemanticModel(db) {
-  // A person is cast once per story, however many entries describe them.
-  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_npc_entity
-             ON story_npcs(story_id, entity_id) WHERE entity_id IS NOT NULL`);
+  // A person is cast once per story, however many entries describe them. On
+  // the final table the primary key says so; this is for one still on its way.
+  if (npcTableShape({ raw: db }) === 'transitional') {
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_npc_entity
+               ON story_npcs(story_id, entity_id) WHERE entity_id IS NOT NULL`);
+  }
 
   // The old "about" links become evidence. Copied, not moved: the tables stay
   // exactly as they are until a later, approved cleanup. Nothing copied here is
@@ -155,6 +160,32 @@ function migrateSemanticModel(db) {
              LEFT JOIN lore_entries a ON a.id = l.about_id`);
 }
 
+/**
+ * The cast table, in its final shape where that can be done without a
+ * decision.
+ *
+ * A database made before people were entities has rows keyed by entry. Where
+ * every one of those resolves to a person by approved semantics and none of
+ * them disagree, the rebuild is deterministic and runs here, once. Where any
+ * row needs somebody to decide, nothing is touched: the app runs on the table
+ * as it is, `npc-migration:check` says what is waiting, and `npc-migration:apply`
+ * runs the rebuild once it is clean. A database is never refused for one old
+ * row.
+ */
+function settleCastTable(api) {
+  const shape = npcTableShape(api);
+  api.npcShape = shape === 'canonical' ? 'canonical' : 'transitional';
+  api.npcMigration = null;
+  if (shape !== 'transitional') return;
+  const ready = npcMigrationReadiness(api);
+  if (ready.canApply) {
+    applyNpcMigration(api);
+    api.npcShape = 'canonical';
+  } else {
+    api.npcMigration = { pending: true, ready: ready.ready, needsDecision: ready.needsDecision };
+  }
+}
+
 export function open(path = 'data/tipsy.db') {
   if (!existsSync(dirname(path))) mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
@@ -169,7 +200,9 @@ export function open(path = 'data/tipsy.db') {
   }
   migrateSourceProvenance(db);
   migrateSemanticModel(db);
-  return wrap(db);
+  const api = wrap(db);
+  settleCastTable(api);
+  return api;
 }
 
 // What an import produced, and whether it is still there. `import_resources`
@@ -639,50 +672,84 @@ function wrap(db) {
 
     // ------------------------------------------------- who is in a story
 
-    /** People in a story who have no card of their own. */
-    setStoryNpcs(storyId, rows) {
-      api.transaction(() => {
-        run(`DELETE FROM story_npcs WHERE story_id=?`, storyId);
-        rows.forEach((r, i) => {
-          run(`INSERT OR REPLACE INTO story_npcs (story_id,entry_id,role,ord) VALUES (?,?,?,?)`,
-            storyId, r.entryId, r.role || 'background', i);
-        });
-      });
-      return rows.length;
-    },
+    // On the final table a cast row is a person. On one still on its way it is
+    // an entry that may know its person. Each method reads `api.npcShape` and
+    // does the honest thing for the table it has.
 
     /**
      * One person's part, leaving everyone else where they were.
      *
-     * `entityId` is the person this cast member IS, when that is known without
-     * guessing (see resolveNpcEntity). When the same person is already cast
-     * through another of their entries, that row is the one updated: one
-     * person, one place in the cast.
+     * Final shape: `entityId` is required — resolved from the entry by approved
+     * semantics if not given, and refused if that cannot be done, because a
+     * name is not an identity. Must be a person. The entry, if any, is kept as
+     * where they were introduced. Also accepts ({ entityId, role, profileEntryId }).
      */
     setStoryNpc(storyId, entryId, role, entityId = null) {
-      const had = get(`SELECT ord FROM story_npcs WHERE story_id=? AND entry_id=?`, storyId, entryId);
-      if (had) {
-        run(`UPDATE story_npcs SET role=?, entity_id=COALESCE(?, entity_id) WHERE story_id=? AND entry_id=?`, role, entityId, storyId, entryId);
-        return;
+      if (entryId && typeof entryId === 'object') {
+        ({ entityId = null, role, profileEntryId: entryId = null } = entryId);
       }
-      if (entityId) {
-        const same = get(`SELECT entry_id FROM story_npcs WHERE story_id=? AND entity_id=?`, storyId, entityId);
-        if (same) {
-          run(`UPDATE story_npcs SET role=? WHERE story_id=? AND entry_id=?`, role, storyId, same.entry_id);
+      if (api.npcShape !== 'canonical') {
+        const had = get(`SELECT ord FROM story_npcs WHERE story_id=? AND entry_id=?`, storyId, entryId);
+        if (had) {
+          run(`UPDATE story_npcs SET role=?, entity_id=COALESCE(?, entity_id) WHERE story_id=? AND entry_id=?`, role, entityId, storyId, entryId);
           return;
         }
+        if (entityId) {
+          const same = get(`SELECT entry_id FROM story_npcs WHERE story_id=? AND entity_id=?`, storyId, entityId);
+          if (same) { run(`UPDATE story_npcs SET role=? WHERE story_id=? AND entry_id=?`, role, storyId, same.entry_id); return; }
+        }
+        const next = get(`SELECT COALESCE(MAX(ord),-1)+1 AS n FROM story_npcs WHERE story_id=?`, storyId).n;
+        run(`INSERT INTO story_npcs (story_id,entry_id,role,ord,entity_id) VALUES (?,?,?,?,?)`, storyId, entryId, role, next, entityId);
+        return;
+      }
+      const who = entityId || (entryId ? resolveEntryPerson(api, entryId)?.entityId : null) || null;
+      if (!who) {
+        const title = entryId ? get(`SELECT title FROM lore_entries WHERE id=?`, entryId)?.title : null;
+        throw new Error(title
+          ? `Nexus does not know who "${title}" is yet. Organise that entry as a person first, then cast them.`
+          : 'A cast member needs a person to be.');
+      }
+      const kind = get(`SELECT type FROM lore_entities WHERE id=?`, who)?.type;
+      if (kind !== 'person') throw new Error(kind ? `Only a person can be cast; that is a ${kind}.` : 'That person is not in the library.');
+      const had = get(`SELECT ord FROM story_npcs WHERE story_id=? AND entity_id=?`, storyId, who);
+      if (had) {
+        run(`UPDATE story_npcs SET role=?, profile_entry_id=COALESCE(profile_entry_id, ?) WHERE story_id=? AND entity_id=?`, role, entryId, storyId, who);
+        return;
       }
       const next = get(`SELECT COALESCE(MAX(ord),-1)+1 AS n FROM story_npcs WHERE story_id=?`, storyId).n;
-      run(`INSERT INTO story_npcs (story_id,entry_id,role,ord,entity_id) VALUES (?,?,?,?,?)`, storyId, entryId, role, next, entityId);
-    },
-    removeStoryNpc(storyId, entryId) {
-      run(`DELETE FROM story_npcs WHERE story_id=? AND entry_id=?`, storyId, entryId);
+      run(`INSERT INTO story_npcs (story_id,entity_id,role,ord,profile_entry_id) VALUES (?,?,?,?,?)`, storyId, who, role, next, entryId);
     },
 
+    /** Take a person out of the cast, named by the entry that introduced them. */
+    removeStoryNpc(storyId, entryId) {
+      if (api.npcShape !== 'canonical') { run(`DELETE FROM story_npcs WHERE story_id=? AND entry_id=?`, storyId, entryId); return; }
+      const who = resolveEntryPerson(api, entryId)?.entityId || null;
+      if (who) run(`DELETE FROM story_npcs WHERE story_id=? AND entity_id=?`, storyId, who);
+      else run(`DELETE FROM story_npcs WHERE story_id=? AND profile_entry_id=?`, storyId, entryId);
+    },
+    /** Take a person out of the cast, named as who they are. */
+    removeStoryNpcByEntity(storyId, entityId) {
+      run(`DELETE FROM story_npcs WHERE story_id=? AND entity_id=?`, storyId, entityId);
+    },
+
+    /**
+     * Who is in the cast. On the final table the person is the row and the
+     * entry is optional: a cast member whose introducing entry is gone is still
+     * in the cast, under their own name.
+     */
     storyNpcs(storyId) {
-      return all(`SELECT n.entry_id, n.entity_id, n.role, n.ord, e.title, e.summary, e.image,
-                    e.lorebook_id, length(e.content) AS chars
-                  FROM story_npcs n JOIN lore_entries e ON e.id = n.entry_id
+      if (api.npcShape !== 'canonical') {
+        return all(`SELECT n.entry_id, n.entity_id, n.role, n.ord, e.title, e.summary, e.image,
+                      e.lorebook_id, length(e.content) AS chars
+                    FROM story_npcs n JOIN lore_entries e ON e.id = n.entry_id
+                    WHERE n.story_id=? ORDER BY n.ord`, storyId);
+      }
+      return all(`SELECT n.entity_id, n.profile_entry_id AS entry_id, n.role, n.ord,
+                    x.canonical_name AS name, COALESCE(e.title, x.canonical_name) AS title,
+                    e.summary, e.image, e.lorebook_id, COALESCE(length(e.content), 0) AS chars
+                  FROM story_npcs n
+                  JOIN lore_entities x ON x.id = n.entity_id
+                  LEFT JOIN lore_entries e ON e.id = n.profile_entry_id
                   WHERE n.story_id=? ORDER BY n.ord`, storyId);
     },
 

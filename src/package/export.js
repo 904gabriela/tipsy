@@ -45,7 +45,14 @@ export function exportStory(db, storyId) {
 
   const inExport = (entryId) => x.entryLocation.get(entryId);
   const exclusions = db.storyExclusions(storyId).map((r) => inExport(r.entry_id)).filter(Boolean);
-  const npcs = db.storyNpcs(storyId).filter((n) => inExport(n.entry_id)).map((n) => ({ ...inExport(n.entry_id), role: n.role }));
+  // A cast member is a person. The package names them by entity where it can,
+  // and by the entry that introduced them as well, because v1 readers expect
+  // that; a cast member with no exportable entry has nothing a v1 reader could
+  // resolve, and is left out as before.
+  const npcs = db.storyNpcs(storyId).filter((n) => n.entry_id && inExport(n.entry_id)).map((n) => ({
+    ...inExport(n.entry_id), role: n.role,
+    ...(n.entity_id && x.entityRef(n.entity_id) ? { entity: x.entityRef(n.entity_id) } : {}),
+  }));
 
   const provenance = x.provenance('story', storyId);
   const pkg = {

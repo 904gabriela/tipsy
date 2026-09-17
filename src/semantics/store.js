@@ -268,15 +268,43 @@ export function sourceOrganization(db, lorebookId) {
  * that entity is a person, and the entry's own source has an approved
  * declaration of it. Anything less is left unresolved rather than guessed.
  */
+/**
+ * The one person an entry stands for, by approved semantics alone.
+ *
+ * Two readings count, and only two: the entry defines a person, or it names
+ * exactly one approved subject who is a person. A stale reading — approved,
+ * then the words moved — still counts, and says so. A proposal does not. Nor
+ * does a name, a keyword, a card, or an old composer link: none of those is an
+ * identity, and this is the one place identity is decided.
+ *
+ * @returns {{ entityId, name, how: 'defines'|'subject', stale: boolean }|null}
+ */
+export function resolveEntryPerson(db, entryId) {
+  const sem = q(db).get(`SELECT s.defines_entity_id, s.content_hash, e.title, e.content, e.keys
+    FROM entry_semantics s JOIN lore_entries e ON e.id = s.entry_id
+    WHERE s.entry_id = ? AND s.status = 'approved'`, entryId);
+  if (!sem) return null;
+  let stale = false;
+  if (sem.content_hash) {
+    let keys = [];
+    try { keys = JSON.parse(sem.keys || '[]'); } catch { keys = []; }
+    stale = sem.content_hash !== entryHash({ title: sem.title, content: sem.content, keys });
+  }
+  const person = (id) => { const cur = currentEntity(db, id); return cur && cur.type === 'person' ? cur : null; };
+  if (sem.defines_entity_id) {
+    const who = person(sem.defines_entity_id);
+    return who ? { entityId: who.id, name: who.canonical_name, how: 'defines', stale } : null;
+  }
+  const subjects = q(db).all(`SELECT entity_id FROM entry_relations
+    WHERE entry_id = ? AND relation = 'subject' AND status = 'approved'`, entryId);
+  if (subjects.length !== 1) return null;
+  const who = person(subjects[0].entity_id);
+  return who ? { entityId: who.id, name: who.canonical_name, how: 'subject', stale } : null;
+}
+
+/** The person a cast row IS, or null. Same rule as resolveEntryPerson; only the id. */
 export function resolveNpcEntity(db, entryId) {
-  const row = q(db).get(
-    `SELECT s.defines_entity_id id FROM entry_semantics s
-       JOIN lore_entries e ON e.id = s.entry_id
-       JOIN source_entities d ON d.lorebook_id = e.lorebook_id AND d.entity_id = s.defines_entity_id AND d.status = 'approved'
-       JOIN lore_entities x ON x.id = s.defines_entity_id AND x.type = 'person'
-      WHERE s.entry_id = ? AND s.status = 'approved' AND s.defines_entity_id IS NOT NULL`, entryId);
-  if (!row) return null;
-  return currentEntity(db, row.id)?.id || null;
+  return resolveEntryPerson(db, entryId)?.entityId || null;
 }
 
 // ------------------------------------------------------------------ evidence

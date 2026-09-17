@@ -123,6 +123,12 @@ export function planComposition(db, {
     if (!verdict.person) {
       throw new CompositionError(`"${entry.title}" is not a person, so it cannot be in the cast. It stays in the story's material.`);
     }
+    // On the final cast table a member is a person, not an entry. Reading as a
+    // person is not the same as being one Nexus knows: that takes approved
+    // semantics, and without them the honest answer is to say so.
+    if (db.npcShape === 'canonical' && !resolveNpcEntity(db, entry.id)) {
+      throw new CompositionError(`Nexus does not know who "${entry.title}" is yet. Organise that entry as a person first, then cast them.`);
+    }
     if (role === 'lead') {
       throw new CompositionError(`${verdict.name} has no character card, and a lead needs one. Make them a character first, or pick a lead who has a card.`);
     }
@@ -242,7 +248,13 @@ export function sourceRemovalPreview(db, storyId, lorebookId, compose) {
   const book = db.getLorebook(lorebookId);
   const draft = compose(book.entries, { characters: [], storyCards: story.characters });
   const ids = new Set(book.entries.map((e) => e.id));
-  const cast = db.storyNpcs(storyId).filter((n) => ids.has(n.entry_id));
+  // On the final table the cast is people, and a person leaves with a source
+  // only when no remaining source still carries them. Before that, a cast row
+  // stood on an entry and left with it.
+  const leavingIds = new Set(entityInventory(db, [lorebookId])
+    .filter((x) => !entityInventory(db, story.lorebookIds.filter((id) => id !== lorebookId)).some((y) => y.id === x.id))
+    .map((x) => x.id));
+  const cast = db.storyNpcs(storyId).filter((n) => (db.npcShape === 'canonical' ? leavingIds.has(n.entity_id) : ids.has(n.entry_id)));
   const exclusions = db.storyExclusions(storyId).filter((x) => ids.has(x.entry_id));
   const policy = db.storyLorebookSettings(storyId).find((r) => r.lorebook_id === lorebookId)?.recursion || null;
   const personaFrom = story.persona && story.persona.from_entry && ids.has(story.persona.from_entry) ? story.persona.name : null;
@@ -299,8 +311,19 @@ export function removeSource(db, storyId, lorebookId) {
   if (!story.lorebookIds.includes(lorebookId)) throw new CompositionError('That source is not part of this story.', 404);
   return db.transaction(() => {
     const ids = new Set(db.listEntries(lorebookId).map((e) => e.id));
-    const leaving = db.storyNpcs(storyId).filter((n) => ids.has(n.entry_id));
-    for (const n of leaving) db.removeStoryNpc(storyId, n.entry_id);
+    let leaving;
+    if (db.npcShape === 'canonical') {
+      // A person stays in the cast while any remaining source still carries
+      // them; their introducing entry going is provenance going, not them.
+      const remaining = story.lorebookIds.filter((id) => id !== lorebookId);
+      const still = new Set(entityInventory(db, remaining).map((x) => x.id));
+      leaving = db.storyNpcs(storyId).filter((n) => !still.has(n.entity_id)
+        && entityInventory(db, [lorebookId]).some((x) => x.id === n.entity_id));
+      for (const n of leaving) db.removeStoryNpcByEntity(storyId, n.entity_id);
+    } else {
+      leaving = db.storyNpcs(storyId).filter((n) => ids.has(n.entry_id));
+      for (const n of leaving) db.removeStoryNpc(storyId, n.entry_id);
+    }
     const forgotten = db.storyExclusions(storyId).filter((x) => ids.has(x.entry_id));
     for (const x of forgotten) db.includeEntry(storyId, x.entry_id);
     db.raw.prepare(`DELETE FROM story_lorebooks WHERE story_id=? AND lorebook_id=?`).run(storyId, lorebookId);

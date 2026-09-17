@@ -14,6 +14,9 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { open } from '../src/db/index.js';
 import { composeSource, personFromEntry, nameFromTitle, normalizeRole, ROLES } from '../src/import/compose.js';
+import { createEntity, declareInSource, setEntrySemantics } from '../src/semantics/store.js';
+import { semanticViews } from '../src/semantics/store.js';
+import { readCompositionMaterial } from '../src/semantics/composition.js';
 import { planComposition, writeComposition, applyToStory, sourceRemovalPreview, removeSource, CompositionError } from '../src/import/compose-apply.js';
 
 let pass = 0; let fail = 0;
@@ -161,9 +164,22 @@ const entryRows = () => db.raw.prepare('SELECT * FROM lore_entries ORDER BY id')
 const fingerprint = () => createHash('sha256').update(JSON.stringify(entryRows())).digest('hex');
 const count = (t) => db.raw.prepare(`SELECT COUNT(*) n FROM ${t}`).get().n;
 
+// On the final cast table a cast member is a person Nexus knows. The people
+// this section casts are organised first, the way a person would have to.
+{
+  const people = new Map();
+  for (const [title, name] of [['Mira Castell', 'Mira Castell'], ['Mira Castell / Keeper', 'Mira Castell'], ['Oren Hale: The Ferryman', 'Oren Hale'], ['Tobias Crane', 'Tobias Crane'], ['Pell', 'Pell'], ['Silas Grey', 'Silas Grey'], ['war', 'Captain Ilse Marr']]) {
+    if (people.has(name)) { setEntrySemantics(db, { entryId: ids[title], scope: 'entity', category: 'profile', definesEntityId: people.get(name), origin: 'manual', status: 'approved', confidence: 'high' }); continue; }
+    const who = createEntity(db, { type: 'person', name, aliases: [] });
+    people.set(name, who);
+    declareInSource(db, { lorebookId: title === 'war' ? bookB : bookA, entityId: who, localRef: name.toLowerCase().replace(/\W+/g, '-'), localName: name, origin: 'manual', status: 'approved' });
+    setEntrySemantics(db, { entryId: ids[title], scope: 'entity', category: 'profile', definesEntityId: who, origin: 'manual', status: 'approved', confidence: 'high' });
+  }
+}
+
 console.log('\nF  applying a reviewed composition');
 {
-  const before = { fp: fingerprint(), entries: count('lore_entries'), characters: count('characters') };
+  const before = { fp: fingerprint(), entries: count('lore_entries'), characters: count('characters'), semantics: count('entry_semantics') };
   const sid = db.createStory({ title: 'Harbour', characterIds: [dario], lorebookIds: [bookB] });
   db.setStoryLorebookRecursion(sid, bookB, 'block');
   db.addMessage({ storyId: sid, role: 'assistant', content: 'The ferry horn sounds.' });
@@ -196,7 +212,7 @@ console.log('\nF  applying a reviewed composition');
   ok('links ticked in review are kept as evidence', evidence.some((x) => x.entry_id === ids['Dario’s Warehouse'] && x.target_id === dario)
     && evidence.some((x) => x.entry_id === ids['The Lighthouse'] && x.target_id === ids['Mira Castell']));
   ok('as unconfirmed evidence, not semantics', evidence.every((x) => x.status === 'legacy' && x.derived_origin === 'composer-inferred')
-    && count('entry_relations') === 0 && count('entry_semantics') === 0);
+    && count('entry_relations') === 0 && count('entry_semantics') === before.semantics);
   ok('and nothing new is written to the retired link tables', count('entry_character_links') === 0 && count('entry_entry_links') === 0);
   ok('no entry was copied or changed', fingerprint() === before.fp && count('lore_entries') === before.entries);
   ok('no character card was created', count('characters') === before.characters);
@@ -271,6 +287,9 @@ console.log('\nF  applying a reviewed composition');
   db.addMessage({ storyId: sA, role: 'assistant', content: 'The ferry horn sounds.' });
   const msgsA = JSON.stringify(db.raw.prepare('SELECT id, content FROM messages WHERE story_id=?').all(sA));
   const eligible = (s, id) => db.entriesForStory(s).some((e) => e.id === id);
+  // An organised person is excluded AS a person, not entry by entry.
+  const excludedHere = (s, id) => db.storyExclusionIds(s).has(id) || !!db.raw.prepare(`SELECT 1 x FROM story_entity_exclusions x
+    JOIN entry_semantics se ON se.defines_entity_id = x.entity_id AND se.status='approved' WHERE x.story_id=? AND se.entry_id=?`).get(s, id);
   const mira = [ids['Mira Castell'], ids['Mira Castell / Keeper']];
 
   applyToStory(db, sA, { casting: [{ entryId: ids['Oren Hale: The Ferryman'], role: 'known' }] });
@@ -280,7 +299,7 @@ console.log('\nF  applying a reviewed composition');
   applyToStory(db, sA, { casting: [{ entryId: ids['Oren Hale: The Ferryman'], role: 'excluded' }] });
   ok('Excluded: not in the cast', !db.storyNpcs(sA).some((x) => x.entry_id === ids['Oren Hale: The Ferryman']));
   ok('Excluded: not eligible for the story', !eligible(sA, ids['Oren Hale: The Ferryman']));
-  ok('Excluded is recorded for this story', db.storyExclusionIds(sA).has(ids['Oren Hale: The Ferryman']));
+  ok('Excluded is recorded for this story', excludedHere(sA, ids['Oren Hale: The Ferryman']));
   ok('the same entry is still eligible in another story', eligible(sB, ids['Oren Hale: The Ferryman']));
   ok('the entry is still enabled in its source', db.listEntries(bookA).find((e) => e.id === ids['Oren Hale: The Ferryman']).enabled === true);
 
@@ -309,10 +328,15 @@ console.log('\nF  applying a reviewed composition');
   applyToStory(db, sA, { casting: [{ entryId: ids.Pell, role: 'excluded' }] });
   db.setStoryLorebooks(sA, [bookA]);
   db.updateStory(sA, { title: 'Exclusion A, saved again', settings: { premise: 'edited' } });
-  ok('an exclusion survives saving the story', db.storyExclusionIds(sA).has(ids.Pell));
+  ok('an exclusion survives saving the story', excludedHere(sA, ids.Pell));
   applyToStory(db, sA, { lorebookIds: [bookB], casting: [{ entryId: ids.war, role: 'background' }] });
-  ok('and adding another source', db.storyExclusionIds(sA).has(ids.Pell));
-  const reread = composeSource(db.listEntries(bookA), { storyCards: db.getStory(sA).characters, storyNpcs: db.storyNpcs(sA), storyExclusions: db.storyExclusionIds(sA) });
+  ok('and adding another source', excludedHere(sA, ids.Pell));
+  // Composed the way the server composes: with what is known about the
+  // people, and who the story has left out as a person.
+  const reread = composeSource(db.listEntries(bookA), {
+    storyCards: db.getStory(sA).characters, storyNpcs: db.storyNpcs(sA), storyExclusions: db.storyExclusionIds(sA),
+    semantics: semanticViews(db, db.listEntries(bookA)), excludedEntities: readCompositionMaterial(db, [bookA], { storyId: sA }).excludedEntities,
+  });
   ok('reopening the review shows the saved exclusion', reread.casting.find((r) => r.name === 'Pell')?.suggested === 'excluded'
     && reread.casting.find((r) => r.name === 'Pell')?.current === 'excluded');
   ok('and Known as Known', reread.casting.find((r) => r.name === 'Oren Hale')?.suggested !== 'excluded');
@@ -324,8 +348,15 @@ console.log('\nF  applying a reviewed composition');
   ok('a failed apply leaves no exclusion behind', threw4 && db.storyExclusionIds(sid4).size === 0);
 
   const pvA = sourceRemovalPreview(db, sA, bookA, composeSource);
-  ok('the removal preview names exclusions that will be forgotten', pvA.exclusionsForgotten.some((x) => x.name === 'Pell'));
+  // Pell is left out as a person, and that is the story's decision about him,
+  // not about this source: it is not forgotten with the source. An entry
+  // ignored as an entry is.
+  applyToStory(db, sA, { exclude: [ids['Pacing RULE']] });
+  const pvA2 = sourceRemovalPreview(db, sA, bookA, composeSource);
+  ok('the removal preview names entry exclusions that will be forgotten', pvA2.exclusionsForgotten.some((x) => x.name === 'Pacing RULE'));
+  ok('and does not pretend a person left out as a person goes with it', !pvA2.exclusionsForgotten.some((x) => x.name === 'Pell'));
   removeSource(db, sA, bookA);
+  ok('leaving him out survives the source going', !!db.raw.prepare('SELECT 1 x FROM story_entity_exclusions WHERE story_id=?').get(sA));
   ok('removing the source forgets its exclusions', ![...db.storyExclusionIds(sA)].some((id) => Object.values(ids).includes(id) && id !== ids.war));
   ok('the other story is untouched by all of it', eligible(sB, ids.Pell) && db.storyExclusionIds(sB).size === 0);
   ok('no entry changed, no card created or deleted, no message touched', fingerprint() === fpL && count('characters') === charsL

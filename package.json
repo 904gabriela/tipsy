@@ -27,6 +27,9 @@
     "authoring:check": "node scripts/check-authoring.js",
     "composition-semantics:check": "node scripts/check-composition-semantics.js",
     "entity-reconcile:check": "node scripts/check-entity-reconcile.js",
-    "library-cleanup:check": "node scripts/check-library-cleanup.js"
+    "library-cleanup:check": "node scripts/check-library-cleanup.js",
+    "npc-migration:check": "node scripts/npc-migration.js check",
+    "npc-migration:apply": "node scripts/npc-migration.js apply",
+    "npc-migration:test": "node scripts/check-npc-migration.js"
   }
 }

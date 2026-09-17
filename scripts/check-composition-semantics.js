@@ -207,18 +207,23 @@ const plan = planComposition(db, {
   links: [], recursion: {}, exclude: [], include: [],
 });
 db.transaction(() => writeComposition(db, story, plan));
-const npcs = q('SELECT entry_id, role, entity_id FROM story_npcs WHERE story_id=?', story);
+const npcs = q('SELECT profile_entry_id AS entry_id, role, entity_id FROM story_npcs WHERE story_id=?', story);
 ok('the accepted person carries their entity', npcs.length === 1 && npcs[0].entity_id === carlo, JSON.stringify(npcs));
 ok('one logical row despite two profile entries', npcs.length === 1);
+ok('and remembers which entry introduced them', npcs[0].entry_id === E.carlo);
 
-section('legacy rows, backfilled only where certain');
+section('the cast is people, not entries');
 const story2 = db.createStory({ title: 'An Older Telling', lorebookIds: [book] });
-db.raw.prepare('INSERT INTO story_npcs (story_id, entry_id, role, ord) VALUES (?,?,?,0)').run(story2, E.carlo2, 'background');
-db.raw.prepare('INSERT INTO story_npcs (story_id, entry_id, role, ord) VALUES (?,?,?,1)').run(story2, E.legacy, 'background');
-const filled = backfillNpcIdentities(db, story2, { resolve: resolveNpcEntity });
-ok('a defining person entry gets its identity', one('SELECT entity_id e FROM story_npcs WHERE story_id=? AND entry_id=?', story2, E.carlo2).e === carlo);
-ok('an ambiguous row stays NULL, honestly', one('SELECT entity_id e FROM story_npcs WHERE story_id=? AND entry_id=?', story2, E.legacy).e === null
-  && filled.left === 1, `${filled.filled} filled, ${filled.left} left`);
+// Casting the same person twice, through two entries, is one cast row.
+db.setStoryNpc(story2, E.carlo, 'background');
+db.setStoryNpc(story2, E.carlo2, 'supporting');
+ok('two entries about one person are one cast member', q('SELECT * FROM story_npcs WHERE story_id=?', story2).length === 1);
+ok('with the part most recently given', one('SELECT role r FROM story_npcs WHERE story_id=? AND entity_id=?', story2, carlo).r === 'supporting');
+ok('an entry nobody has organised cannot be cast at all',
+  threw(() => db.setStoryNpc(story2, E.legacy, 'background')) !== null, threw(() => db.setStoryNpc(story2, E.legacy, 'background'))?.message);
+ok('nor can a faction, however it is asked', /Only a person/.test(threw(() => db.setStoryNpc(story2, { entityId: family, role: 'main' }))?.message || ''));
+ok('and the table itself refuses a row with nobody in it',
+  threw(() => db.raw.prepare('INSERT INTO story_npcs (story_id, entity_id, role, ord) VALUES (?,NULL,?,0)').run(story2, 'main')) !== null);
 
 // ------------------------------------------------------------ excluding a person
 
@@ -358,16 +363,17 @@ ok('material that merely relates to them is still served',
   db.entriesForStory(rstory).map((e) => e.title).includes('The west docks'),
   db.entriesForStory(rstory).map((e) => e.title).join(', '));
 
-section('two old cast rows for one person do not collide');
-const story3 = db.createStory({ title: 'Two Rows', lorebookIds: [book] });
-db.raw.prepare('INSERT INTO story_npcs (story_id, entry_id, role, ord) VALUES (?,?,?,0)').run(story3, E.carlo, 'main');
-db.raw.prepare('INSERT INTO story_npcs (story_id, entry_id, role, ord) VALUES (?,?,?,1)').run(story3, E.carlo2, 'background');
-const collide = threw(() => backfillNpcIdentities(db, story3, { resolve: resolveNpcEntity }));
-ok('back-filling both does not fail', collide === null, collide?.message || '');
-ok('one of them carries the identity, and only one',
-  q('SELECT entity_id FROM story_npcs WHERE story_id=? AND entity_id IS NOT NULL', story3).length === 1);
-ok('the other stays NULL rather than being merged away',
-  q('SELECT entity_id FROM story_npcs WHERE story_id=?', story3).length === 2);
+section('a person outlives the entry that introduced them');
+const story3 = db.createStory({ title: 'Outliving', lorebookIds: [book] });
+db.setStoryNpc(story3, E.carlo2, 'main');
+ok('cast, with the entry as provenance', one('SELECT profile_entry_id p FROM story_npcs WHERE story_id=?', story3).p === E.carlo2);
+db.deleteEntry(E.carlo2);
+const after3 = one('SELECT entity_id e, role r, profile_entry_id p FROM story_npcs WHERE story_id=?', story3);
+ok('deleting that entry leaves them in the cast', !!after3 && after3.e === carlo && after3.r === 'main');
+ok('with the provenance cleared, not the person', after3.p === null);
+ok('and the cast still names them', db.storyNpcs(story3)[0]?.name === 'Carlo Vancetti' && db.storyNpcs(story3)[0]?.title === 'Carlo Vancetti');
+E.carlo2 = entry(book, 'Carlo — late story', 'Carlo Vancetti after the fire: quieter, kinder, slower.');
+approve(E.carlo2, { scope: 'entity', category: 'profile', definesEntityId: carlo });
 
 section('nothing the Builder invents is approved before somebody accepts it');
 const before = one("SELECT COUNT(*) c FROM entry_semantics WHERE origin='generated' AND status='approved'").c;

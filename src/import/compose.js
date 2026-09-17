@@ -340,7 +340,11 @@ export function composeSource(entries, ctx = {}) {
   const premiseText = String(premise || '');
   const sizes = [...groups.values()].map((g) => Math.max(...g.entries.map((e) => String(e.content || '').length)));
   const med = median(sizes);
-  const npcRole = new Map(storyNpcs.map((n) => [n.entry_id, n.role]));
+  const npcRole = new Map(storyNpcs.filter((n) => n.entry_id).map((n) => [n.entry_id, n.role]));
+  // A cast row is a person, not an entry. Where the story already knows who
+  // this group IS, that decides whether they are cast — whichever entry, if
+  // any, first introduced them.
+  const npcByEntity = new Map(storyNpcs.filter((n) => n.entity_id).map((n) => [n.entity_id, n.role]));
   // The same person may already be in the cast through another source's
   // entry. They are one person, and suggesting them again would cast them twice.
   const castByName = new Map(storyNpcs
@@ -409,7 +413,7 @@ export function composeSource(entries, ctx = {}) {
     // Already in this story: what they are stays what they are, and says so.
     // A choice already made for this story is what the draft shows: in the
     // cast in some part, or excluded from it.
-    const current = g.entries.map((e) => npcRole.get(e.id)).find(Boolean)
+    const current = (groupEntity && npcByEntity.get(groupEntity)) || g.entries.map((e) => npcRole.get(e.id)).find(Boolean)
       // Excluded as a person, or entry by entry: either way the story said no.
       || ((groupEntity && excludedEntities.has(groupEntity)) || g.entries.some((e) => excludedIds.has(e.id)) ? 'excluded' : null);
     const elsewhere = !current ? castByName.get(norm(g.name)) : null;

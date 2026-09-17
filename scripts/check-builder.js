@@ -17,6 +17,7 @@ import { composeSource } from '../src/import/compose.js';
 import { fromComposition, gapsOf, canonOf, validateGeneration, DraftError, LIMITS } from '../src/builder/contract.js';
 import { buildDraft, regenerate } from '../src/builder/index.js';
 import { planGenerated, writeGenerated, acceptedFromDraft } from '../src/builder/apply.js';
+import { createEntity, declareInSource, setEntrySemantics } from '../src/semantics/store.js';
 import { BUILDER_PROMPT } from '../src/builder/prompt.js';
 
 let pass = 0; let fail = 0;
@@ -288,6 +289,13 @@ let db = open(dbPath);
 const book = db.createLorebook('Harbour — people and places', '');
 const ids = {};
 for (const e of PACKAGE) { const { id: _, lorebook_id: __, ...rest } = e; ids[e.title] = db.saveEntry(book, { ...rest, order: 100 }); }
+// On the final cast table a cast member is a person Nexus knows, so the two
+// people this source casts are organised the way a person would have to.
+for (const name of ['Mira Castell', 'Oren Hale']) {
+  const who = createEntity(db, { type: 'person', name, aliases: [] });
+  declareInSource(db, { lorebookId: book, entityId: who, localRef: name.toLowerCase().replace(/\W+/g, '-'), localName: name, origin: 'manual', status: 'approved' });
+  setEntrySemantics(db, { entryId: ids[name], scope: 'entity', category: 'profile', definesEntityId: who, origin: 'manual', status: 'approved', confidence: 'high' });
+}
 const dario = db.writeCharacter({ name: 'Dario Vance', description: LEAD.description, firstMessage: LEAD.first_message });
 db.close();
 
@@ -420,7 +428,7 @@ try {
   ok('as structured entries of the right kind', made.find((m) => m.title === 'The Quay').kind === 'place' && made.find((m) => m.title === 'The Storm').kind === 'event' && made.find((m) => m.title === 'Tamsin Reed').kind === 'character');
   ok('each remembers it was generated', made.every((m) => JSON.parse(m.original).origin === 'generated' && JSON.parse(m.original).builder === bb.import_id));
   ok('rejected material never persisted', q("SELECT COUNT(*) n FROM lore_entries WHERE title IN ('Lena Marsh','The Debt')")[0].n === 0);
-  ok('the generated person is in the cast, lore-backed', q('SELECT n.role FROM story_npcs n JOIN lore_entries e ON e.id=n.entry_id WHERE n.story_id=? AND e.title=?', sid, 'Tamsin Reed')[0]?.role === 'background');
+  ok('the generated person is in the cast, lore-backed', q('SELECT n.role FROM story_npcs n JOIN lore_entries e ON e.id=n.profile_entry_id WHERE n.story_id=? AND e.title=?', sid, 'Tamsin Reed')[0]?.role === 'background');
   ok('and did not become a global character', after.characters === before.characters);
   // Since the semantic model (P1): accepted links are evidence, not semantics.
   ok('the accepted link is kept as evidence, not semantics', q("SELECT COUNT(*) n FROM legacy_entry_links WHERE source='builder-review' AND entry_title=? AND target_name=? AND derived_origin='builder-accepted' AND status='legacy'", 'The Quay', 'Tamsin Reed')[0].n === 1

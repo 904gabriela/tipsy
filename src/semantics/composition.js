@@ -232,6 +232,9 @@ export function setEntityExclusion(db, { storyId, entityId, excluded }) {
  * @returns {{ filled: number, left: number }}
  */
 export function backfillNpcIdentities(db, storyId, { resolve }) {
+  // On the final table every cast row already is a person; there is nothing
+  // to fill and no NULL to leave honest.
+  if (db.npcShape === 'canonical') return { filled: 0, left: 0 };
   const rows = db.raw.prepare('SELECT story_id, entry_id FROM story_npcs WHERE story_id=? AND entity_id IS NULL').all(storyId);
   // One logical person per story, so a name already claimed is not claimed
   // twice. Two old rows can both point at entries defining the same person —

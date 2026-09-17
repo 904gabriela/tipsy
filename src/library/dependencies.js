@@ -54,7 +54,21 @@ function survey(db) {
     storyPersonas: q('SELECT id, title, persona_id FROM stories WHERE persona_id IS NOT NULL'),
     scenarioWorlds: q('SELECT id, name, framework_id FROM scenarios WHERE framework_id IS NOT NULL'),
     ownedBooks: q("SELECT lorebook_id, owner_story_id FROM source_semantics WHERE owner_story_id IS NOT NULL"),
-    npcBooks: q(`SELECT DISTINCT n.story_id, e.lorebook_id FROM story_npcs n JOIN lore_entries e ON e.id = n.entry_id`),
+    // A source a story's cast stands on: it introduced somebody who is cast
+    // there, or, attached to that story, it declares somebody who is. Identity
+    // is the person, so the second clause is the one that matters once the
+    // introducing entry is gone.
+    npcBooks: (() => {
+      const cols = new Set(q('PRAGMA table_info(story_npcs)').map((c) => c.name));
+      if (cols.has('profile_entry_id')) {
+        return q(`SELECT DISTINCT n.story_id, e.lorebook_id FROM story_npcs n JOIN lore_entries e ON e.id = n.profile_entry_id
+                  UNION
+                  SELECT DISTINCT n.story_id, se.lorebook_id FROM story_npcs n
+                    JOIN source_entities se ON se.entity_id = n.entity_id
+                    JOIN story_lorebooks sl ON sl.story_id = n.story_id AND sl.lorebook_id = se.lorebook_id`);
+      }
+      return q('SELECT DISTINCT n.story_id, e.lorebook_id FROM story_npcs n JOIN lore_entries e ON e.id = n.entry_id');
+    })(),
     entities: new Map(q('SELECT id, canonical_name FROM lore_entities').map((e) => [e.id, e.canonical_name])),
     entryCounts: new Map(q('SELECT lorebook_id, COUNT(*) n FROM lore_entries GROUP BY lorebook_id').map((r) => [r.lorebook_id, r.n])),
     provenanceBooks: q('SELECT id, name, from_character FROM lorebooks WHERE from_character IS NOT NULL'),

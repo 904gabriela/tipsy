@@ -383,7 +383,7 @@ export function validatePackage(pkg) {
     list(st.npcs, `${path}.npcs`).forEach((n, k) => {
       const np = `${path}.npcs[${k}]`;
       if (isObj(n)) {
-        known(n, np, ['source', 'entry', 'role']);
+        known(n, np, ['source', 'entry', 'role', 'entity']);
         if (!['main', 'supporting', 'background'].includes(n.role)) err(`${np}.role`, 'must be main, supporting or background.');
       }
       entryIn(n, np);
@@ -462,7 +462,7 @@ export function canonicalPackage(pkg) {
         sources: (st.sources || []).map((a) => ({ source: a.source, recursion: a.recursion ?? null })).sort((a, b) => (a.source < b.source ? -1 : 1)),
         exclusions: (st.exclusions || []).map((x) => ({ source: x.source, entry: x.entry })).sort(pair),
         // Cast order is meaningful, so npcs keep theirs.
-        npcs: (st.npcs || []).map((n) => ({ source: n.source, entry: n.entry, role: n.role })),
+        npcs: (st.npcs || []).map((n) => ({ source: n.source, entry: n.entry, role: n.role, ...(n.entity ? { entity: n.entity } : {}) })),
         directions: text(st.directions),
         premise: text(st.premise),
       };

@@ -56,7 +56,8 @@ console.log('1  an entity belongs to no source and holds no card');
   const fks = db.raw.prepare('PRAGMA foreign_key_list(lore_entities)').all().map((f) => f.table);
   ok('no lorebook or character column on an entity', !cols.includes('lorebook_id') && !cols.includes('character_id'), cols.join(','));
   ok('its only reference is to another entity (merges)', fks.every((t) => t === 'lore_entities'));
-  ok('story_npcs gained a nullable entity_id', db.raw.prepare('PRAGMA table_info(story_npcs)').all().some((c) => c.name === 'entity_id' && c.notnull === 0));
+  ok('story_npcs is keyed by who somebody is', db.raw.prepare('PRAGMA table_info(story_npcs)').all().some((c) => c.name === 'entity_id' && c.notnull === 1 && c.pk > 0));
+  ok('and the entry that introduced them is provenance that may go', db.raw.prepare('PRAGMA foreign_key_list(story_npcs)').all().some((f) => f.from === 'profile_entry_id' && f.on_delete === 'SET NULL'));
   ok('a card binding lives on the story, not the entity', db.raw.prepare('PRAGMA table_info(story_entity_cards)').all().map((c) => c.name).join() === 'story_id,entity_id,character_id,created_at');
 }
 
@@ -192,29 +193,30 @@ console.log('\n10–11  old links become evidence, and evidence never blocks del
   ok('and the evidence still reads as it was', db.raw.prepare("SELECT COUNT(*) n FROM legacy_entry_links WHERE entry_title='Guessed About'").get().n === 3);
 }
 
-console.log('\n12  cast identity is set only when certain');
+console.log('\n12  cast identity is who somebody is, or nothing');
 {
   const sid = db.createStory({ title: 'Harbour', characterIds: [dario], lorebookIds: [phase, embedded] });
-  applyToStory(db, sid, { casting: [{ entryId: ids.carloAgain, role: 'supporting' }] });
-  let row = db.storyNpcs(sid).find((n) => n.entry_id === ids.carloAgain);
-  ok('an entry with no approved profile semantics: entity_id stays NULL', row && row.entity_id === null);
+  // An entry nobody has organised reads as a person, but Nexus does not know
+  // WHICH person. On the final cast table that is a refusal, not a guess.
+  ok('an entry with no approved profile semantics cannot be cast', throws(() => applyToStory(db, sid, { casting: [{ entryId: ids.carloAgain, role: 'supporting' }] }), /does not know who/));
   ok('resolving it finds nothing to guess from', resolveNpcEntity(db, ids.carloAgain) === null);
 
   const proposedPerson = createEntity(db, { type: 'person', name: 'Proposed Person' });
   const pe = E(embedded, { kind: 'character', title: 'Proposed Person', keys: ['Proposed Person'], content: 'Proposed Person keeps the ledgers.' });
   declareInSource(db, { lorebookId: embedded, entityId: proposedPerson, localRef: 'proposed-person', origin: 'converted', status: 'proposed' });
   setEntrySemantics(db, { entryId: pe, scope: 'entity', category: 'profile', definesEntityId: proposedPerson, origin: 'converted', status: 'approved' });
-  ok('an approved profile of a merely proposed declaration: still NULL', resolveNpcEntity(db, pe) === null);
+  ok('an approved profile names the person, whatever the declaration says', resolveNpcEntity(db, pe) === proposedPerson);
 
   setEntrySemantics(db, { entryId: ids.carloAgain, scope: 'entity', category: 'profile', definesEntityId: carlo, origin: 'converted', status: 'approved' });
-  ok('an approved profile of an approved person declaration resolves', resolveNpcEntity(db, ids.carloAgain) === carlo);
+  ok('an approved profile of a person resolves', resolveNpcEntity(db, ids.carloAgain) === carlo);
   applyToStory(db, sid, { casting: [{ entryId: ids.carloAgain, role: 'main' }] });
-  row = db.storyNpcs(sid).find((n) => n.entry_id === ids.carloAgain);
-  ok('re-applying records the entity', row.entity_id === carlo && row.role === 'main');
+  let row = db.storyNpcs(sid).find((n) => n.entity_id === carlo);
+  ok('casting records the person, and the entry as where they came from', row && row.role === 'main' && row.entry_id === ids.carloAgain);
   applyToStory(db, sid, { casting: [{ entryId: ids.carlo, role: 'supporting' }] });
   const carloRows = db.storyNpcs(sid).filter((n) => n.entity_id === carlo);
   ok('casting the same person through another of their entries does not cast them twice', carloRows.length === 1 && carloRows[0].role === 'supporting', JSON.stringify(db.storyNpcs(sid).map((n) => [n.title, n.entity_id, n.role])));
-  ok('the database refuses a second row for the same person', throws(() => db.raw.prepare('INSERT INTO story_npcs (story_id,entry_id,role,ord,entity_id) VALUES (?,?,?,?,?)').run(sid, ids.family, 'main', 9, carlo), /UNIQUE/));
+  ok('the database refuses a second row for the same person', throws(() => db.raw.prepare('INSERT INTO story_npcs (story_id,entity_id,role,ord) VALUES (?,?,?,?)').run(sid, carlo, 'main', 9), /UNIQUE|PRIMARY KEY/));
+  ok('and refuses a row with nobody in it', throws(() => db.raw.prepare('INSERT INTO story_npcs (story_id,entity_id,role,ord) VALUES (?,?,?,?)').run(sid, null, 'main', 9), /NOT NULL/));
   bindCard(db, { storyId: sid, entityId: patrick, characterId: dario });
   ok('a card binding is per story', db.raw.prepare('SELECT character_id FROM story_entity_cards WHERE story_id=? AND entity_id=?').get(sid, patrick).character_id === dario && getEntity(db, patrick).character_id === undefined);
 }
