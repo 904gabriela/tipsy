@@ -2256,7 +2256,7 @@ button.cast-name[data-entry-open] { text-decoration: underline; text-decoration-
 
 
 /* An action that belongs to a heading rather than to the page. */
-.band-act { margin-left: auto; font-size: 13px; padding: 4px 10px; }
+.band-act { margin-left: auto; font-size: 13px; padding: 6px 10px; min-height: 32px; }
 .kn-more { margin-top: 4px; }
 .kn-more > summary { padding: 8px 0; }
 
@@ -2331,3 +2331,25 @@ button.cast-name[data-entry-open] { text-decoration: underline; text-decoration-
 .cmp-more .del-list { border: 0; border-radius: 0; }
 /* A copy a story is reading. Said, not hidden: it is why there is no button. */
 .del-why.in-use { margin-left: auto; color: var(--warn); white-space: nowrap; }
+
+/* ==================== knowledge that travels with a person ============== */
+/* Whether this story is reading what somebody knows. One line, the person as
+   the subject, and never the name of a file. */
+.reuse-line {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 10px 12px; margin: 0 0 10px;
+  border: 1px solid var(--line); border-radius: 11px; background: var(--surface);
+  font-size: 13.5px; color: var(--ink-soft);
+}
+.reuse-line.on { border-color: color-mix(in srgb, var(--accent) 34%, var(--line)); }
+.reuse-line .btn { margin-left: auto; min-height: 36px; }
+/* Several places it is kept, shut until somebody asks. */
+.reuse-more { margin: 0 0 10px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); }
+.reuse-more > summary {
+  padding: 9px 12px; cursor: pointer; font-size: 13px; color: var(--ink-soft);
+  min-height: 32px; display: flex; align-items: center;
+}
+.reuse-more[open] > summary { border-bottom: 1px solid var(--line); }
+.reuse-more .del-list { border: 0; border-radius: 0; }
+/* A fold on a profile is something a thumb opens, so it is thumb-sized. */
+#sheet-body details > summary { min-height: 32px; display: flex; align-items: center; }

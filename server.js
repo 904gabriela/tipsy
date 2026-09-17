@@ -28,7 +28,8 @@ import { analyzeSource } from './src/conversion/analyze.js';
 import { applyReview } from './src/conversion/apply.js';
 import { assist } from './src/conversion/assist.js';
 import { entityProfile } from './src/semantics/profile.js';
-import { createEntityKnowledge, updateEntityKnowledge, deleteEntityKnowledge, storyMaterialSource } from './src/semantics/authoring.js';
+import { createEntityKnowledge, updateEntityKnowledge, deleteEntityKnowledge, storyMaterialSource, AuthoringError } from './src/semantics/authoring.js';
+import { reuseState, attachPreview, attachReusable, detachReusable, promotePreview, promoteToReusable } from './src/semantics/reuse.js';
 import { readCompositionMaterial, setEntityExclusion, backfillNpcIdentities } from './src/semantics/composition.js';
 import { reconcileGenerated, sameName as sameEntityName } from './src/builder/reconcile-entities.js';
 import {
@@ -662,7 +663,48 @@ route('GET', '/api/entities/:id/profile', async (req, res, { id }, url) => {
   if (storyId && !db.getStory(storyId)) throw new HttpError(404, 'No such story.');
   const profile = entityProfile(db, id, { storyId });
   if (!profile) throw new HttpError(404, 'Nobody by that name is organised yet.');
-  return profile;
+  // What travels with them, and whether this story is reading it. Read-only.
+  return { ...profile, reuse: reuseState(db, id, { storyId }) };
+});
+
+// ------------------------------------- knowledge that travels with a person
+//
+// Two actions, both explicit, both ordinary underneath: letting a story read
+// what somebody knows is a source attachment, and using something across
+// stories is a copy into their own knowledge. Previews write nothing.
+
+/** What using their reusable knowledge here would attach. */
+route('GET', '/api/stories/:id/reuse/:entityId', async (req, res, { id, entityId }) => {
+  if (!db.getStory(id)) throw new HttpError(404, 'No such story.');
+  try {
+    return { ...reuseState(db, entityId, { storyId: id }), ...attachPreview(db, entityId, id) };
+  } catch (e) { throw e instanceof AuthoringError ? new HttpError(e.status, e.message) : e; }
+});
+
+/** Let this story read what somebody knows. */
+route('POST', '/api/stories/:id/reuse/:entityId', async (req, res, { id, entityId }) => {
+  const { sourceIds = null } = await readJson(req).catch(() => ({}));
+  try { return attachReusable(db, { entityId, storyId: id, sourceIds }); }
+  catch (e) { throw e instanceof AuthoringError ? new HttpError(e.status, e.message) : e; }
+});
+
+/** Stop this story reading it. Nothing is deleted. */
+route('DELETE', '/api/stories/:id/reuse/:entityId', async (req, res, { id, entityId }, url) => {
+  const only = url.searchParams.get('sourceId');
+  try { return detachReusable(db, { entityId, storyId: id, sourceIds: only ? [only] : null }); }
+  catch (e) { throw e instanceof AuthoringError ? new HttpError(e.status, e.message) : e; }
+});
+
+/** What "use across stories" would do. Read-only. */
+route('GET', '/api/knowledge/:entryId/reusable', async (req, res, { entryId }) => {
+  try { return promotePreview(db, entryId); }
+  catch (e) { throw e instanceof AuthoringError ? new HttpError(e.status, e.message) : e; }
+});
+
+/** Make a reusable copy. This story keeps its own version. */
+route('POST', '/api/knowledge/:entryId/reusable', async (req, res, { entryId }) => {
+  try { return promoteToReusable(db, entryId); }
+  catch (e) { throw e instanceof AuthoringError ? new HttpError(e.status, e.message) : e; }
 });
 
 /**

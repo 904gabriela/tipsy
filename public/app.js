@@ -8054,6 +8054,9 @@ function knowledgeItem(x, { as = null, hideKind = false } = {}) {
           ${x.written
     ? `<button class="btn quiet" data-edit-knowledge="${esc(x.entryId)}">Edit this</button>`
     : `<button class="btn quiet" data-open-source="${esc(x.provenance.sourceId)}">Open in ${esc(x.provenance.sourceName)}</button>`}
+          ${/* Something written for one story that turns out to be true of them
+                generally. A copy, so this story keeps its own version. */''}
+          ${x.written === 'story-material' ? `<button class="btn quiet" data-reuse-across="${esc(x.entryId)}">Use across stories</button>` : ''}
         </div>
         ${x.related.length ? `<div class="chips" style="margin-top:8px">
           ${x.related.map((r) => `<button class="chip-tag" data-go-entity="${esc(r.id)}">${esc(r.name)}</button>`).join('')}
@@ -8124,6 +8127,93 @@ function knowledgeGroup(g) {
     </div>`;
 }
 
+/**
+ * Whether this story is reading what somebody knows, and the way to change it.
+ *
+ * The person is the subject, never the file: "used in this story", not the name
+ * of a container. Several containers are still several, because an old
+ * character book and what somebody wrote by hand are not the same thing — but
+ * they are counted together, and "use all" is one tap.
+ */
+function reuseHere(p) {
+  const r = p.reuse;
+  if (!r || !r.total) return '';
+  const who = esc(p.entity.name.split(' ')[0]);
+  const n = (k, one, many) => `${num(k)} ${k === 1 ? one : many}`;
+  const detail = r.total > 1
+    ? `<details class="reuse-more"><summary>${n(r.total, 'place', 'places')} it is kept</summary>
+        <div class="del-list">${r.sources.map((s) => `<div class="del-row">
+          <span class="del-name">${esc(s.name)}</span>
+          <span class="del-why">${n(s.entries, 'entry', 'entries')}${s.managed ? ' · written by you' : ''}</span>
+          ${s.attached
+    ? `<button class="btn quiet" data-reuse-off="${esc(s.id)}">Stop using</button>`
+    : `<button class="btn quiet" data-reuse-on="${esc(s.id)}">Use here</button>`}
+        </div>`).join('')}</div></details>`
+    : '';
+  if (r.state === 'all') {
+    return `<div class="reuse-line on">
+      <span>${n(r.entriesUsedHere, 'entry', 'entries')} used in this story.</span>
+      <button class="btn quiet" data-reuse-off>Stop using here</button>
+    </div>${detail}`;
+  }
+  if (r.state === 'some') {
+    return `<div class="reuse-line on">
+      <span>${n(r.entriesUsedHere, 'entry', 'entries')} used here · ${num(r.entriesAvailable)} more available.</span>
+      <button class="btn quiet" data-reuse-on>Use all</button>
+    </div>${detail}`;
+  }
+  return `<div class="reuse-line">
+    <span>${n(r.entries, 'entry', 'entries')} in your library. Not used in this story.</span>
+    <button class="btn" data-reuse-on>Use in this story</button>
+  </div>${detail}
+  <div class="why">Using it here changes nothing about ${who}. Each entry still decides for itself when it comes up.</div>`;
+}
+
+/**
+ * Keeping one story's fact for the rest of them.
+ *
+ * Said before it happens, because the thing people fear here is that the story
+ * they are telling will change. It will not: this makes a copy, and where the
+ * story is already reading their knowledge the copy is kept out of this one so
+ * the same thing is never said twice.
+ */
+async function offerAcrossStories(entryId, { profile, storyId, back }) {
+  let pv;
+  try { pv = await get(`/api/knowledge/${entryId}/reusable`); } catch (err) { toast(err.message); return; }
+  const reopen = () => openEntityProfile(profile.entity.id, { storyId, back });
+  if (pv.already) {
+    sheet('Already kept', `<p class="rv-lede">“${esc(pv.title)}” is already part of what you know about ${esc(pv.about)}.</p>
+      <div class="sheet-actions"><button class="btn primary" id="ok">Close</button></div>`,
+    (root) => $('#ok', root).addEventListener('click', reopen));
+    return;
+  }
+  sheet('Use across stories', `
+    <p class="rv-lede">Keep “${esc(pv.title)}” with ${esc(pv.about)}, so other stories can use it too.</p>
+    <div class="rv-keeps">
+      <b>This story keeps its own version</b>
+      <span>Nothing here changes. A copy goes to what you know about ${esc(pv.about)}, and the two are separate from then on — editing one never edits the other.</span>
+    </div>
+    ${pv.willExcludeHere ? `<p class="why" style="margin-top:10px">This story already reads what you know about ${esc(pv.about)}, so the copy is left out of this one. The fact is said once, the way it is now.</p>` : ''}
+    <div class="sheet-actions">
+      <button class="btn quiet" data-close>Not now</button>
+      <button class="btn primary" id="across-go">Keep it</button>
+    </div>
+  `, (root) => {
+    $('#across-go', root).addEventListener('click', async (e) => {
+      e.currentTarget.disabled = true;
+      try {
+        const r = await post(`/api/knowledge/${entryId}/reusable`, {});
+        closeSheet();
+        toast(`Kept with ${r.about}.`, {
+          kind: 'good',
+          sub: r.excludedHere ? 'This story still uses its own version.' : 'Other stories can use it once they carry their knowledge.',
+        });
+        reopen();
+      } catch (err) { e.currentTarget.disabled = false; toast(err.message); }
+    });
+  });
+}
+
 function renderEntityProfile(p, { storyId = null, back = null } = {}) {
   const card = p.resources.character;
   const persona = p.resources.persona;
@@ -8167,9 +8257,10 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
          everywhere. A story reads only the sources it carries. */''}
     ${/* Two shelves, and each says where writing on it would go. Inside a story,
          the story's own shelf is the one Add belongs to. */''}
-    ${p.knowledge.reusable.length ? `
+    ${p.knowledge.reusable.length || (p.story && p.reuse?.total) ? `
       <div class="band">Reusable knowledge${p.story ? '' : '<button class="btn quiet band-act" data-add-reusable>+ Add</button>'}</div>
-      <div class="why" style="margin-bottom:10px">Knowledge that can be used across stories.${p.story ? ' Only material attached to this story is shown here.' : ''}</div>
+      <div class="why" style="margin-bottom:10px">Knowledge that can be used across stories.</div>
+      ${p.story ? reuseHere(p) : ''}
       ${p.knowledge.reusable.map(knowledgeGroup).join('')}` : ''}
 
     ${p.story ? `
@@ -8238,6 +8329,32 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
       if (e.target.closest('#ent-edit-core')) { openCoreForm(here); return; }
       const source = e.target.closest('[data-open-source]');
       if (source) { closeSheet(); openLorebook(source.dataset.openSource); return; }
+
+      // ---- what this story reads of what they know
+      const on = e.target.closest('[data-reuse-on]');
+      const off = e.target.closest('[data-reuse-off]');
+      if ((on || off) && storyId) {
+        const btn = on || off;
+        const only = btn.dataset.reuseOn || btn.dataset.reuseOff || '';
+        btn.disabled = true;
+        (async () => {
+          try {
+            const r = on
+              ? await post(`/api/stories/${storyId}/reuse/${p.entity.id}`, only ? { sourceIds: [only] } : {})
+              : await del(`/api/stories/${storyId}/reuse/${p.entity.id}${only ? `?sourceId=${encodeURIComponent(only)}` : ''}`);
+            const moved = on ? r.attached.reduce((n, s) => n + s.entries, 0) : r.detached.reduce((n, s) => n + s.entries, 0);
+            toast(on
+              ? `${num(moved)} ${moved === 1 ? 'entry' : 'entries'} about ${r.name} now available here.`
+              : `This story no longer uses what you know about ${r.name}.`, { kind: 'good' });
+            openEntityProfile(p.entity.id, { storyId, back });
+          } catch (err) { btn.disabled = false; toast(err.message); }
+        })();
+        return;
+      }
+
+      // ---- one story's fact, kept for the rest
+      const across = e.target.closest('[data-reuse-across]');
+      if (across) { offerAcrossStories(across.dataset.reuseAcross, here); return; }
 
       const go = e.target.closest('[data-go-entity]');
       if (go) {

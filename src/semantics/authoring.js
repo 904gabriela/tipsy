@@ -201,9 +201,12 @@ function plan(db, { entityId, title, content, category, displayPath, activation,
 }
 
 /** The rows themselves, written together or not at all. */
-function writeRows(db, { lorebookId, entryId = null, p, entityId }) {
+function writeRows(db, { lorebookId, entryId = null, p, entityId, provenance = null }) {
   const id = db.saveEntry(lorebookId, {
     ...(entryId ? { id: entryId } : {}),
+    // Where it came from, when it came from somewhere. Written once, at
+    // creation, and never rewritten by a later edit.
+    ...(provenance ? { original: provenance } : {}),
     title: p.title,
     content: p.content,
     keys: p.activation.constant ? p.activation.keys : p.activation.keys,
@@ -267,12 +270,12 @@ function writeRows(db, { lorebookId, entryId = null, p, entityId }) {
  */
 export function createEntityKnowledge(db, {
   entityId, storyId = null, title, content, category,
-  displayPath = null, activation = {}, relatedEntityIds = [],
+  displayPath = null, activation = {}, relatedEntityIds = [], provenance = null,
 }) {
   const p = plan(db, { entityId, title, content, category, displayPath, activation, relatedEntityIds });
   return db.transaction(() => {
     const lorebookId = storyId ? storyMaterialSource(db, storyId) : entityKnowledgeSource(db, entityId);
-    const entryId = writeRows(db, { lorebookId, p, entityId });
+    const entryId = writeRows(db, { lorebookId, p, entityId, provenance });
     return { entryId, lorebookId, scope: storyId ? 'story' : 'reusable' };
   });
 }
