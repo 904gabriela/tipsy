@@ -140,7 +140,10 @@ export function cleanTitle(title) {
 export const TYPE_WORDS = {
   faction: ['family', 'organization', 'organisation', 'clan', 'gang', 'syndicate', 'cartel', 'guild', 'crew', 'brotherhood', 'sisterhood', 'cult', 'league', 'alliance', 'council', 'agency', 'legion', 'mafia', 'outfit', 'society', 'union', 'network', 'group', 'order', 'company', 'corporation', 'triad', 'yakuza', 'house of'],
   // Specific enough to name one place. "City" or "World" is a setting, not an entity.
-  place: ['penthouse', 'safehouse', 'nightclub', 'club', 'bar', 'apartment', 'room', 'armory', 'armoury', 'warehouse', 'station', 'market', 'restaurant', 'hotel', 'tower', 'castle', 'palace', 'temple', 'church', 'academy', 'school', 'hospital', 'estate', 'manor', 'mansion', 'office', 'precinct', 'dock', 'docks', 'harbour', 'harbor', 'lounge', 'library', 'basement', 'garden', 'vault', 'territory', 'district', 'street', 'café', 'cafe', 'shop', 'studio', 'bunker', 'lair', 'base', 'headquarters'],
+  place: ['penthouse', 'safehouse', 'nightclub', 'club', 'bar', 'apartment', 'room', 'armory', 'armoury', 'warehouse', 'station', 'market', 'restaurant', 'hotel', 'tower', 'castle', 'palace', 'temple', 'church', 'academy', 'school', 'hospital', 'estate', 'manor', 'mansion', 'office', 'precinct', 'dock', 'docks', 'harbour', 'harbor', 'lounge', 'library', 'basement', 'garden', 'vault', 'territory', 'district', 'street', 'café', 'cafe', 'shop', 'studio', 'bunker', 'lair', 'base', 'headquarters',
+    // Ordinary words for a place that were simply missing, so an entry saying
+    // "X is a village" found no type at all and described nobody.
+    'village', 'town', 'city', 'inn', 'tavern', 'quay', 'bridge', 'farm', 'camp', 'prison', 'alley', 'tunnel', 'cellar', 'attic', 'rooftop'],
   item: ['pistol', 'revolver', 'gun', 'rifle', 'knife', 'blade', 'sword', 'ring', 'necklace', 'amulet', 'locket', 'phone', 'burner', 'bouquet', 'key', 'badge', 'mask'],
   event: ['war', 'battle', 'massacre', 'festival', 'wedding', 'summit', 'heist', 'betrayal', 'leak', 'reunion', 'sighting', 'revelation', 'incident', 'attack', 'raid'],
 };
@@ -167,10 +170,28 @@ export const PERSON_LEXICON = {
   secret: ['secret', 'hidden', 'nobody knows', 'no one knows', 'conceal'],
   goal: ['goal', 'wants to', 'plan', 'ambition', 'escape', 'retirement', 'exit', 'dream'],
   skill: ['skill', 'marksmanship', 'trained', 'training', 'expert', 'proficient'],
-  ability: ['ability', 'abilities', 'power', 'quirk', 'magic', 'spell', 'supernatural'],
+  // What a person can do that ordinary people cannot, whatever the universe
+  // calls it. The universe's own word — Quirk, Magic, Cybernetics, bloodline —
+  // is a display group, never a category: see Package v1 §"Category vs
+  // displayPath". So this list is what those words mean, and stays generic.
+  ability: ['ability', 'abilities', 'power', 'powers', 'quirk', 'magic', 'spell', 'spells', 'supernatural',
+    'cybernetic', 'cyberware', 'implant', 'augment', 'transformation', 'transform', 'bloodline', 'clan',
+    'mutation', 'gift', 'curse', 'domain', 'technique', 'manifest', 'awaken', 'range', 'limitation',
+    'limitations', 'cost', 'costs', 'drawback', 'recharge', 'cooldown', 'mastery', 'combat style', 'fighting style'],
   equipment: ['weapon', 'gear', 'equipment', 'carries'],
-  belief: ['believes', 'belief', 'principle', 'code of', 'faith', 'ethic', 'moral'],
-  habit: ['every monday', 'every week', 'habit', 'ritual', 'routine'],
+  // What somebody holds to be right. Values live here with beliefs: telling
+  // them apart would need a category Nexus does not have (see the note on
+  // habit, below).
+  belief: ['believes', 'belief', 'principle', 'principles', 'code of', 'faith', 'ethic', 'ethics', 'moral',
+    'morals', 'value', 'values', 'conviction', 'creed', 'honour', 'honor', 'loyalty', 'stands for',
+    'will not compromise', 'refuses to'],
+  // What somebody does by habit, and what they like. Preferences live here
+  // rather than in a `preference` category of their own: adding a category
+  // would widen the enumerated list Package v1 froze, which is a decision for
+  // the person who froze it, not a side effect of a lexicon fix.
+  habit: ['every monday', 'every week', 'habit', 'habits', 'ritual', 'routine', 'always carries',
+    'prefers', 'prefer', 'preference', 'preferences', 'likes', 'dislikes', 'favourite', 'favorite',
+    'taste', 'tastes', 'enjoys', 'hates', 'cannot stand', 'drinks', 'smokes', 'eats', 'sleeps'],
 };
 
 export const WORLD_LEXICON = {
@@ -184,6 +205,56 @@ export const WORLD_LEXICON = {
 export const IMPERATIVES = /^(never|do not|don't|always|keep|let|track|maintain|prioriti[sz]e|ground|allow|call back|stay|describe|write|narrate|avoid|make|use|show|reach|treat|remember|respect|ensure|give|infer|portray|focus|include|emphasi[sz]e|end|begin|start|vary|depict|reflect|match|mirror|not every|you are|you must|you should)\b/i;
 /** Language about the telling rather than the told. */
 export const NARRATION = /\b(a character|characters|the character|a hurt character|the scene|scenes|every beat|beat|narrat\w*|in character|roleplay|immersion|continuity|the model|dialogue|prose|reply|replies|response|{{user}}|{{char}}|the story|the world is|background figures)\b/i;
+
+/**
+ * A sentence that tells the telling what to do.
+ *
+ * "never", "must" and "do not" are ordinary words in ordinary prose — "she has
+ * never told him", "he must have wondered why", "she does not know" — and
+ * finding one anywhere in a sentence says nothing. A direction has structure:
+ * it either opens as a command, or it says who must do what, and that someone is
+ * the model, the reader, or characters in general rather than a person in the
+ * story.
+ *
+ * Deliberately narrow. A missed direction is one entry filed as a fact, which
+ * review can correct; a false one takes somebody's psychology and files it as an
+ * instruction to the narrator, which reads as Nexus not understanding the story.
+ */
+
+/** Who a direction can be aimed at: the telling, never a person in it. */
+const ADDRESSEE = String.raw`(?:you|your|the model|the ai|the narrator|the writer|the response|the reply|the prose|the narration|the scene|the story|scenes|characters|npcs|dialogue|\{\{user\}\}|\{\{char\}\}|nexus)`;
+/** What it tells them to do. An imperative verb, not "have" or "be". */
+const DIRECTED = String.raw`(?:reveal|narrate|write|describe|mention|speak|act|break|use|allow|let|refer|say|state|answer|reply|respond|address|assume|decide|control|voice|play|invent|add|skip|repeat|summari[sz]e|explain|end|begin|start|include|exclude|show|tell|treat|track|keep|maintain|stay|avoid|react|respond|remember|follow|obey|ignore|portray|depict|reflect|match|mirror|ground|prioriti[sz]e|emphasi[sz]e|vary|call)`;
+
+const DIRECTIVE_PATTERNS = [
+  // An imperative opening: "Never reveal…", "Do not narrate…", "Always keep…"
+  new RegExp(String.raw`^(?:never|do not|don'?t|always|please)\s+${DIRECTED}\b`, 'i'),
+  // A bare imperative opening: "Keep replies short.", "Narrate only what…"
+  new RegExp(String.raw`^${DIRECTED}\b`, 'i'),
+  // Someone in the telling is told what to do: "Characters must react…",
+  // "You should never…", "The model may not…"
+  new RegExp(String.raw`\b${ADDRESSEE}\s+(?:must|should|shall|may not|cannot|can't|must never|should never|will|are to|is to|needs? to|has to|have to)\s+(?:not\s+|never\s+)?${DIRECTED}\b`, 'i'),
+  // "…must be earned", "…should be avoided": a rule about the telling, in the
+  // passive, with the telling as its subject.
+  new RegExp(String.raw`\b${ADDRESSEE}\s+(?:must|should|shall|may not|cannot)\s+(?:not\s+|never\s+)?be\b`, 'i'),
+  // An explicit second-person command anywhere: "you must never break character"
+  /\byou (?:must|should|shall|may) (?:not |never )?\w+/i,
+];
+
+/**
+ * Whether one sentence is a direction to the telling.
+ *
+ * Checked against the sentence with any leading marker stripped, so
+ * "— Never reveal the secret" reads as the command it is.
+ */
+export function directiveSentence(s) {
+  const t = String(s || '').replace(/^[^A-Za-z{]+/, '').trim();
+  if (!t) return false;
+  // A person in the story doing something is not a direction, however the
+  // sentence is worded: "he must have wondered", "she has never told him".
+  if (/\b(?:must|should|would|might|may|could) have\b/i.test(t)) return false;
+  return DIRECTIVE_PATTERNS.some((re) => re.test(t));
+}
 /** Words that tie two entities together. */
 export const RELATIONSHIP_LANGUAGE = /\b(led by|leads|owned by|owns|owner|works for|member of|operates inside|serves|mentor|took (him|her) in|trusted|trusts|loyal|rival|friend|enemy|partner|boss|capo|father|mother|brother|sister|wife|husband|lover|son|daughter|family|gave|given|betray\w*|killed|protects|employs|hired|men|associates?|allied|married|raised)\b/i;
 

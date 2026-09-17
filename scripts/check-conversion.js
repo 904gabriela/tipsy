@@ -16,6 +16,8 @@ import { createHash } from 'node:crypto';
 import { open } from '../src/db/index.js';
 import { analyzeSource, DRAFT_FORMAT, DRAFT_VERSION } from '../src/conversion/analyze.js';
 import { createEntity, declareInSource, distinguish } from '../src/semantics/store.js';
+import { directiveSentence } from '../src/conversion/text.js';
+import { PERSON_CATEGORIES } from '../src/semantics/authority.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 let pass = 0; let fail = 0;
@@ -358,6 +360,172 @@ console.log('\nN  through the server: read-only, and no model');
     server.kill();
     provider.close();
   }
+}
+
+// ---------------------------------------------------------------- O
+console.log('\nO  one name, two different kinds of thing');
+{
+  // A person and a syndicate that answer to the same word. Collapsing them
+  // because the strings matched invented a fact nobody wrote.
+  const d2 = open(tmp());
+  const S = build(d2, 'The Marsh', [
+    { title: 'Ash', kind: 'character', keys: ['Ash'], content: 'Ash: forty, unhurried, a ferryman. He has worked this crossing since he was a boy.' },
+    { title: 'Ash', kind: 'faction', keys: ['Ash'], content: 'The Ash is a syndicate of four families. It controls the marsh crossings and taxes every barge.' },
+    { title: 'Ash', kind: 'place', keys: ['Ash'], content: 'Ash is a village of nine houses at the head of the marsh road.' },
+  ]);
+  const dd = analyzeSource(d2, S);
+  const ashes = dd.entities.filter((e) => e.name === 'Ash');
+  ok('three things of one name stay three things', ashes.length === 3, `${ashes.length} found`);
+  ok('and each keeps its own kind', ['person', 'faction', 'place'].every((t) => ashes.some((e) => e.type === t)),
+    ashes.map((e) => e.type).join(', '));
+  ok('each keeps its own describing entry', ashes.every((e) => e.profileEntries.length === 1));
+  const collision = dd.warnings.filter((w) => w.code === 'name-collision');
+  ok('the collision is reported rather than resolved', collision.length >= 1, collision[0]?.message?.slice(0, 90));
+  ok('and each says which other kinds share its name', ashes.every((e) => e.nameSharedWith.length === 2),
+    JSON.stringify(ashes.map((e) => e.nameSharedWith)));
+  d2.close();
+}
+
+console.log('\n   same name, same kind, and maybe not the same one');
+{
+  const d2 = open(tmp());
+  const S = build(d2, 'Two of them', [
+    { title: 'Wren Alder', kind: 'character', keys: ['Wren Alder'], content: 'Wren Alder: nineteen, a courier on the northern line, seasick and cheerful about it.' },
+    { title: 'Wren Alder', kind: 'character', keys: ['Wren Alder'], content: 'Wren Alder: a retired cartographer of eighty, deaf in one ear, tends bees on a hill.' },
+  ]);
+  const dd = analyzeSource(d2, S);
+  const wrens = dd.entities.filter((e) => e.name === 'Wren Alder');
+  ok('one name and one kind is still one entity', wrens.length === 1, `${wrens.length}`);
+  ok('but the doubt is recorded, not buried', wrens[0].mayBeSeveral === true);
+  const w = dd.warnings.find((x) => x.code === 'possibly-separate');
+  ok('and said in words a person can act on', !!w && /may not be the same/i.test(w.message), w?.message?.slice(0, 100));
+  ok('nothing was split on a similarity score', wrens[0].profileEntries.length === 2);
+  d2.close();
+}
+
+// ---------------------------------------------------------------- P
+console.log('\nP  where a source came from is evidence, never identity');
+{
+  // The card says one person. The entries are about somebody else entirely.
+  const d2 = open(tmp());
+  const card = d2.writeCharacter({ name: 'Mira Holt', description: 'A smuggler.', firstMessage: 'She waits.' });
+  const S = build(d2, 'Holt — Lore', [
+    { title: 'Bram Tulley', kind: 'note', keys: ['Bram Tulley'], content: 'Bram Tulley: sixty, a harbourmaster, methodical and unbribable. He keeps the tide book himself.' },
+    { title: 'The Tide Book', kind: 'note', keys: ['tide book'], content: 'The tide book is a ledger of every sailing for thirty years. Bram Tulley writes in it each dawn.' },
+    { title: 'A Quiet Habit', kind: 'note', keys: ['habit'], content: 'She counts the stairs on the way up, every time, and has never said why.' },
+  ]);
+  d2.raw.prepare('UPDATE lorebooks SET from_character=? WHERE id=?').run(card, S);
+  const dd = analyzeSource(d2, S);
+
+  ok('the card is remembered', dd.source.card?.name === 'Mira Holt');
+  ok('and no person was manufactured from its name', !dd.entities.some((e) => e.name === 'Mira Holt'),
+    dd.entities.map((e) => e.name).join(', '));
+  ok('the person the entries describe is found from the content', dd.entities.some((e) => e.name === 'Bram Tulley' && e.type === 'person'));
+  const habit = dd.entries.find((e) => e.title === 'A Quiet Habit');
+  ok('an entry naming nobody is given to nobody', !habit.proposal?.subject,
+    habit.proposal?.subject ? dd.entities.find((x) => x.ref === habit.proposal.subject).name : 'nobody');
+  ok('and says so rather than guessing', habit.confidence === 'low' || (habit.unresolved || []).length > 0,
+    `${habit.confidence} · ${JSON.stringify(habit.unresolved)}`);
+  const all = [...dd.entries.flatMap((e) => e.evidence), ...dd.entities.flatMap((e) => e.evidence)];
+  const prov = all.filter((v) => v.basis === 'provenance');
+  ok('every piece of provenance is labelled as provenance', prov.every((v) => v.basis === 'provenance'));
+  ok('and every piece of it is worth nothing', prov.every((v) => v.points === 0));
+  ok('content evidence is labelled separately', all.filter((v) => v.basis === 'content').length > 0);
+  ok('and is the only kind that carries points', all.filter((v) => v.points > 0).every((v) => v.basis === 'content'));
+  d2.close();
+}
+
+// ---------------------------------------------------------------- Q
+console.log('\nQ  a direction has structure, not a word');
+{
+  const prose = [
+    ['She has never told him.', 'never, in the past tense'],
+    ['He must have wondered why.', 'must have: a guess about someone'],
+    ['He does not know the truth.', 'does not: a fact about someone'],
+    ['She counts the stairs, and has never said why.', 'a habit containing "never"'],
+    ['He never raises his voice.', 'a manner containing "never"'],
+  ];
+  const orders = [
+    ['Never reveal the secret to the user.', 'an imperative opening'],
+    ["Do not narrate {{user}}'s actions.", 'an imperative about the player'],
+    ['Characters must react to injuries.', 'a rule aimed at characters in general'],
+    ['You must never break character.', 'second person'],
+    ['Always keep replies under three paragraphs.', 'about the reply'],
+    ['The model should avoid summarising the scene.', 'about the model'],
+  ];
+  for (const [s, why] of prose) ok(`prose stays prose: ${why}`, !directiveSentence(s), s);
+  for (const [s, why] of orders) ok(`an order is an order: ${why}`, directiveSentence(s), s);
+
+  const d2 = open(tmp());
+  const S = build(d2, 'Mixed', [
+    { title: 'Ivo Lanz', kind: 'character', keys: ['Ivo Lanz'], content: 'Ivo Lanz: fifty, a locksmith, deliberate. He never raises his voice and has never told anyone why he left.' },
+    { title: 'Player Agency', kind: 'note', keys: ['agency'], content: "Never write the player's dialogue. Do not decide what they notice or feel." },
+  ]);
+  const dd = analyzeSource(d2, S);
+  const person = dd.entries.find((e) => e.title === 'Ivo Lanz');
+  const rule = dd.entries.find((e) => e.title === 'Player Agency');
+  ok('a profile full of "never" is still a profile', person.proposal?.scope === 'entity' && person.proposal?.category === 'profile',
+    `${person.proposal?.scope}/${person.proposal?.category}`);
+  ok('and the real direction is still a direction', rule.proposal?.scope === 'world' && rule.proposal?.category === 'direction',
+    `${rule.proposal?.scope}/${rule.proposal?.category}`);
+  d2.close();
+}
+
+// ---------------------------------------------------------------- R
+console.log('\nR  deep character material does not fall into "other"');
+{
+  const d2 = open(tmp());
+  const S = build(d2, 'Sena — Lore', [
+    { title: 'Sena Oduya', kind: 'character', keys: ['Sena Oduya'], content: 'Sena Oduya: twenty-six, quiet, a hydrokinetic. She keeps her distance.' },
+    { title: 'Quirk: Fluid Domain', kind: 'note', keys: ['domain'], content: 'Sena can shape any water within twelve metres of herself.' },
+    { title: 'Quirk: Limitations', kind: 'note', keys: ['limit'], content: 'Sena cannot shape water she has not touched. The limitation is absolute.' },
+    { title: 'Quirk: Costs', kind: 'note', keys: ['cost'], content: 'Every minute of use costs Sena a litre of her own water. The cost compounds.' },
+    { title: 'Cybernetics', kind: 'note', keys: ['arm'], content: "Sena's left arm is an augment, a military implant she has never explained." },
+    { title: 'Bloodline', kind: 'note', keys: ['clan'], content: 'Sena is of the Oduya clan, and the bloodline carries the gift.' },
+    { title: 'What she prefers', kind: 'note', keys: ['tea'], content: 'Sena prefers tea to coffee, dislikes crowds, and her favourite hour is four in the morning.' },
+    { title: 'What she stands for', kind: 'note', keys: ['debt'], content: 'Sena believes a debt is a debt. Her values are simple and she will not compromise them.' },
+  ]);
+  const dd = analyzeSource(d2, S);
+  const catOf = (t) => dd.entries.find((e) => e.title === t).proposal?.category;
+  const deep = ['Quirk: Fluid Domain', 'Quirk: Limitations', 'Quirk: Costs', 'Cybernetics', 'Bloodline', 'What she prefers', 'What she stands for'];
+  ok("a universe's own power is an ability", catOf('Quirk: Fluid Domain') === 'ability', catOf('Quirk: Fluid Domain'));
+  ok('so are its limits', catOf('Quirk: Limitations') === 'ability', catOf('Quirk: Limitations'));
+  ok('and its costs', catOf('Quirk: Costs') === 'ability', catOf('Quirk: Costs'));
+  ok('cybernetics are an ability too', catOf('Cybernetics') === 'ability', catOf('Cybernetics'));
+  ok('and so is a bloodline', catOf('Bloodline') === 'ability', catOf('Bloodline'));
+  ok('preferences are not lost', catOf('What she prefers') === 'habit', catOf('What she prefers'));
+  ok('values are not lost', catOf('What she stands for') === 'belief', catOf('What she stands for'));
+  ok('nothing about her fell into "other"', deep.every((t) => catOf(t) !== 'other'),
+    deep.filter((t) => catOf(t) === 'other').join(', '));
+  const quirk = dd.entries.find((e) => e.title === 'Quirk: Fluid Domain');
+  ok("the universe's word becomes a display group", JSON.stringify(quirk.proposal?.displayPath) === '["Quirk"]',
+    JSON.stringify(quirk.proposal?.displayPath));
+  ok('and no new category was invented for it', PERSON_CATEGORIES.includes(quirk.proposal.category), quirk.proposal.category);
+  d2.close();
+}
+
+// ---------------------------------------------------------------- S
+console.log('\nS  a warning means a real contradiction');
+{
+  const d2 = open(tmp());
+  const S = build(d2, 'Ordinary notes', [
+    // Legacy kinds Nexus has no type for, read correctly. Not contradictions.
+    { title: 'The Long Room', kind: 'note', keys: ['long room'], content: 'The Long Room is a tavern on the quay. Nobody argues in it twice.' },
+    { title: 'Odile Renn', kind: 'note', keys: ['Odile Renn'], content: 'Odile Renn: thirty, a printer, watchful. She sets type faster than anyone on the street.' },
+    { title: 'Her mornings', kind: 'premise', keys: ['morning'], content: 'Odile Renn is at the press before six, every day, and says the light is better then.' },
+    // A real contradiction: stored as a place, reads as a person.
+    { title: 'Casimir Bey', kind: 'place', keys: ['Casimir Bey'], content: 'Casimir Bey: sixty, patient, the oldest printer still working. He taught Odile Renn her trade.' },
+  ]);
+  const dd = analyzeSource(d2, S);
+  const kinds = dd.warnings.filter((w) => w.code === 'kind-disagrees');
+  ok('a legacy kind with no semantic equivalent is not a disagreement',
+    !kinds.some((w) => /The Long Room|Odile Renn|Her mornings/.test(w.message)),
+    kinds.map((w) => w.message.slice(0, 40)).join(' | '));
+  ok('a real contradiction still is one', kinds.some((w) => /Casimir Bey/.test(w.message)), kinds.length ? kinds[0].message.slice(0, 90) : 'none');
+  ok('and it says the stored kind is left alone', kinds.every((w) => /left as it is/.test(w.message)));
+  ok('the warnings stay few enough to read', dd.warnings.length <= dd.entries.length,
+    `${dd.warnings.length} warnings for ${dd.entries.length} entries`);
+  d2.close();
 }
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);

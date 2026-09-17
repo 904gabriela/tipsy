@@ -25,7 +25,7 @@ import { semanticViews, sourceOrganization, areDistinct, resolveNpcEntity, Seman
 import { inspectPackage, importPackage } from './src/package/import.js';
 import { exportStory, exportSources } from './src/package/export.js';
 import { analyzeSource } from './src/conversion/analyze.js';
-import { applyReview } from './src/conversion/apply.js';
+import { applyReview, correctionImpact, ReviewError } from './src/conversion/apply.js';
 import { assist } from './src/conversion/assist.js';
 import { entityProfile } from './src/semantics/profile.js';
 import { createEntityKnowledge, updateEntityKnowledge, deleteEntityKnowledge, storyMaterialSource, AuthoringError } from './src/semantics/authoring.js';
@@ -893,6 +893,20 @@ route('POST', '/api/lorebooks/:id/semantic-apply', async (req, res, { id }) => {
   const decisions = await readJson(req);
   const result = applyReview(db, id, decisions);
   return { ...result, organization: sourceOrganization(db, id) };
+});
+
+/**
+ * What is leaning on one approved reading, before it is corrected.
+ *
+ * Read-only, and asked for the one entry a person is about to change: which
+ * person it ties this source to, what else in the source says the same, and who
+ * else — cards, other sources, stories — is reading that tie.
+ */
+route('GET', '/api/lorebooks/:id/semantic-impact', async (req, res, { id }, url) => {
+  const entryId = url.searchParams.get('entryId');
+  if (!entryId) throw new HttpError(400, 'Which entry?');
+  try { return correctionImpact(db, id, entryId); }
+  catch (e) { throw e instanceof ReviewError ? new HttpError(e.status, e.message) : e; }
 });
 
 // --- Nexus Story Package v1

@@ -22,7 +22,8 @@
 //   role: { role, subject: entityRef|null } | null,
 //   entities: [{ ref, type, name, aliases[], decision: 'new'|'existing'|'skip', entityId? }],
 //   entries:  [{ ref, entryId, hash, approve: true|false,
-//                scope, category, defines: ref|null, subject: ref|null, related: [ref], displayPath }],
+//                scope, category, defines: ref|null, subject: ref|null, related: [ref], displayPath,
+//                proposedBy: 'deterministic-conversion'|'model-assist'|'manual', model? }],
 //   matches:  [{ entity: ref, entityId, decision: 'same'|'separate'|'later' }],
 //   evidence: { entryRef: […], entityRef: […] }        // from the preview, stored as the reason
 // }
@@ -37,6 +38,19 @@ import {
 } from '../semantics/store.js';
 
 const CATEGORIES = new Set([...PERSON_CATEGORIES, ...WORLD_CATEGORIES, 'profile']);
+
+/**
+ * How a reading was arrived at, before a person approved it.
+ *
+ * The approval is always a person's — that is what `decidedIn: 'review'` says,
+ * and it does not change. What must not be lost is how the thing they approved
+ * was produced: the deterministic pass reading the text, a model asked to look
+ * closer, or a person choosing from the lists themselves. A suggestion a model
+ * made and a person accepted is stored as exactly that, because anyone later
+ * deciding whether to trust it needs to know which it was.
+ */
+const PROPOSED_BY = new Set(['deterministic-conversion', 'model-assist', 'manual']);
+const proposedBy = (v) => (PROPOSED_BY.has(v) ? v : 'deterministic-conversion');
 
 export class ReviewError extends Error {
   constructor(message, { status = 400, problems = [], stale = [] } = {}) {
@@ -155,7 +169,7 @@ export function applyReview(db, lorebookId, decisions = {}) {
       declareInSource(db, {
         lorebookId, entityId: id, localRef: ref, localName: String(x.name).trim(), localAliases: x.aliases || [],
         origin: 'converted', status: 'approved',
-        evidence: { proposedBy: 'deterministic-conversion', decidedIn: 'review', why: evidence[ref] || x.evidence || [] },
+        evidence: { proposedBy: proposedBy(x.proposedBy), decidedIn: 'review', why: evidence[ref] || x.evidence || [] },
       });
       resolved.set(ref, id);
       return id;
@@ -172,7 +186,12 @@ export function applyReview(db, lorebookId, decisions = {}) {
         entryId: e.entryId, scope: e.scope, category: e.category, definesEntityId: definesId,
         origin: 'converted', status: 'approved', confidence: e.confidence || null,
         displayPath: e.displayPath || null,
-        evidence: { proposedBy: 'deterministic-conversion', decidedIn: 'review', why: evidence[e.ref] || e.evidence || [] },
+        evidence: {
+          proposedBy: proposedBy(e.proposedBy),
+          ...(e.model && proposedBy(e.proposedBy) === 'model-assist' ? { model: String(e.model).slice(0, 120) } : {}),
+          decidedIn: 'review',
+          why: evidence[e.ref] || e.evidence || [],
+        },
       });
       // Relations this entry no longer claims are removed, so a changed decision
       // does not leave the old one behind.
@@ -189,7 +208,7 @@ export function applyReview(db, lorebookId, decisions = {}) {
       setSourceRole(db, {
         lorebookId, role: role.role, origin: 'converted', status: 'approved',
         subjectEntityId: role.subject ? resolved.get(role.subject) : null,
-        evidence: { proposedBy: 'deterministic-conversion', decidedIn: 'review', why: evidence.role || [] },
+        evidence: { proposedBy: proposedBy(role.proposedBy), decidedIn: 'review', why: evidence.role || [] },
       });
     }
 
@@ -210,6 +229,72 @@ export function applyReview(db, lorebookId, decisions = {}) {
       role: role ? role.role : null,
     };
   });
+}
+
+/**
+ * What is leaning on one entry's approved reading, before it is changed.
+ *
+ * Correcting a decision rewrites sidecar rows and nothing else — the entry keeps
+ * its words and its activation whatever happens here. But an approved reading is
+ * what ties a source to a person, and a person to their reusable knowledge, so
+ * changing who an entry is about can quietly be the thing that stops a story
+ * being offered somebody's material. This says so first.
+ *
+ * Read-only.
+ */
+export function correctionImpact(db, lorebookId, entryId) {
+  const row = db.raw.prepare(`SELECT e.id, e.title, e.lorebook_id, s.scope, s.category, s.defines_entity_id, s.status
+      FROM lore_entries e LEFT JOIN entry_semantics s ON s.entry_id = e.id
+     WHERE e.id = ? AND e.lorebook_id = ?`).get(entryId, lorebookId);
+  if (!row) throw new ReviewError('That entry is not in this source.', { status: 404 });
+
+  const subject = db.raw.prepare(`SELECT entity_id FROM entry_relations
+     WHERE entry_id=? AND relation='subject' AND status='approved'`).get(entryId);
+  const entityId = row.defines_entity_id || subject?.entity_id || null;
+  const base = {
+    entryId,
+    title: row.title,
+    approved: row.status === 'approved',
+    entityId,
+    person: null,
+    // Nothing here is ever deleted by a correction; this is what would stop
+    // being joined up, not what would be lost.
+    depends: { alsoAboutThem: 0, cards: [], sources: [], stories: [], lastTie: false },
+  };
+  if (!entityId) return base;
+
+  const who = currentEntity(db, entityId);
+  const n = (sql, ...a) => db.raw.prepare(sql).get(...a).n;
+  const alsoAboutThem = n(`SELECT COUNT(*) n FROM entry_relations r
+      JOIN lore_entries e ON e.id = r.entry_id
+     WHERE r.entity_id=? AND r.relation='subject' AND r.status='approved'
+       AND e.lorebook_id=? AND r.entry_id<>?`, entityId, lorebookId, entryId);
+  const defines = n(`SELECT COUNT(*) n FROM entry_semantics s
+      JOIN lore_entries e ON e.id = s.entry_id
+     WHERE s.defines_entity_id=? AND s.status='approved' AND e.lorebook_id=? AND s.entry_id<>?`, entityId, lorebookId, entryId);
+
+  return {
+    ...base,
+    person: who ? { id: who.id, name: who.canonical_name } : null,
+    depends: {
+      // Other entries in THIS source that keep it about them.
+      alsoAboutThem: alsoAboutThem + defines,
+      // Cards and personas that represent them.
+      cards: ['characters', 'personas'].flatMap((t) => db.raw.prepare(`SELECT id, name FROM ${t} WHERE entity_id=?`)
+        .all(entityId).map((r) => ({ kind: t === 'characters' ? 'character' : 'persona', id: r.id, name: r.name }))),
+      // Other sources that say they are about them.
+      sources: db.raw.prepare(`SELECT l.id, l.name FROM source_entities se JOIN lorebooks l ON l.id=se.lorebook_id
+         WHERE se.entity_id=? AND se.status='approved' AND se.lorebook_id<>? ORDER BY l.name`).all(entityId, lorebookId),
+      // Stories reading reusable knowledge about them.
+      stories: db.raw.prepare(`SELECT DISTINCT s.id, s.title FROM stories s
+          JOIN story_lorebooks sl ON sl.story_id=s.id
+          JOIN source_semantics ss ON ss.lorebook_id=sl.lorebook_id
+         WHERE ss.status='approved' AND ss.package_role='entity-material'
+           AND ss.subject_entity_id=? AND ss.owner_story_id IS NULL ORDER BY s.title`).all(entityId),
+      // This entry is the only thing in this source that says so.
+      lastTie: alsoAboutThem + defines === 0,
+    },
+  };
 }
 
 export { SemanticError };

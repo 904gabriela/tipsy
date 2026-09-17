@@ -5427,9 +5427,20 @@ function renderLore() {
     </div>`).join('') || `<div class="empty">Nothing here yet.</div>`)
     + `<div style="margin-top:40px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
          <button class="btn" data-organize="${esc(b.id)}">Understand this source</button>
-         <button class="btn quiet" data-reclassify="${esc(b.id)}">Sort entries by type again</button>
-         <button class="btn quiet" data-delete-book="${esc(b.id)}">Delete this lorebook</button>
-       </div>`;
+       </div>`
+    + `${/* Sorting by type REWRITES each entry's stored kind. That is not what
+            understanding a source does — understanding it leaves every entry
+            exactly as it is — so it does not stand next to it looking like the
+            same kind of act. */''}
+       <details class="src-legacy">
+         <summary>Older tools</summary>
+         <div class="why">These change the entries themselves, and are nothing to do with understanding what a source means.</div>
+         <div class="row-actions" style="margin-top:8px">
+           <button class="btn quiet" data-reclassify="${esc(b.id)}">Sort entries by type again</button>
+           <button class="btn quiet" data-delete-book="${esc(b.id)}">Delete this lorebook</button>
+         </div>
+         <div class="why dim" style="margin-top:6px">Sorting by type rewrites the kind stored on every entry in this source. Understanding a source never does.</div>
+       </details>`;
 
   $('#lore-bulk').hidden = !lore.choosing;
   $('#lore-select').classList.toggle('is-on', lore.choosing);
@@ -7215,13 +7226,20 @@ function shrinkToBlob(file, maxWide = 1600) {
 
 const review = {
   bookId: null, draft: null, entries: new Map(), entities: new Map(), role: null, matches: new Map(),
-  open: new Set(['decision']), saving: false, changingRole: false,
+  // What needs attention is open on arrival, because it is the reason to read
+  // the rest slowly.
+  open: new Set(['attention', 'decision']), saving: false, changingRole: false,
   // A closer look lives here and nowhere else: suggestions belong to this draft,
   // are never semantics, and go when the review is closed.
   suggestions: new Map(), looking: new Set(), trouble: new Map(), spent: [],
   // Which entry cards are open. Held here rather than in the DOM alone, so a
   // card you opened is still open after the screen redraws under you.
   opened: new Set(),
+  // What is leaning on a saved reading somebody is about to change, read once
+  // per entry when they ask to change it.
+  impact: new Map(),
+  // Which model answered a closer look, so a reading taken from it says so.
+  model: null,
 };
 
 const CATEGORY_LABEL = {
@@ -7258,6 +7276,45 @@ const bucketOf = (d) => {
 };
 const TYPE_LABEL = { person: 'Person', place: 'Place', faction: 'Group', item: 'Thing', event: 'Event', concept: 'Idea' };
 const TYPE_SECTION = { person: 'People', place: 'Places', faction: 'Groups', item: 'Things', event: 'Events', concept: 'Ideas' };
+
+/**
+ * What Nexus noticed and could not settle, in a reader's words.
+ *
+ * The analyser says a great deal to itself. Most of it is already the shape of
+ * this screen — an entry it cannot read is in "Need your decision", versions of
+ * one thing have their own section. What is left is the part a person would want
+ * told: a word doing two jobs, an old link the text does not support, several
+ * profiles that may not be one person, a stored kind that contradicts the
+ * reading, a subject nothing settles.
+ *
+ * Variant groups are deliberately left out. They have a section of their own,
+ * and counting 22 of them here would make the number mean nothing.
+ */
+const ATTENTION = {
+  'name-collision': 'One name, two different things',
+  'possibly-separate': 'May not be the same one',
+  'legacy-link-unsupported': 'An old link the text does not support',
+  'kind-disagrees': 'Stored as one kind of thing, reads as another',
+  'subject-unresolved': 'Who this is about is unsettled',
+};
+
+function attentionItems() {
+  const seen = new Set();
+  const out = [];
+  for (const w of review.draft?.warnings || []) {
+    const title = ATTENTION[w.code];
+    if (!title) continue;
+    // One line per thing, not per warning: the same entry flagged twice is
+    // still one thing to look at.
+    const key = `${w.code}:${(w.entries || w.entities || []).join(',')}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ code: w.code, title, message: w.message, entries: w.entries || [], entities: w.entities || [] });
+  }
+  return out;
+}
+/** What a warning says about one entry, so its own card can say it too. */
+const attentionFor = (ref) => attentionItems().filter((a) => a.entries.includes(ref));
 
 const entityName = (ref) => review.entities.get(ref)?.name || ref;
 const isSettled = (d) => d.scope !== 'entity' || !!d.subject || !!d.defines;
@@ -7309,7 +7366,7 @@ async function openSourceReview(bookId) {
   }
   review.draft = draft;
   // What needs deciding is the one thing open when the screen arrives.
-  review.open = new Set(['decision']);
+  review.open = new Set(['attention', 'decision']);
   review.changingRole = false;
   review.entities = new Map(draft.entities.map((x) => [x.ref, { ...x, decision: 'new' }]));
   // Which entries the original file called one kind of thing and Nexus reads as
@@ -7335,6 +7392,10 @@ async function openSourceReview(bookId) {
     suggested: e.proposal.subject || null,
     // Only what Nexus is sure of starts ticked. Everything else waits for you.
     approve: e.confidence === 'high' && isSettled(e.proposal) && e.current !== 'approved',
+    // How this reading was arrived at. It changes when a person edits it, and
+    // when they take a model's suggestion, and it is stored either way — the
+    // approval is always theirs, but what they approved has a history.
+    proposedBy: 'deterministic-conversion',
   }]));
   // Nothing is asked of any model by opening this screen.
   review.suggestions = new Map();
@@ -7406,6 +7467,28 @@ function renderReview() {
   const sections = [];
   // What a closer look could still be asked about here.
   const unasked = (rows) => rows.filter((x) => !review.suggestions.has(x.ref) && !review.looking.has(x.ref)).map((x) => x.ref);
+
+  // What Nexus noticed and could not settle. First, because it is the reason to
+  // read the rest slowly — and each one names the entry it is about, so it can
+  // be dealt with where it sits rather than hunted for.
+  const attention = attentionItems();
+  if (attention.length) {
+    sections.push({
+      id: 'attention',
+      title: 'Needs your attention',
+      n: attention.length,
+      why: 'Nexus found something it could not settle on its own. Nothing here is wrong yet; it is what to look at first.',
+      rows: attention.map((a) => {
+        const named = a.entries.map((ref) => review.entries.get(ref)).filter(Boolean);
+        return `<div class="rv-attend">
+          <div class="rv-attend-head"><b>${esc(a.title)}</b>${named.length
+    ? `<span class="n">${esc(named.map((x) => x.title).slice(0, 2).join(', '))}${named.length > 2 ? ` +${named.length - 2}` : ''}</span>` : ''}</div>
+          <div class="why">${esc(a.message)}</div>
+          ${named.length === 1 ? entryCard(named[0], { choose: true }) : ''}
+        </div>`;
+      }),
+    });
+  }
   if (decision.length) {
     sections.push({
       id: 'decision',
@@ -7586,7 +7669,10 @@ function closerLook(d, bucket) {
     : s.unresolved ? '<div class="rv-second-open">It could not settle every part of this.</div>' : ''}
       <div class="why">${esc(s.explanation)}</div>
       ${s.related.length ? `<div class="why">Also connected to: ${esc(s.related.map(name).join(', '))}.</div>` : ''}
-      ${s.proposedEntities.length ? `<div class="why">It thinks this source is missing ${esc(s.proposedEntities.map((p) => `${p.name} (${TYPE_LABEL[p.type]?.toLowerCase() || p.type})`).join(', '))}. Nothing is added unless you add it.</div>` : ''}
+      ${/* It can say who it thinks is missing, and this screen cannot add them:
+           a review decides about the people the source itself named. Said as
+           what it is, rather than as an offer that leads nowhere. */''}
+      ${s.proposedEntities.length ? `<div class="why">It thinks this source is missing ${esc(s.proposedEntities.map((p) => `${p.name} (${TYPE_LABEL[p.type]?.toLowerCase() || p.type})`).join(', '))}. Nobody new can be added here — organise a source that describes them, and they will exist.</div>` : ''}
       ${quotes.length ? `<details><summary>The words it went on</summary>
         ${quotes.map((v) => `<div class="fired-row"><span class="t">“${esc(v.quote)}”</span></div>`).join('')}
       </details>` : ''}
@@ -7602,6 +7688,31 @@ function closerLook(d, bucket) {
 }
 
 /** One entry, said plainly, with everything technical folded away. */
+/**
+ * Changing a reading you already saved.
+ *
+ * The entry itself is never at risk — its words, its keywords and when it fires
+ * are not part of this screen and are not part of the correction. What can
+ * change is who it is about, and that is what this says: what else in this
+ * source says the same thing, and who is reading the answer today.
+ */
+function correctionNote(d) {
+  const i = review.impact.get(d.ref);
+  const say = [];
+  if (i) {
+    if (i.person) say.push(`Saved as being about ${i.person.name}.`);
+    if (i.depends.lastTie && i.person) say.push(`This is the only entry in this source that says so, so changing it stops this source being about ${i.person.name}.`);
+    else if (i.depends.alsoAboutThem) say.push(`${num(i.depends.alsoAboutThem)} other ${i.depends.alsoAboutThem === 1 ? 'entry' : 'entries'} here also say so, so this source stays about them either way.`);
+    for (const c of i.depends.cards) say.push(`${c.kind === 'persona' ? 'Someone you play' : 'The character card'} “${c.name}” is them.`);
+    if (i.depends.stories.length) say.push(`${i.depends.stories.length === 1 ? 'One story reads' : `${num(i.depends.stories.length)} stories read`} their reusable knowledge: ${i.depends.stories.map((s) => s.title).join(', ')}.`);
+    if (i.depends.sources.length) say.push(`${num(i.depends.sources.length)} other ${i.depends.sources.length === 1 ? 'source says' : 'sources say'} they are about them too.`);
+  }
+  return `<div class="rv-keeps">
+    <b>Changing a saved reading</b>
+    <span>The entry keeps its words, its keywords and when it fires. Only what it means changes.${say.length ? ` ${esc(say.join(' '))}` : ''}</span>
+  </div>`;
+}
+
 function entryCard(d, { choose = false, hideCategory = false, hideSubject = false, compact = false }) {
   const kind = CATEGORY_LABEL[d.category] || d.category;
   // Inside "What this says about Patrick", every row saying "about Patrick" is
@@ -7620,7 +7731,8 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
   return `
     <div class="edit-card" data-entry-ref="${esc(d.ref)}">
       <div class="edit-head">
-        ${d.current === 'approved' ? '<span class="card-badge">saved</span>'
+        ${d.current === 'approved' && !d.correcting ? `<button class="card-badge as-btn" data-correct="${esc(d.ref)}" title="Change this">saved</button>`
+    : d.current === 'approved' ? `<button class="rv-tick" data-tick="${esc(d.ref)}" aria-pressed="${d.approve}" aria-label="${d.approve ? 'Correction ready to save' : 'Save this correction'}"></button>`
     // Accepting a reading is not switching a Lore entry on: the control is a tick,
     // deliberately unlike the enable/disable switch the rest of the app uses.
     : `<button class="rv-tick" data-tick="${esc(d.ref)}" aria-pressed="${d.approve}" aria-label="${d.approve ? 'Accepted' : 'Accept this reading'}"></button>`}
@@ -7644,7 +7756,8 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
           </div>` : ''}
         ${closerLook(d, bucket)}
         ${d.reclassified ? `<div class="why">The original file called this “${esc(d.storedKind)}”. Nexus reads it as ${esc(d.defines ? `a ${TYPE_LABEL[review.entities.get(d.defines)?.type]?.toLowerCase() || 'thing'}` : kind.toLowerCase())}. The original file is not changed.</div>` : ''}
-        ${choose || d.pick || !isSettled(d) ? `
+        ${d.correcting ? correctionNote(d) : ''}
+        ${choose || d.pick || d.correcting || !isSettled(d) ? `
           <div class="field">
             <label>Who is this about?</label>
             ${likelyPeople.length ? `<div class="rv-hint">Likely</div>` : ''}
@@ -7698,6 +7811,35 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
  * rests on, and the entries that describe it — including their own tick, so no
  * decision is counted in Save that cannot be looked at here.
  */
+/**
+ * Who this is, when Nexus already knows somebody it could be.
+ *
+ * Three answers, and only the ones that mean something here are offered. Making
+ * them anew is the default. Where an organised source already has somebody of
+ * this name and kind, saying "this is them" reuses that person instead of making
+ * a second — and that is the same decision the "possibly the same elsewhere"
+ * section asks, so it is wired to it rather than to a second mechanism. Leaving
+ * them out is offered only while nothing ticked is about them, because an entry
+ * about somebody who was left out cannot be saved.
+ */
+function entityChoice(x, state) {
+  const mine = [...review.matches.entries()].filter(([, m]) => m.entity === x.ref && m.kind === 'existing-entity' && m.candidate?.entityId);
+  const usedByTicked = [...review.entries.values()].some((d) => d.approve && (d.subject === x.ref || d.defines === x.ref || (d.related || []).includes(x.ref)));
+  const same = mine.find(([, m]) => m.decision === 'same');
+  return `
+    <div class="rv-hint">Who is this?</div>
+    <div class="row-actions" style="margin-bottom:8px">
+      <button class="btn${!same && state.decision !== 'skip' ? ' primary' : ''}" data-ent-new="${esc(x.ref)}">New to Nexus</button>
+      ${mine.map(([key, m]) => `<button class="btn${m.decision === 'same' ? ' primary' : ''}" data-ent-same="${esc(key)}">Already have them</button>`).join('')}
+      ${!usedByTicked ? `<button class="btn${state.decision === 'skip' ? ' primary' : ''}" data-ent-skip="${esc(x.ref)}">Leave out</button>` : ''}
+    </div>
+    ${same ? `<div class="why">The ${esc(TYPE_LABEL[state.type].toLowerCase())} already in your library will be used; this source will say it is about them too.</div>` : ''}
+    ${state.decision === 'skip' ? '<div class="why">Left out. Nothing in this source will be recorded as being about them.</div>' : ''}
+    ${/* Why the third option is not here: an entry you have accepted is about
+         them, so leaving them out would make that entry unsavable. */''}
+    ${usedByTicked ? '<div class="why dim">To leave them out, first untick the entries about them below.</div>' : ''}`;
+}
+
 function entityCard(x) {
   const state = review.entities.get(x.ref);
   const profiles = x.profileEntries.map((ref) => review.entries.get(ref)).filter(Boolean);
@@ -7713,6 +7855,11 @@ function entityCard(x) {
           ${profiles.map((p) => entryCard(p, { compact: true, hideCategory: true })).join('')}`
     : '<div class="why">No entry in this source describes them directly; they are only mentioned.</div>'}
         ${state.aliases.length ? `<div class="why">Also called ${esc(state.aliases.join(', '))}.</div>` : ''}
+        ${/* A word doing two jobs in one source. Kept apart, and said so, because
+             the alternative is one entity of the wrong kind. */''}
+        ${(x.nameSharedWith || []).length ? `<div class="why dim">“${esc(state.name)}” is also the name of ${esc((x.nameSharedWith || []).map((t) => `a ${(TYPE_LABEL[t] || t).toLowerCase()}`).join(' and '))} in this source. They are kept apart.</div>` : ''}
+        ${x.mayBeSeveral ? '<div class="why dim">The entries describing them have little in common. They may be one written twice, or they may not be the same at all.</div>' : ''}
+        ${entityChoice(x, state)}
         <details${editing ? ' open' : ''}><summary>Change the name or what they are</summary>
           <div class="field"><label>Name</label><input data-entity-name="${esc(x.ref)}" value="${esc(state.name)}"></div>
           <div class="field">
@@ -7784,6 +7931,7 @@ function onReviewClick(e) {
       d.subject = null;
       if (PERSON_CATEGORY.includes(d.category)) d.category = 'background';
     }
+    d.proposedBy = 'manual';
     d.approve = true;
     renderReview();
     return;
@@ -7792,9 +7940,36 @@ function onReviewClick(e) {
   if (unrelate) {
     const d = review.entries.get(unrelate.dataset.unrelate);
     d.related = d.related.filter((r) => r !== unrelate.dataset.entity);
+    d.proposedBy = 'manual';
     renderReview();
     return;
   }
+  // ---- who an entity is: new to Nexus, one it already has, or left out
+  const entNew = e.target.closest('[data-ent-new]');
+  if (entNew) {
+    const ref = entNew.dataset.entNew;
+    review.entities.get(ref).decision = 'new';
+    for (const [, m] of review.matches) if (m.entity === ref && m.decision === 'same') m.decision = 'separate';
+    renderReview();
+    return;
+  }
+  const entSame = e.target.closest('[data-ent-same]');
+  if (entSame) {
+    const m = review.matches.get(entSame.dataset.entSame);
+    m.decision = 'same';
+    review.entities.get(m.entity).decision = 'existing';
+    review.entities.get(m.entity).entityId = m.candidate.entityId;
+    renderReview();
+    return;
+  }
+  const entSkip = e.target.closest('[data-ent-skip]');
+  if (entSkip) {
+    const state = review.entities.get(entSkip.dataset.entSkip);
+    state.decision = state.decision === 'skip' ? 'new' : 'skip';
+    renderReview();
+    return;
+  }
+
   const match = e.target.closest('[data-match]');
   if (match) {
     review.matches.get(match.dataset.match).decision = match.dataset.decision;
@@ -7804,6 +7979,25 @@ function onReviewClick(e) {
   }
   const use = e.target.closest('[data-use]');
   if (use) { review.entries.get(use.dataset.use).approve = true; renderReview(); return; }
+
+  // ---- changing a reading that was already saved
+  const correct = e.target.closest('[data-correct]');
+  if (correct) {
+    const ref = correct.dataset.correct;
+    const d = review.entries.get(ref);
+    d.correcting = true;
+    d.proposedBy = 'manual';
+    review.opened.add(ref);
+    renderReview();
+    // What is leaning on it, said before anything is changed rather than after.
+    (async () => {
+      try {
+        review.impact.set(ref, await get(`/api/lorebooks/${review.bookId}/semantic-impact?entryId=${encodeURIComponent(d.entryId)}`));
+      } catch { /* the note simply says less */ }
+      renderReview();
+    })();
+    return;
+  }
 
   // ---- a closer look, and what is done with what comes back
   const look = e.target.closest('[data-look]');
@@ -7897,6 +8091,8 @@ async function lookCloser(refs, { force = false } = {}) {
   renderReview();
   try {
     const out = await post(`/api/lorebooks/${review.bookId}/semantic-assist`, { refs: todo, force });
+    // Which model answered, so a reading taken from it can say so afterwards.
+    if (out.model) review.model = out.model;
     for (const s of out.suggestions || []) review.suggestions.set(s.entryRef, s);
     for (const p of out.problems || []) {
       if (p.entryRef && !review.suggestions.has(p.entryRef)) review.trouble.set(p.entryRef, saidPlainly(p));
@@ -7952,6 +8148,10 @@ function takeSuggestion(ref) {
   d.related = d.related.filter((r) => r !== d.subject && r !== d.defines);
   if (s.displayPath) d.displayPath = s.displayPath;
   s.accepted = true;
+  // A model proposed this and a person took it. Both halves are recorded: the
+  // approval is theirs, and the suggestion was not Nexus reading the text.
+  d.proposedBy = 'model-assist';
+  if (review.model) d.model = review.model;
   // Only a settled reading can be saved; a category on its own does not settle
   // an entry that is still about nobody in particular.
   if (isSettled(d)) d.approve = true;
@@ -7976,6 +8176,7 @@ function onReviewChange(e) {
       d.subject = other.value;
       d.defines = null;
       d.related = d.related.filter((r) => r !== other.value);
+      d.proposedBy = 'manual';
       d.approve = true;
     }
     renderReview();
@@ -7984,12 +8185,17 @@ function onReviewChange(e) {
   const relate = e.target.closest('[data-relate]');
   if (relate) {
     const d = review.entries.get(relate.dataset.relate);
-    if (relate.value && !d.related.includes(relate.value)) d.related = [...d.related, relate.value];
+    if (relate.value && !d.related.includes(relate.value)) { d.related = [...d.related, relate.value]; d.proposedBy = 'manual'; }
     renderReview();
     return;
   }
   const cat = e.target.closest('[data-category]');
-  if (cat) { review.entries.get(cat.dataset.category).category = cat.value; return; }
+  if (cat) {
+    const d = review.entries.get(cat.dataset.category);
+    d.category = cat.value;
+    d.proposedBy = 'manual';
+    return;
+  }
   const type = e.target.closest('[data-entity-type]');
   if (type) { review.entities.get(type.dataset.entityType).type = type.value; renderReview(); return; }
   const name = e.target.closest('[data-entity-name]');
@@ -8043,6 +8249,7 @@ async function saveReview() {
     entries: [...review.entries.values()].filter((d) => d.approve).map((d) => ({
       ref: d.ref, entryId: d.entryId, hash: d.hash, approve: true, confidence: d.confidence,
       scope: d.scope, category: d.category, defines: d.defines, subject: d.subject, related: d.related, displayPath: d.displayPath,
+      proposedBy: d.proposedBy, ...(d.proposedBy === 'model-assist' && d.model ? { model: d.model } : {}),
     })),
     // A match against a source nobody has organised yet has nothing to point at.
     matches: [...review.matches.values()].filter((m) => m.decision !== 'later' && m.candidate.entityId)

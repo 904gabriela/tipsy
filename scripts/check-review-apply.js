@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { open } from '../src/db/index.js';
 import { analyzeSource } from '../src/conversion/analyze.js';
-import { applyReview } from '../src/conversion/apply.js';
+import { applyReview, correctionImpact } from '../src/conversion/apply.js';
 import { createEntity, sourceOrganization, semanticViews } from '../src/semantics/store.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -280,6 +280,116 @@ console.log('\nH  through the server');
   } finally {
     server.kill();
   }
+}
+
+// ---------------------------------------------------------------- I
+console.log('\nI  how a reading was produced is stored, and never lied about');
+{
+  const { db, id } = library();
+  const draft = analyzeSource(db, id);
+  const d = reviewed(draft);
+  // Three readings approved in the same moment, produced three different ways.
+  const [first, second, third] = d.entries.filter((e) => e.approve);
+  first.proposedBy = 'deterministic-conversion';
+  second.proposedBy = 'model-assist';
+  second.model = 'some-provider/some-model';
+  third.proposedBy = 'manual';
+  applyReview(db, id, d);
+
+  const why = (entryId) => JSON.parse(db.raw.prepare('SELECT evidence FROM entry_semantics WHERE entry_id=?').get(entryId).evidence);
+  ok('a deterministic reading says so', why(first.entryId).proposedBy === 'deterministic-conversion', why(first.entryId).proposedBy);
+  ok('a reading taken from a model says so', why(second.entryId).proposedBy === 'model-assist', why(second.entryId).proposedBy);
+  ok('and names the model that proposed it', why(second.entryId).model === 'some-provider/some-model', why(second.entryId).model);
+  ok("a reading a person chose themselves says so", why(third.entryId).proposedBy === 'manual', why(third.entryId).proposedBy);
+  ok("all three are still a person's approval", [first, second, third].every((e) => why(e.entryId).decidedIn === 'review'));
+  ok('and all three are approved, whatever proposed them',
+    [first, second, third].every((e) => db.raw.prepare('SELECT status FROM entry_semantics WHERE entry_id=?').get(e.entryId).status === 'approved'));
+  ok('a model is never named on a reading it did not propose', !why(first.entryId).model && !why(third.entryId).model);
+
+  const { db: db2, id: id2 } = library();
+  const d2 = reviewed(analyzeSource(db2, id2));
+  const one = d2.entries.find((e) => e.approve);
+  one.proposedBy = 'the-oracle';
+  applyReview(db2, id2, d2);
+  const w = JSON.parse(db2.raw.prepare('SELECT evidence FROM entry_semantics WHERE entry_id=?').get(one.entryId).evidence);
+  ok('an origin nobody recognises falls back to the deterministic pass', w.proposedBy === 'deterministic-conversion', w.proposedBy);
+  db.close(); db2.close();
+}
+
+// ---------------------------------------------------------------- J
+console.log('\nJ  correcting a reading that was already saved');
+{
+  const { db, id } = library();
+  const draft = analyzeSource(db, id);
+  applyReview(db, id, reviewed(draft));
+  const before = loreFingerprint(db, id);
+
+  const childhood = draft.entries.find((e) => e.title === 'Childhood');
+  const sorrento = draft.entities.find((x) => x.name === 'Don Rafael Sorrento');
+  const subjectNow = () => db.raw.prepare("SELECT entity_id FROM entry_relations WHERE entry_id=? AND relation='subject' AND status='approved'").get(childhood.entryId)?.entity_id;
+  const nameOf = (entityId) => (entityId ? db.raw.prepare('SELECT canonical_name FROM lore_entities WHERE id=?').get(entityId)?.canonical_name : null);
+  ok('it was saved as being about one person', nameOf(subjectNow()) === 'Nora Vale', nameOf(subjectNow()));
+
+  const impact = correctionImpact(db, id, childhood.entryId);
+  ok('the impact names the person it is about', impact.person?.name === 'Nora Vale', impact.person?.name);
+  ok('and says what else in this source says the same', impact.depends.alsoAboutThem > 0, `${impact.depends.alsoAboutThem} others`);
+  ok('so it is not the only thing holding that tie', impact.depends.lastTie === false);
+  const peopleBefore = count(db, 'lore_entities');
+
+  const fix = reviewed(draft, {
+    approve: (e) => e.ref === childhood.ref,
+    edit: (e) => (e.ref === childhood.ref ? { ...e, subject: sorrento.ref, category: 'backstory', proposedBy: 'manual' } : e),
+  });
+  const out = applyReview(db, id, fix);
+  ok('the correction applied', out.entries.includes(childhood.ref));
+  ok('it is now about the other person', nameOf(subjectNow()) === 'Don Rafael Sorrento', nameOf(subjectNow()));
+  ok('and the old subject was not left behind',
+    count(db, 'entry_relations', `WHERE entry_id='${childhood.entryId}' AND relation='subject'`) === 1);
+  ok('the entry itself is byte for byte as it was', loreFingerprint(db, id) === before);
+  ok('nobody was deleted', count(db, 'lore_entities') === peopleBefore, `${count(db, 'lore_entities')} of ${peopleBefore}`);
+  ok('no entry was deleted', count(db, 'lore_entries') === ENTRIES.length);
+  ok("and it is recorded as a person's own decision",
+    JSON.parse(db.raw.prepare('SELECT evidence FROM entry_semantics WHERE entry_id=?').get(childhood.entryId).evidence).proposedBy === 'manual');
+
+  const gate = draft.entries.find((e) => e.title === 'The Iron Gate');
+  const gateImpact = correctionImpact(db, id, gate.entryId);
+  ok('an only tie is named as an only tie', gateImpact.depends.lastTie === true, JSON.stringify(gateImpact.depends));
+  // An entry review left undecided has no saved reading to correct.
+  const undecided = db.listEntries(id).find((e) => !db.raw.prepare('SELECT 1 x FROM entry_semantics WHERE entry_id=?').get(e.id));
+  ok('and an entry nobody has organised has nothing leaning on it',
+    !!undecided && correctionImpact(db, id, undecided.id).approved === false, undecided?.title || 'everything was organised');
+  db.close();
+}
+
+// ---------------------------------------------------------------- K
+console.log('\nK  activation is not part of meaning, and never changes with it');
+{
+  const { db, id } = library();
+  // Every activation column there is, and the stored legacy kind with them.
+  const COLS = ['enabled', 'constant', 'keys', 'secondary_keys', 'selective', 'selective_logic', 'ord', 'position',
+    'depth', 'probability', 'use_probability', 'scan_depth', 'exclude_recursion', 'prevent_recursion',
+    'delay_until_recursion', 'grp', 'group_override', 'group_weight', 'use_group_scoring', 'sticky', 'cooldown',
+    'delay', 'ignore_budget', 'vectorized', 'case_sensitive', 'match_whole_words', 'use_regex', 'role', 'kind'];
+  const activation = () => db.raw.prepare(`SELECT id, ${COLS.join(', ')} FROM lore_entries WHERE lorebook_id=? ORDER BY id`).all(id);
+  const before = activation();
+
+  const draft = analyzeSource(db, id);
+  applyReview(db, id, reviewed(draft));
+  ok(`every one of the ${COLS.length} activation fields is untouched by organising`, JSON.stringify(activation()) === JSON.stringify(before));
+
+  const childhood = draft.entries.find((e) => e.title === 'Childhood');
+  const sorrento = draft.entities.find((x) => x.name === 'Don Rafael Sorrento');
+  applyReview(db, id, reviewed(draft, {
+    approve: (e) => e.ref === childhood.ref,
+    edit: (e) => (e.ref === childhood.ref ? { ...e, subject: sorrento.ref } : e),
+  }));
+  ok('and untouched by correcting one afterwards', JSON.stringify(activation()) === JSON.stringify(before));
+
+  const off = db.listEntries(id).find((e) => e.title === 'Ferry Office');
+  ok('a switched-off entry is still switched off', !off.enabled, String(off.enabled));
+  const sem = db.raw.prepare('SELECT scope, category, status FROM entry_semantics WHERE entry_id=?').get(off.id);
+  ok('and it was still given a meaning', !!sem && sem.status === 'approved', JSON.stringify(sem));
+  db.close();
 }
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);

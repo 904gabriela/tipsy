@@ -40,7 +40,8 @@ import { areDistinct } from '../semantics/store.js';
 import { refAllocator } from '../package/format.js';
 import {
   sentences, nameRuns, capitalisedKeys, cleanTitle, normalize, tokens, jaccard, countPhrase,
-  TYPE_WORDS, TYPE_LANGUAGE, PERSON_LEXICON, WORLD_LEXICON, IMPERATIVES, NARRATION, RELATIONSHIP_LANGUAGE, readsAsHistory,
+  TYPE_WORDS, TYPE_LANGUAGE, PERSON_LEXICON, WORLD_LEXICON, NARRATION, RELATIONSHIP_LANGUAGE, readsAsHistory,
+  directiveSentence,
 } from './text.js';
 
 export const DRAFT_FORMAT = 'nexus-conversion-draft';
@@ -49,7 +50,24 @@ export const DRAFT_VERSION = 1;
 const parse = (s, fallback) => { try { return s ? JSON.parse(s) : fallback; } catch { return fallback; } };
 const RANK = { low: 0, medium: 1, high: 2 };
 const lowest = (...cs) => cs.reduce((a, b) => (RANK[b] < RANK[a] ? b : a), 'high');
-const ev = (type, detail, points = 0) => ({ type, detail, points });
+/**
+ * One piece of evidence, and what kind of thing it is.
+ *
+ * Content evidence is what the source says. Provenance evidence is how the
+ * source arrived — which card it came with, what an old link once claimed. The
+ * two are not the same sort of fact, so they are labelled, and provenance is
+ * always worth nothing: it may be worth reading, and it never decides. A source
+ * that arrived with Jane Vale's card does not thereby define her, and every
+ * unnamed sentence in it is not thereby about her.
+ */
+const ev = (type, detail, points = 0) => ({ type, detail, points, basis: 'content' });
+const provenance = (type, detail) => ({ type, detail, points: 0, basis: 'provenance' });
+
+/** An entry that is mostly telling the telling what to do. */
+const directiveHeavy = (e) => {
+  const sents = e.sents.length ? e.sents : [e.content];
+  return sents.filter((s) => directiveSentence(s)).length / sents.length >= 0.5;
+};
 const PRONOUN = /\b(he|him|his|she|her|hers)\b/i;
 const PRONOUN_LED = /^(he|she|his|her)\b/i;
 const LEGACY_KIND_TYPE = { character: 'person', place: 'place', faction: 'faction', item: 'item', event: 'event' };
@@ -117,9 +135,10 @@ function analyzeOne(db, lorebookId) {
     };
   });
 
-  const ctx = { db, book, card: cardRow, roleRow, declared, entries, entities: [], byName: new Map(), warnings: [] };
+  const ctx = { db, book, card: cardRow, roleRow, declared, entries, entities: [], byName: new Map(), warnings: [], collisions: [] };
   groupsFromTitles(ctx);
   discoverEntities(ctx);
+  flagIdentityDoubts(ctx);
   proposeEntries(ctx);
   groupVariants(ctx);
   proposeRole(ctx);
@@ -153,9 +172,25 @@ function groupsFromTitles(ctx) {
 
 // ------------------------------------------------------------------ entities
 
+/**
+ * The entity this name and type belong to, making it if it is new.
+ *
+ * Identity here is the name AND the type. A person called Vale and a syndicate
+ * called Vale are two things that happen to share a word, and a source is
+ * perfectly capable of containing both; collapsing them because the strings
+ * matched would invent a fact nobody wrote. Where a name is shared across types
+ * the collision is recorded, so review sees that the word is doing two jobs
+ * rather than finding one entity of the wrong kind.
+ */
 function addEntity(ctx, { type, name, confidence, evidence, profileEntry = null, aliases = [] }) {
   const key = normalize(name);
-  const existing = ctx.entities.find((e) => normalize(e.name) === key || e.aliases.some((a) => normalize(a) === key));
+  const sameName = ctx.entities.filter((e) => normalize(e.name) === key || e.aliases.some((a) => normalize(a) === key));
+  const existing = sameName.find((e) => e.type === type);
+  // Someone else already owns this word, as something else.
+  const clash = sameName.filter((e) => e.type !== type);
+  if (clash.length && !ctx.collisions.some((c) => c.name === key && c.types.includes(type))) {
+    ctx.collisions.push({ name: key, display: name, types: [...new Set([type, ...clash.map((e) => e.type)])] });
+  }
   if (existing) {
     if (profileEntry && !existing.profileEntries.includes(profileEntry)) existing.profileEntries.push(profileEntry);
     for (const a of aliases) addAlias(ctx, existing, a);
@@ -167,6 +202,47 @@ function addEntity(ctx, { type, name, confidence, evidence, profileEntry = null,
   ctx.entities.push(entity);
   for (const a of aliases) addAlias(ctx, entity, a);
   return entity;
+}
+
+/**
+ * Doubts about who is who, said out loud instead of resolved.
+ *
+ * Two of them. A word used for two kinds of thing, which is now kept as two
+ * entities and reported so review can see why. And one name, one type, several
+ * profiles that do not read like the same person — which may be an alternate
+ * universe, a rewrite, or simply two people. Nothing is split: splitting on a
+ * similarity score would invent an identity as surely as merging did.
+ */
+function flagIdentityDoubts(ctx) {
+  for (const c of ctx.collisions) {
+    ctx.warnings.push({
+      code: 'name-collision',
+      entities: ctx.entities.filter((e) => normalize(e.name) === c.name).map((e) => e.ref),
+      message: `"${c.display}" is used for ${c.types.length} different kinds of thing in this source (${c.types.join(', ')}). They are kept apart; say if any of them are the same.`,
+    });
+  }
+
+  // Several profiles of one person that share almost no wording.
+  for (const x of ctx.entities) {
+    if (x.profileEntries.length < 2) continue;
+    const texts = x.profileEntries
+      .map((ref) => ctx.entries.find((e) => e.ref === ref))
+      .filter(Boolean)
+      .map((e) => `${e.name} ${e.content}`);
+    if (texts.length < 2) continue;
+    let worst = 1;
+    for (let i = 0; i < texts.length; i++) {
+      for (let j = i + 1; j < texts.length; j++) worst = Math.min(worst, jaccard(tokens(texts[i]), tokens(texts[j])));
+    }
+    if (worst >= 0.15) continue;
+    x.mayBeSeveral = true;
+    ctx.warnings.push({
+      code: 'possibly-separate',
+      entities: [x.ref],
+      entries: [...x.profileEntries],
+      message: `${x.profileEntries.length} entries describe a ${x.type} called "${x.name}", and they have little in common. They may be the same one written twice, or they may not be the same at all.`,
+    });
+  }
 }
 
 function addAlias(ctx, entity, alias) {
@@ -230,18 +306,27 @@ function discoverEntities(ctx) {
     return s.mid > 0 || s.keys > 0 || elsewhere;
   };
 
-  // 1. The card this source came with names a person.
+  // 1. The card this source came with is remembered, and creates nobody.
+  //
+  // A source arriving with Jane Vale's card says where the file came from. It
+  // does not say the file defines her, and it certainly does not say she exists
+  // in this source's material — the material says that, or nothing does.
+  // So the name is kept to recognise later, as provenance, and the person is
+  // discovered from the content like anyone else.
   if (ctx.card) {
     const quoted = ctx.card.name.match(/^(.*?)\s*['"“‘](.+?)['"”’]\s*$/);
-    const name = (quoted ? quoted[1] : ctx.card.name).trim();
-    const aliases = [quoted?.[2], ctx.card.nickname].filter(Boolean);
-    addEntity(ctx, { type: 'person', name, aliases, confidence: 'medium', evidence: [ev('source-context', `this source arrived with the card "${ctx.card.name}"`, 1)] });
+    ctx.cardPersonName = (quoted ? quoted[1] : ctx.card.name).trim();
   }
 
   // 2. Entries whose title names a thing, and whose content profiles it.
   for (const e of entries) {
     const title = e.name;
     if (!title || / and | vs\.? |:|\//i.test(title)) continue;
+    // An entry that tells the telling what to do describes nothing, whatever
+    // word its title happens to end in: "Player Agency" is not a faction called
+    // Player Agency, however much "agency" looks like one. Entities are
+    // discovered from description; instructions instruct.
+    if (directiveHeavy(e)) continue;
     const words = title.split(/\s+/);
     const possessive = title.match(/^(.+?)[’']s\s+(.+)$/);
     const head = (possessive ? possessive[2] : title).split(/\s+/);
@@ -438,8 +523,11 @@ function proposeEntries(ctx) {
     }
   }
   const ranked = [...explicit.entries()].sort((a, b) => b[1] - a[1]);
-  const cardPerson = ctx.card ? persons.find((p) => normalize(p.name) === normalize(ctx.card.name.replace(/\s*['"“‘].*$/, ''))) : null;
-  ctx.dominant = ranked.length && (ranked.length === 1 || ranked[0][1] >= ranked[1][1] * 2) ? ranked[0][0] : cardPerson || null;
+  // Who this source is mostly about is decided by what it says, and by nothing
+  // else. There is no fallback to the card it arrived with: provenance is not an
+  // answer to "who is this about", and letting it be one made pronouns inherit
+  // a subject nobody had written down.
+  ctx.dominant = ranked.length && (ranked.length === 1 || ranked[0][1] >= ranked[1][1] * 2) ? ranked[0][0] : null;
 
   // "Jane's mother, Ada Vale" or "his mentor, Don Rafael Sorrento": someone introduced
   // as another person's relation. Wherever it is written in the source, it says who they are.
@@ -463,12 +551,16 @@ function proposeEntries(ctx) {
     e.confidence ||= 'low';
     // Even "nothing here says what this is" is evidence, and review should see it.
     if (!e.evidence.length) e.evidence.push(ev('no-signal', 'nothing in the title, keywords or content marks what this is', 0));
+    // A disagreement worth raising is a contradiction: the stored kind names a
+    // kind of thing, the evidence says this entry defines a different kind of
+    // thing. A legacy kind Nexus has no type for — note, premise, scenario — is
+    // not a contradiction, it is a bucket; and a kind that names a type on an
+    // entry that defines nothing is only a loose bucket too. Warning about
+    // either buried the real ones: on a real source, 11 of 31 were that.
     const stored = LEGACY_KIND_TYPE[e.kind];
-    const proposedType = e.proposal?.defines ? e.defines.type : e.proposal?.scope === 'entity' ? 'aspect' : e.proposal?.category;
-    if (e.kind && e.proposal && ((stored && stored !== (e.defines?.type || null)) || (!stored && e.defines))) {
-      ctx.warnings.push({ code: 'kind-disagrees', entries: [e.ref], message: `"${e.title}" is stored as "${e.kind}"; the evidence reads it as ${e.defines ? `a ${e.defines.type}` : `${e.proposal.scope} ${e.proposal.category}`}. The stored kind is left as it is.` });
+    if (stored && e.defines && stored !== e.defines.type) {
+      ctx.warnings.push({ code: 'kind-disagrees', entries: [e.ref], message: `"${e.title}" is stored as a ${e.kind}; the evidence reads it as a ${e.defines.type}. The stored kind is left as it is.` });
     }
-    void proposedType;
   }
   for (const x of ctx.entities) {
     x.mentionedIn = ctx.entries.filter((e) => mentions(ctx, `${e.name}\n${e.content}`).has(x)).length;
@@ -496,7 +588,7 @@ function relatedOf(ctx, e, exclude) {
   for (const l of e.legacy) {
     const x = ctx.entities.find((y) => [l.name, l.plainName].some((n) => normalize(y.name) === normalize(n) || y.aliases.some((a) => normalize(a) === normalize(n))));
     const supported = x && (related.includes(x) || exclude.includes(x));
-    e.evidence.push(ev('legacy-link-evidence', `historical composer/builder link to "${l.name}"${supported ? ', which the content also supports' : ' — not supported by the content, so it changes nothing'}`, 0));
+    e.evidence.push(provenance('legacy-link-evidence', `historical composer/builder link to "${l.name}"${supported ? ', which the content also supports' : ' — not supported by the content, so it changes nothing'}`));
     if (!supported) ctx.warnings.push({ code: 'legacy-link-unsupported', entries: [e.ref], message: `"${e.title}" has a historical link to "${l.name}" that the content does not support.` });
   }
   return related.sort((a, b) => (a.ref < b.ref ? -1 : 1));
@@ -516,7 +608,9 @@ function proposeProfile(ctx, e) {
 
 function proposeInstruction(ctx, e) {
   const sents = e.sents.length ? e.sents : [e.content];
-  const imperative = sents.filter((s) => IMPERATIVES.test(s.replace(/^[^A-Za-z{]+/, '')) || /\b(do not|never|must)\b/i.test(s)).length;
+  // A direction has directive structure. "never", "must" and "do not" inside
+  // ordinary prose are ordinary words, and finding one says nothing.
+  const imperative = sents.filter((s) => directiveSentence(s)).length;
   const ratio = imperative / sents.length;
   const narration = (e.content.match(new RegExp(NARRATION.source, 'gi')) || []).length;
   const hits = mentions(ctx, `${e.name}\n${e.content}`);
@@ -537,7 +631,7 @@ function proposeInstruction(ctx, e) {
     confidence = 'high';
   } else if (ratio >= 0.5) {
     category = 'direction';
-    evidence.push(ev('instruction-language', `${imperative} of ${sents.length} sentences are instructions ("${trim(sents.find((s) => IMPERATIVES.test(s) || /\b(do not|never|must)\b/i.test(s)))}")`, 3));
+    evidence.push(ev('instruction-language', `${imperative} of ${sents.length} sentences are instructions ("${trim(sents.find((s) => directiveSentence(s)))}")`, 3));
     confidence = 'high';
   } else if ((ratio >= 0.2 && narration >= 1) || (narration >= 1 && !personHit && !pronounLed && !PRONOUN.test(e.content))) {
     category = 'direction';
@@ -581,10 +675,14 @@ function proposeAbout(ctx, e) {
       const early = PRONOUN.test(e.sents.slice(0, 2).join(' '));
       evidence.push(ev('source-context', `${pronounLed ? 'the entry opens with a pronoun' : early ? 'the entry refers to someone by pronoun from the start' : 'the entry refers to someone by pronoun'}, and ${x.name} is who this source is mostly about`, early ? 3 : 2));
     }
-    if (ctx.card && x === ctx.dominant && evidence.length) evidence.push(ev('source-context', `the source arrived with ${x.name}'s card`, 0.5));
+    // Said, not counted: where the file came from is worth reading next to a
+    // proposal and is worth nothing towards making it.
+    if (ctx.cardPersonName && normalize(x.name) === normalize(ctx.cardPersonName) && evidence.length) {
+      evidence.push(provenance('source-provenance', `this source arrived with the "${ctx.card.name}" card`));
+    }
     for (const l of e.legacy) {
       if (normalize(l.name).includes(normalize(x.name)) || x.aliases.some((a) => normalize(l.name).includes(normalize(a)))) {
-        evidence.push(ev('legacy-link-evidence', `historical composer/builder link to "${l.name}" — never counted`, 0));
+        evidence.push(provenance('legacy-link-evidence', `historical composer/builder link to "${l.name}" — never counted`));
       }
     }
     const points = evidence.reduce((n, v) => n + v.points, 0);
@@ -602,10 +700,23 @@ function proposeAbout(ctx, e) {
   const [top, second] = candidates;
   const margin = top ? top.points - (second ? second.points : 0) : 0;
 
+  // "This source is mostly about her, and this entry says 'she'" is a reason to
+  // look at somebody, and on its own it is not a reason to file an entry under
+  // them: a source can carry pages that are about nobody in it. So the entry has
+  // to say something itself — a name, a possessive, a title — before the weight
+  // of the source counts towards settling it.
+  const named = top && top.evidence.some((v) => v.basis === 'content' && v.type !== 'source-context' && v.points > 0);
+
   let subject = null;
   let subjectConfidence = 'low';
-  if (top && top.points >= 5 && top.explicit && margin >= 3) { subject = top.x; subjectConfidence = 'high'; }
-  else if (top && top.points >= 3 && margin >= 2) { subject = top.x; subjectConfidence = 'medium'; }
+  if (top && named && top.points >= 5 && top.explicit && margin >= 3) { subject = top.x; subjectConfidence = 'high'; }
+  else if (top && top.points >= 3 && margin >= 2) {
+    subject = top.x;
+    subjectConfidence = 'medium';
+    // Offered, never settled: a medium reading waits for a person to tick it,
+    // and this one says plainly that the entry itself named nobody.
+    if (!named) e.unresolved.push(`nobody is named here; ${top.x.name} is only who this source is mostly about`);
+  }
 
   e.subjectCandidates = candidates.slice(0, 3).map((c) => ({ entity: c.x.ref, points: c.points, evidence: c.evidence }));
 
@@ -766,7 +877,7 @@ function proposeRole(ctx) {
     confidence = parts.length >= 2 ? 'medium' : 'low';
     evidence.push(ev('composition', parts.length ? `no single purpose: ${parts.map(([k, v]) => `${pct(v)} ${k}`).join(', ')}` : 'no clear purpose', 1));
   }
-  if (ctx.card && subject && normalize(ctx.card.name).startsWith(normalize(subject.name))) evidence.push(ev('source-context', `it arrived with ${subject.name}'s card`, 0));
+  if (ctx.card && subject && normalize(ctx.card.name).startsWith(normalize(subject.name))) evidence.push(provenance('source-provenance', `it arrived with ${subject.name}'s card`));
   ctx.proposedRole = { role, confidence, subject: subject ? subject.ref : null, evidence };
 }
 
@@ -864,6 +975,13 @@ function finalize(ctx) {
     entities: ctx.entities.map((x) => ({
       ref: x.ref, type: x.type, name: x.name, aliases: x.aliases, profileEntries: x.profileEntries,
       mentionedIn: x.mentionedIn, subjectOf: x.subjectOf, confidence: x.confidence, evidence: x.evidence, declaredEntityId: x.declaredEntityId,
+      // Another kind of thing in this source answers to the same word, and
+      // these two were deliberately not made one.
+      nameSharedWith: [...new Set(ctx.collisions.filter((c) => c.name === normalize(x.name))
+        .flatMap((c) => c.types.filter((t) => t !== x.type)))],
+      // Several profiles of one name and one type that read like different
+      // people. Nothing is split on a guess; review is asked.
+      mayBeSeveral: !!x.mayBeSeveral,
     })),
     entries,
     variantGroups: ctx.variantGroups,
