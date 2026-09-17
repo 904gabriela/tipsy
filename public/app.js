@@ -7636,7 +7636,7 @@ async function openEntityProfile(entityId, { storyId = null, back = null, title 
  * repeat the group it sits in — "Fluid Domain / Fluid Domain". The entry keeps
  * its title, which is shown with the rest of its provenance.
  */
-function knowledgeItem(x, { as = null } = {}) {
+function knowledgeItem(x, { as = null, hideKind = false } = {}) {
   const flags = [
     x.needsRecheck ? '<span class="ent-flag warn">needs review</span>' : '',
     !x.activation.enabled ? '<span class="ent-flag">switched off</span>' : '',
@@ -7645,12 +7645,24 @@ function knowledgeItem(x, { as = null } = {}) {
     <div class="edit-card">
       <div class="edit-head">
         <b>${esc(as || x.title)}</b>
-        <span class="n">${esc(CATEGORY_PILL[x.category] || x.category)}${flags}</span>
+        <span class="n">${hideKind ? '' : esc(CATEGORY_PILL[x.category] || x.category)}${flags}</span>
         <button class="fold" aria-expanded="false">▾</button>
       </div>
       <div class="edit-body" hidden>
         ${x.needsRecheck ? '<div class="why">The source text changed after this reading was saved. What you approved is still what stands.</div>' : ''}
-        <p class="prose-plain">${esc(x.text)}</p>
+        ${/* Long entries used to flood the screen. The whole text is stored and
+             one tap away; what is shown first is enough to know it again. */''}
+        ${x.text.length > 420 ? `
+          <p class="prose-plain">${esc(x.text.slice(0, 420).replace(/\s+\S*$/, ''))}…</p>
+          <details><summary>Read it all</summary><p class="prose-plain">${esc(x.text)}</p></details>`
+    : `<p class="prose-plain">${esc(x.text)}</p>`}
+        ${/* What you wrote yourself, you can change here. What arrived from a
+             source is managed where it came from. */''}
+        <div class="row-actions" style="margin-top:8px">
+          ${x.written
+    ? `<button class="btn quiet" data-edit-knowledge="${esc(x.entryId)}">Edit this</button>`
+    : `<button class="btn quiet" data-open-source="${esc(x.provenance.sourceId)}">Open in ${esc(x.provenance.sourceName)}</button>`}
+        </div>
         ${x.related.length ? `<div class="chips" style="margin-top:8px">
           ${x.related.map((r) => `<button class="chip-tag" data-go-entity="${esc(r.id)}">${esc(r.name)}</button>`).join('')}
         </div>` : ''}
@@ -7688,15 +7700,34 @@ function coreSlot(label, value) {
 /** Two names that would read as a repetition if stacked. */
 const sameName = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
 
-/** A display group, with whatever it nests inside it. */
+/**
+ * A display group, with whatever it nests inside it, and a way to add to it.
+ *
+ * Add inherits where it was pressed: the kind of information the group holds,
+ * and the group itself when it is one of your own words.
+ */
 function knowledgeGroup(g) {
+  const from = (items) => {
+    const first = items.find(Boolean);
+    return { category: first?.category || 'other', displayPath: first?.displayPath || null };
+  };
+  const add = (label, items) => {
+    const at = from(items);
+    return `<div class="row-actions" style="margin-top:8px"><button class="btn quiet"
+      data-add-knowledge="${esc(at.category)}"
+      data-add-path="${esc((at.displayPath || []).join('›'))}">+ Add${label ? ` to ${esc(label)}` : ''}</button></div>`;
+  };
+  // Inside a group named for a kind of information, naming the kind on every row
+  // is the same word twice. It stays where a group of your own makes it useful.
+  const hideKind = Object.values(CATEGORY_PILL).some((v) => sameName(v, g.name));
   return `
     <div class="edit-card ent-group">
       <div class="edit-head"><b>${esc(g.name)}</b><span class="n">${num(g.count)}</span>
         <button class="fold" aria-expanded="false">▾</button></div>
       <div class="edit-body" hidden>
-        ${g.items.map((x) => knowledgeItem(x, { as: sameName(x.title, g.name) ? 'Overview' : null })).join('')}
-        ${g.sub.map((s) => `<div class="sec-head">${esc(s.name)}</div>${s.items.map((x) => knowledgeItem(x, { as: sameName(x.title, s.name) ? 'Overview' : null })).join('')}`).join('')}
+        ${g.items.map((x) => knowledgeItem(x, { as: sameName(x.title, g.name) ? 'Overview' : null, hideKind })).join('')}
+        ${g.sub.map((s) => `<div class="sec-head">${esc(s.name)}</div>${s.items.map((x) => knowledgeItem(x, { as: sameName(x.title, s.name) ? 'Overview' : null, hideKind })).join('')}${add(s.name, s.items)}`).join('')}
+        ${add(g.sub.length ? g.name : '', g.items.length ? g.items : g.sub.flatMap((s) => s.items))}
       </div>
     </div>`;
 }
@@ -7735,25 +7766,30 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
     ${/* The card's own fields, and only that card's: one person may be written
          more than once, and this page shows the representation in hand. */''}
     ${core.length ? `
-      <div class="band">Core profile</div>
+      <div class="band">Core profile<button class="btn quiet band-act" id="ent-edit-core">Edit</button></div>
       <div class="ent-core">
         ${core.map(([k, label]) => coreSlot(labelFor(k, label), p.core[k])).join('')}
       </div>` : ''}
 
     ${/* "Reusable" is the promise: it can be used again, not that it follows them
          everywhere. A story reads only the sources it carries. */''}
+    ${/* Two shelves, and each says where writing on it would go. Inside a story,
+         the story's own shelf is the one Add belongs to. */''}
     ${p.knowledge.reusable.length ? `
-      <div class="band">Reusable knowledge</div>
+      <div class="band">Reusable knowledge${p.story ? '' : '<button class="btn quiet band-act" data-add-reusable>+ Add</button>'}</div>
       <div class="why" style="margin-bottom:10px">Knowledge that can be used across stories.${p.story ? ' Only material attached to this story is shown here.' : ''}</div>
       ${p.knowledge.reusable.map(knowledgeGroup).join('')}` : ''}
 
-    ${p.knowledge.story.length ? `
-      <div class="band">In ${esc(p.story.title)}</div>
+    ${p.story ? `
+      <div class="band">In ${esc(p.story.title)}<button class="btn quiet band-act" data-add-story>+ Add</button></div>
       <div class="why" style="margin-bottom:10px">Only true in this story.</div>
-      ${p.knowledge.story.map(knowledgeGroup).join('')}` : ''}
+      ${p.knowledge.story.length ? p.knowledge.story.map(knowledgeGroup).join('')
+    : `<div class="empty">Nothing is true of ${esc(p.entity.name.split(' ')[0])} in this story alone yet.</div>`}` : ''}
 
-    ${!p.knowledge.reusable.length && !p.knowledge.story.length ? `
-      <div class="empty">Nothing has been organised about ${esc(p.entity.name)} yet.${core.length ? ' Their core profile is above.' : ''}</div>` : ''}
+    ${!p.knowledge.reusable.length && !p.story ? `
+      <div class="empty">Nothing has been written about ${esc(p.entity.name)} yet.${core.length ? ' Their core profile is above.' : ''}
+        <div class="row-actions" style="margin-top:12px;justify-content:center"><button class="btn" data-add-reusable>Add what you know</button></div>
+      </div>` : ''}
 
     ${p.related.length ? `
       <div class="band">People and places around them</div>
@@ -7787,7 +7823,30 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
 
   sheet(p.entity.name, html, (root) => {
     wireFolds(root);
+    const here = { profile: p, storyId, back };
     root.addEventListener('click', (e) => {
+      // ---- writing
+      const add = e.target.closest('[data-add-knowledge]');
+      if (add) {
+        openKnowledgeForm({
+          ...here,
+          preset: { category: add.dataset.addKnowledge, displayPath: add.dataset.addPath ? add.dataset.addPath.split('›') : null },
+        });
+        return;
+      }
+      if (e.target.closest('[data-add-story]')) { openKnowledgeForm({ ...here }); return; }
+      if (e.target.closest('[data-add-reusable]')) { openKnowledgeForm({ ...here, storyId: null }); return; }
+      const edit = e.target.closest('[data-edit-knowledge]');
+      if (edit) {
+        const all = [...p.knowledge.reusable, ...p.knowledge.story].flatMap((g) => [...g.items, ...g.sub.flatMap((s) => s.items)]);
+        const item = all.find((x) => x.entryId === edit.dataset.editKnowledge);
+        if (item) openKnowledgeForm({ ...here, entry: item, storyId: item.written === 'story-material' ? storyId : null });
+        return;
+      }
+      if (e.target.closest('#ent-edit-core')) { openCoreForm(here); return; }
+      const source = e.target.closest('[data-open-source]');
+      if (source) { closeSheet(); openLorebook(source.dataset.openSource); return; }
+
       const go = e.target.closest('[data-go-entity]');
       if (go) {
         // Walking from one person to another keeps the way back through them.
@@ -7798,4 +7857,279 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
       if (organise) { openSourceReview(organise.dataset.organiseSource); return; }
     });
   });
+}
+
+// ------------------------------------------------------------- writing it down
+//
+// Adding to someone's profile is writing a sentence about them, not filing a
+// lore entry. The form asks what it says, what kind of thing it is, and when it
+// should come up; where it is kept, what it is about and how that is recorded
+// are Nexus's business. Inside a story, what you write belongs to that story
+// unless you say otherwise — the one default that must never drift.
+
+/** The categories a person may pick, in the order a profile reads. */
+const AUTHOR_CATEGORIES = [
+  ['identity', 'Identity'], ['appearance', 'Appearance'], ['personality', 'Personality'],
+  ['behavior', 'Behaviour'], ['speech', 'Speech'], ['backstory', 'Backstory'],
+  ['psychology', 'Psychology'], ['relationship', 'Relationship'], ['goal', 'Goal'],
+  ['belief', 'Belief'], ['habit', 'Habit'], ['skill', 'Skill'], ['ability', 'Ability'],
+  ['equipment', 'Equipment'], ['secret', 'Secret'], ['event', 'Event'], ['item', 'Thing'],
+  ['background', 'Background'], ['other', 'Other'],
+];
+
+/** Words worth offering as triggers, from the title, never from their name. */
+function suggestTriggers(title, avoidNames = []) {
+  const stop = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'in', 'on', 'his', 'her', 'their', 'with', 'for', 'to']);
+  const away = new Set(avoidNames.flatMap((n) => String(n).toLowerCase().split(/\s+/)).filter(Boolean));
+  const whole = String(title || '').trim().toLowerCase();
+  const words = whole.split(/[^a-z0-9']+/i).filter((w) => w.length > 2 && !stop.has(w) && !away.has(w));
+  const out = [];
+  if (whole.length > 2 && !away.has(whole)) out.push(whole);
+  for (const w of words) if (!out.includes(w)) out.push(w);
+  return out.slice(0, 5);
+}
+
+/** Every display group already in use on this profile, to offer as a home. */
+function groupsInUse(p) {
+  const paths = new Map();
+  for (const side of [p.knowledge.reusable, p.knowledge.story]) {
+    for (const g of side) {
+      for (const item of g.items) if (item.displayPath) paths.set(item.displayPath.join(' › '), item.displayPath);
+      for (const s of g.sub) for (const item of s.items) if (item.displayPath) paths.set(item.displayPath.join(' › '), item.displayPath);
+    }
+  }
+  return [...paths.entries()].map(([label, path]) => ({ label, path }));
+}
+
+/**
+ * The form. Small on purpose: a title, what it says, what kind of thing it is,
+ * and when Nexus should use it. Everything else is behind "More".
+ */
+function openKnowledgeForm({ profile, storyId = null, preset = {}, entry = null, back }) {
+  const p = profile;
+  const isStory = !!storyId;
+  const editing = !!entry;
+  const cat = entry?.category || preset.category || 'backstory';
+  const path = entry?.displayPath || preset.displayPath || null;
+  const groups = groupsInUse(p);
+  const known = (p.related || []).map((r) => ({ id: r.id, name: r.name }));
+  const chosenRelated = new Set((entry?.related || []).map((r) => r.id));
+  const mode = entry ? (entry.activation.constant ? 'always' : 'keywords') : 'keywords';
+  const keys = entry ? entry.activation.keys : [];
+
+  const html = `
+    ${backRow()}
+    <div class="why" style="margin-bottom:12px" id="kn-scope">${editing ? 'Written by you' : 'About'} <b>${esc(p.entity.name)}</b>.
+      ${isStory ? `It belongs to <b>${esc(p.story.title)}</b> and stays there.` : 'It can be used across stories.'}</div>
+
+    <div class="field">
+      <label for="kn-title">Title</label>
+      <input type="text" id="kn-title" value="${esc(entry?.title || '')}" placeholder="Deepest fear" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="kn-text">What it says</label>
+      <textarea id="kn-text" rows="7" placeholder="Write it the way you would tell someone.">${esc(entry?.text || '')}</textarea>
+    </div>
+    <div class="field">
+      <label for="kn-cat">Type of information</label>
+      <select id="kn-cat">
+        ${AUTHOR_CATEGORIES.map(([k, label]) => `<option value="${k}"${k === cat ? ' selected' : ''}>${esc(label)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field">
+      <label for="kn-group">Group</label>
+      <select id="kn-group">
+        <option value="">Its type is enough</option>
+        ${groups.map((g) => `<option value="${esc(g.path.join('›'))}"${path && path.join('›') === g.path.join('›') ? ' selected' : ''}>${esc(g.label)}</option>`).join('')}
+        ${path && !groups.some((g) => g.path.join('›') === path.join('›')) ? `<option value="${esc(path.join('›'))}" selected>${esc(path.join(' › '))}</option>` : ''}
+        <option value="__new">A group of your own…</option>
+      </select>
+      <input type="text" id="kn-new-group" placeholder="Quirk, Magic, Clan…" hidden autocomplete="off">
+      <div class="why">A group is your own word for where this belongs. It changes nothing about what it means.</div>
+    </div>
+
+    <div class="field">
+      <label>When should Nexus use this?</label>
+      <div class="opts">
+        <button type="button" class="opt" data-when="keywords" aria-pressed="${mode === 'keywords'}">
+          <span class="opt-name">When it comes up</span>
+          <span class="opt-why">Brought in when the scene mentions one of these words.</span>
+        </button>
+        <button type="button" class="opt" data-when="always" aria-pressed="${mode === 'always'}">
+          <span class="opt-name">Always available</span>
+          <span class="opt-why">In every message of every scene that uses this material.</span>
+        </button>
+      </div>
+      <div id="kn-keys-row"${mode === 'always' ? ' hidden' : ''} style="margin-top:10px">
+        <label for="kn-keys">Words that bring it up</label>
+        <input type="text" id="kn-keys" value="${esc(keys.join(', '))}" placeholder="deepest fear, fear" autocomplete="off">
+        <div class="why">Separated by commas. Nexus suggests these from the title — ${esc(p.entity.name.split(' ')[0])}'s name is deliberately not one of them, or everything about them would arrive at once.</div>
+      </div>
+    </div>
+
+    <details class="kn-more">
+      <summary>More</summary>
+      ${/* Story writing stays in the story unless someone says otherwise here,
+           deliberately one level down and never the default. */''}
+      ${isStory && !editing ? `
+        <div class="field" style="margin-top:10px">
+          <button type="button" class="opt" id="kn-reusable" aria-pressed="false">
+            <span class="opt-name">Use across stories instead</span>
+            <span class="opt-why">Adds it to ${esc(p.entity.name.split(' ')[0])}'s reusable knowledge. Stories still use reusable material only when it is attached to them.</span>
+          </button>
+        </div>` : ''}
+      <div class="field" style="margin-top:10px">
+        <label>Connected to</label>
+        ${known.length ? `<div class="chips" id="kn-related">
+          ${known.map((k) => `<button type="button" class="chip-tag" data-relate-entity="${esc(k.id)}" aria-pressed="${chosenRelated.has(k.id)}">${esc(k.name)}</button>`).join('')}
+        </div>` : '<div class="why">Nobody else is on this profile yet.</div>'}
+        <div class="why">Someone else who is involved, without this being about them.</div>
+      </div>
+      <div class="field">
+        <label for="kn-prob">How often it is used, when it is triggered</label>
+        <input type="number" id="kn-prob" min="1" max="100" value="${entry?.activation?.probability ?? 100}">
+        <div class="why">100 means every time. The rest of the timing controls stay with the entry itself.</div>
+      </div>
+    </details>
+
+    <div class="sheet-actions">
+      ${editing && entry.written ? '<button class="btn quiet" id="kn-del">Delete</button>' : ''}
+      <button class="btn quiet" data-back>Cancel</button>
+      <button class="btn primary" id="kn-save">${editing ? 'Save changes' : 'Add it'}</button>
+    </div>`;
+
+  subSheet(editing ? 'Edit this' : `Add to ${p.entity.name.split(' ')[0]}`, html, (root) => {
+    const title = $('#kn-title', root);
+    const keysBox = $('#kn-keys', root);
+    let when = mode;
+    let touchedKeys = editing;
+
+    // A suggestion, until someone types their own.
+    const suggest = () => {
+      if (touchedKeys || when !== 'keywords') return;
+      keysBox.value = suggestTriggers(title.value, [p.entity.name, ...(p.entity.aliases || [])]).join(', ');
+    };
+    title.addEventListener('input', suggest);
+    keysBox.addEventListener('input', () => { touchedKeys = true; });
+
+    root.addEventListener('click', (e) => {
+      const opt = e.target.closest('[data-when]');
+      if (opt) {
+        when = opt.dataset.when;
+        for (const b of $$('[data-when]', root)) b.setAttribute('aria-pressed', String(b.dataset.when === when));
+        $('#kn-keys-row', root).hidden = when === 'always';
+        suggest();
+        return;
+      }
+      const rel = e.target.closest('[data-relate-entity]');
+      if (rel) { rel.setAttribute('aria-pressed', rel.getAttribute('aria-pressed') === 'true' ? 'false' : 'true'); return; }
+      const reuse = e.target.closest('#kn-reusable');
+      if (reuse) {
+        const on = reuse.getAttribute('aria-pressed') !== 'true';
+        reuse.setAttribute('aria-pressed', String(on));
+        $('#kn-scope', root).innerHTML = on
+          ? `About <b>${esc(p.entity.name)}</b>. It can be used across stories, and this story will use it because it is theirs and attached.`
+          : `About <b>${esc(p.entity.name)}</b>. It belongs to <b>${esc(p.story.title)}</b> and stays there.`;
+      }
+    });
+
+    const groupSel = $('#kn-group', root);
+    const newGroup = $('#kn-new-group', root);
+    groupSel.addEventListener('change', () => {
+      newGroup.hidden = groupSel.value !== '__new';
+      if (!newGroup.hidden) newGroup.focus();
+    });
+
+    const del = $('#kn-del', root);
+    if (del) {
+      del.addEventListener('click', async () => {
+        if (!confirm('Delete this? What it says goes with it.')) return;
+        try {
+          const out = await del(`/api/entities/${p.entity.id}/knowledge/${entry.entryId}${storyId ? `?storyId=${encodeURIComponent(storyId)}` : ''}`);
+          toast('Deleted.', { kind: 'good' });
+          renderEntityProfile(out.profile, { storyId, back });
+        } catch (err) { toast(err.message || 'That could not be deleted.', { kind: 'bad' }); }
+      });
+    }
+
+    $('#kn-save', root).addEventListener('click', async () => {
+      const chosenPath = groupSel.value === '__new'
+        ? (newGroup.value.trim() ? [newGroup.value.trim()] : null)
+        : groupSel.value ? groupSel.value.split('›') : null;
+      const asReusable = $('#kn-reusable', root)?.getAttribute('aria-pressed') === 'true';
+      const body = {
+        storyId: asReusable ? null : (storyId || null),
+        title: title.value.trim(),
+        content: $('#kn-text', root).value.trim(),
+        category: $('#kn-cat', root).value,
+        displayPath: chosenPath,
+        activation: {
+          mode: when,
+          keys: keysBox.value.split(',').map((s) => s.trim()).filter(Boolean),
+          advanced: { probability: Number($('#kn-prob', root).value) || 100 },
+        },
+        relatedEntityIds: $$('[data-relate-entity][aria-pressed="true"]', root).map((b) => b.dataset.relateEntity),
+      };
+      if (!body.title) { toast('Give it a title.', { kind: 'bad' }); return; }
+      if (!body.content) { toast('Write what it says.', { kind: 'bad' }); return; }
+      try {
+        const out = editing
+          ? await patch(`/api/entities/${p.entity.id}/knowledge/${entry.entryId}`, body)
+          : await post(`/api/entities/${p.entity.id}/knowledge`, body);
+        toast(editing ? 'Saved.' : `Added to ${p.entity.name.split(' ')[0]}.`, { kind: 'good' });
+        renderEntityProfile(out.profile, { storyId, back });
+      } catch (err) { toast(err.message || 'That could not be saved.', { kind: 'bad' }); }
+    });
+  }, () => renderEntityProfile(p, { storyId, back }));
+}
+
+/**
+ * The core slots of whichever resource stands behind this person.
+ *
+ * A card's own fields, edited as themselves. An older card keeps everything in
+ * one description; that stays one description until someone chooses otherwise.
+ */
+function openCoreForm({ profile, storyId = null, back }) {
+  const p = profile;
+  const isPersona = !p.resources.character && !!p.resources.persona;
+  const res = p.resources.character || p.resources.persona;
+  if (!res) return;
+  const structured = ['appearance', 'behavior', 'speechStyle'].some((k) => String(p.core?.[k] || '').trim());
+  const field = (id, label, value, rows, why = '') => `
+    <div class="field">
+      <label for="${id}">${esc(label)}</label>
+      <textarea id="${id}" rows="${rows}">${esc(value || '')}</textarea>
+      ${why ? `<div class="why">${esc(why)}</div>` : ''}
+    </div>`;
+
+  subSheet('Core profile', `
+    ${backRow()}
+    <div class="why" style="margin-bottom:12px">What ${esc(p.entity.name)}'s ${isPersona ? 'persona' : 'card'} says. This is the profile itself, not knowledge about them.</div>
+    ${field('core-identity', structured ? 'Who they are' : 'Overview', p.core?.identity, structured ? 4 : 8,
+    structured ? '' : 'This card keeps everything in one description. Nexus leaves it whole; fill the fields below when you want them apart.')}
+    ${field('core-appearance', 'How they look', p.core?.appearance, 3)}
+    ${field('core-personality', 'What they are like', p.core?.personality, 3)}
+    ${field('core-behavior', 'How they act', p.core?.behavior, 3)}
+    ${field('core-speech', 'How they talk', p.core?.speechStyle, 3)}
+    <div class="sheet-actions">
+      <button class="btn quiet" data-back>Cancel</button>
+      <button class="btn primary" id="core-save">Save</button>
+    </div>`, (root) => {
+    $('#core-save', root).addEventListener('click', async () => {
+      const body = {
+        id: res.id,
+        name: res.name,
+        description: $('#core-identity', root).value.trim(),
+        appearance: $('#core-appearance', root).value.trim(),
+        personality: $('#core-personality', root).value.trim(),
+        behavior: $('#core-behavior', root).value.trim(),
+        speechStyle: $('#core-speech', root).value.trim(),
+      };
+      try {
+        await post(isPersona ? '/api/personas' : '/api/characters', body);
+        toast('Saved.', { kind: 'good' });
+        openEntityProfile(p.entity.id, { storyId, back, title: p.entity.name });
+      } catch (err) { toast(err.message || 'That could not be saved.', { kind: 'bad' }); }
+    });
+  }, () => renderEntityProfile(p, { storyId, back }));
 }

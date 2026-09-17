@@ -70,8 +70,17 @@ function relationsOf(db, entryIds) {
   return byEntry;
 }
 
+/**
+ * Which sources Nexus writes into itself, marked on the book rather than named.
+ * Everything else arrived from somewhere and is managed where it came from.
+ */
+const managedKinds = (db) => new Map(db.raw.prepare(`
+  SELECT id, json_extract(original, '$.managedFor.kind') AS kind
+    FROM lorebooks WHERE json_valid(original) AND json_extract(original, '$.managedFor.kind') IS NOT NULL`)
+  .all().map((r) => [r.id, r.kind]));
+
 /** An entry as a page shows it: what it says, where it sits, and how it behaves. */
-function asKnowledge(row, related, entityId) {
+function asKnowledge(row, related, entityId, managed = null) {
   const keys = parse(row.keys, []);
   const text = String(row.content || '').replace(/\s+/g, ' ').trim();
   return {
@@ -99,6 +108,9 @@ function asKnowledge(row, related, entityId) {
       policy: row.activation_policy || null,
     },
     provenance: { sourceId: row.lorebook_id, sourceName: row.source_name, storedKind: row.kind },
+    // Whether this is Nexus's own writing, and so may be changed from here.
+    // Anything else came from a source and is edited where it came from.
+    written: managed ? managed.get(row.lorebook_id) || null : null,
   };
 }
 
@@ -122,13 +134,35 @@ function group(items) {
       g.sub.get(sub).items.push(item);
     } else g.items.push(item);
   }
+  // A person reads in a stable order, not in the order a file happened to be
+  // written. Their own groups come first — those are the universe's own words
+  // and usually the point of them — then the ordinary headings, in the order a
+  // dossier would use. Presentation only: nothing here reaches retrieval.
+  const rank = (name) => {
+    const at = GROUP_ORDER.indexOf(name);
+    return at === -1 ? -1 : at;
+  };
   return [...groups.values()].map((g) => ({
     name: g.name,
     items: g.items,
     sub: [...g.sub.values()],
     count: g.items.length + [...g.sub.values()].reduce((n, s) => n + s.items.length, 0),
-  }));
+  })).sort((a, b) => {
+    const ra = rank(a.name); const rb = rank(b.name);
+    if (ra === -1 && rb === -1) return 0;            // two custom groups: as written
+    if (ra === -1) return -1;                        // a custom group leads
+    if (rb === -1) return 1;
+    return ra - rb;
+  });
 }
+
+/** The order the ordinary headings read in. Custom groups come before all of it. */
+export const GROUP_ORDER = [
+  'Profile', 'Identity', 'Appearance', 'Personality', 'Behaviour', 'Speech',
+  'Backstory', 'Psychology', 'Relationships', 'Goals', 'Beliefs', 'Habits',
+  'Skills', 'Abilities', 'Equipment', 'Secrets',
+  'Background', 'Rules', 'Events', 'Things', 'Directives', 'Reference', 'Other',
+];
 
 /** The heading a category falls under when an entry names no group of its own. */
 export const CATEGORY_GROUP = {
@@ -176,7 +210,8 @@ export function entityProfile(db, entityId, { storyId = null } = {}) {
 
   const rows = ownRows(db, id);
   const related = relationsOf(db, rows.map((r) => r.id));
-  const all = rows.map((r) => asKnowledge(r, related.get(r.id), id));
+  const managed = managedKinds(db);
+  const all = rows.map((r) => asKnowledge(r, related.get(r.id), id, managed));
 
   // Reusable material belongs to the person and travels with them; story
   // material belongs to one story and stays there.

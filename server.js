@@ -28,6 +28,7 @@ import { analyzeSource } from './src/conversion/analyze.js';
 import { applyReview } from './src/conversion/apply.js';
 import { assist } from './src/conversion/assist.js';
 import { entityProfile } from './src/semantics/profile.js';
+import { createEntityKnowledge, updateEntityKnowledge, deleteEntityKnowledge } from './src/semantics/authoring.js';
 import {
   planComposition, writeComposition, applyToStory, sourceRemovalPreview, removeSource,
 } from './src/import/compose-apply.js';
@@ -657,6 +658,51 @@ route('GET', '/api/entities/:id/profile', async (req, res, { id }, url) => {
   const profile = entityProfile(db, id, { storyId });
   if (!profile) throw new HttpError(404, 'Nobody by that name is organised yet.');
   return profile;
+});
+
+/**
+ * Write something about someone, by hand.
+ *
+ * The body is what a person said on a profile: whose page they were on, what
+ * they wrote, what kind of thing it is, and when it should come up. Which source
+ * holds it is Nexus's business, not theirs — with a story it belongs to that
+ * story, without one it is theirs and can be used again.
+ */
+route('POST', '/api/entities/:id/knowledge', async (req, res, { id }) => {
+  const b = await readJson(req);
+  if (b.storyId && !db.getStory(b.storyId)) throw new HttpError(404, 'No such story.');
+  const out = createEntityKnowledge(db, {
+    entityId: id,
+    storyId: b.storyId || null,
+    title: b.title,
+    content: b.content,
+    category: b.category,
+    displayPath: b.displayPath || null,
+    activation: b.activation || {},
+    relatedEntityIds: Array.isArray(b.relatedEntityIds) ? b.relatedEntityIds : [],
+  });
+  return { ...out, profile: entityProfile(db, id, { storyId: b.storyId || null }) };
+});
+
+/** Change something written by hand. Imported material is refused here. */
+route('PATCH', '/api/entities/:id/knowledge/:entryId', async (req, res, { id, entryId }) => {
+  const b = await readJson(req);
+  const out = updateEntityKnowledge(db, entryId, {
+    title: b.title,
+    content: b.content,
+    category: b.category,
+    displayPath: b.displayPath || null,
+    activation: b.activation || {},
+    relatedEntityIds: Array.isArray(b.relatedEntityIds) ? b.relatedEntityIds : [],
+  });
+  return { ...out, profile: entityProfile(db, id, { storyId: b.storyId || null }) };
+});
+
+/** Take back something written by hand. Nothing around it is touched. */
+route('DELETE', '/api/entities/:id/knowledge/:entryId', async (req, res, { id, entryId }, url) => {
+  const storyId = url.searchParams.get('storyId') || null;
+  const out = deleteEntityKnowledge(db, entryId);
+  return { ...out, profile: entityProfile(db, id, { storyId }) };
 });
 
 route('GET', '/api/lorebooks/:id', async (req, res, { id }) => {
@@ -1616,9 +1662,11 @@ async function runMemory(storyId, messageId, settings, cast, persona) {
 // --- personas
 
 route('POST', '/api/personas', async (req) => {
-  const { id, name, description, avatar } = await readJson(req);
+  // The core slots travel with the rest now: someone you play has as much to
+  // them as anyone the model plays. Only what is sent is written.
+  const { id, name, description, avatar, personality, appearance, behavior, speechStyle } = await readJson(req);
   if (!String(name || '').trim()) throw new HttpError(400, 'Give your character a name.');
-  return { id: db.savePersona({ id, name: name.trim(), description, avatar }) };
+  return { id: db.savePersona({ id, name: name.trim(), description, avatar, personality, appearance, behavior, speechStyle }) };
 });
 route('GET', '/api/personas/:id', async (req, res, { id }) => {
   const p = db.getPersona(id);

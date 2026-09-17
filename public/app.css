@@ -2236,3 +2236,9 @@ button.cast-name[data-entry-open] { text-decoration: underline; text-decoration-
 .ent-near-name { font-size: 15px; font-weight: 500; overflow-wrap: break-word; }
 .ent-near-why { font-size: 12.5px; color: var(--ink-faint); margin-left: auto; }
 .ent-details { margin-top: 18px; }
+
+
+/* An action that belongs to a heading rather than to the page. */
+.band-act { margin-left: auto; font-size: 13px; padding: 4px 10px; }
+.kn-more { margin-top: 4px; }
+.kn-more > summary { padding: 8px 0; }

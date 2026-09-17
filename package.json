@@ -23,6 +23,7 @@
     "conversion:check": "node scripts/check-conversion.js",
     "review-apply:check": "node scripts/check-review-apply.js",
     "assist:check": "node scripts/check-assist.js",
-    "entity-profile:check": "node scripts/check-entity-profile.js"
+    "entity-profile:check": "node scripts/check-entity-profile.js",
+    "authoring:check": "node scripts/check-authoring.js"
   }
 }
