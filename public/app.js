@@ -253,7 +253,7 @@ function renderStories() {
       <div class="nothing">
         <span class="mark"><svg viewBox="0 0 24 24"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H11v16H5.5A1.5 1.5 0 0 1 4 18.5Z"/><path d="M20 5.5A1.5 1.5 0 0 0 18.5 4H13v16h5.5a1.5 1.5 0 0 0 1.5-1.5Z"/></svg></span>
         <h3>Nothing started yet</h3>
-        <p>Pick who is in it and what they know, and the first line is already written for you.</p>
+        <p>Pick who is in it and what it draws on, and the first line is already written for you.</p>
         <button class="btn primary" id="empty-begin">Begin a story</button>
       </div>`;
     return;
@@ -1768,20 +1768,33 @@ function reviewOpening() {
 const offerOf = (r) => (rv.draft.reuse || []).find((x) => (r.characterId && x.resourceId === r.characterId)
   || (r.semantic?.entityId && x.entityId === r.semantic.entityId)) || null;
 
+/**
+ * Their reusable knowledge, offered to this story.
+ *
+ * Knowledge ABOUT the person, which is not the same thing as knowledge the
+ * person has: a childhood, a deepest fear and an abandonment wound are all true
+ * of Patrick whether or not Patrick understands any of them. So this says whose
+ * knowledge it is, never what they know — the difference is the room a future
+ * layer needs to say who knows what.
+ */
 function reuseOfferLine(o) {
   const n = (k, one, many) => `${num(k)} ${k === 1 ? one : many}`;
+  const first = String(o.name || '').split(' ')[0];
+  const whose = `${esc(first)}${/s$/i.test(first) ? '’' : '’s'} reusable knowledge`;
   // Nothing to ask: the story already reads all of it.
   if (o.state === 'all') {
-    return `<div class="reuse-line on"><span>${n(o.entriesUsedHere, 'entry', 'entries')} of what they know is already available here.</span></div>`;
+    return `<div class="reuse-line on">
+      <span class="reuse-say"><b>${whose}</b><span>All ${n(o.entriesUsedHere, 'entry', 'entries')} already available here</span></span>
+    </div>`;
   }
   const on = rv.reuse.has(o.entityId);
   const said = o.state === 'some'
     ? `${num(o.entriesUsedHere)} of ${n(o.entries, 'entry', 'entries')} available in this story`
-    : `${n(o.entries, 'entry', 'entries')} they know that can travel`;
+    : `${n(o.entries, 'entry', 'entries')} available`;
   return `<div class="reuse-line${on ? ' on' : ''}">
-      <span>${said}.</span>
+      <span class="reuse-say"><b>Use ${whose}</b><span>${said}</span></span>
       <button class="switch" data-rv-reuse="${esc(o.entityId)}" aria-pressed="${on}"
-        aria-label="Use what ${esc(o.name)} knows in this story"></button>
+        aria-label="Use ${esc(o.name)}’s reusable knowledge in this story"></button>
     </div>
     ${on && o.state === 'some' ? '<div class="why">The rest will be available here too.</div>' : ''}`;
 }
@@ -4433,7 +4446,7 @@ async function showCharacter(id) {
         <button class="btn" id="deep-profile">Everything known about ${esc(c.name.split(' ')[0])}</button>
         <button class="btn quiet" id="id-review">Connected person</button>
       </div>`
-    : `<div class="notice" style="margin-top:var(--s5)">Nexus has not been told which person this card is, so it can only show what the card says. Connect it and everything organised about them — and anything they know that can travel — shows up here.</div>
+    : `<div class="notice" style="margin-top:var(--s5)">Nexus has not been told which person this card is, so it can only show what the card says. Connect it and everything organised about them — including the knowledge about them that can travel between stories — shows up here.</div>
       <div class="row-actions" style="margin-top:8px">
         <button class="btn" id="id-connect">Connect knowledge</button>
       </div>`}
@@ -4777,7 +4790,7 @@ function renderPersonaArea(root, data, currentId) {
         return;
       }
       // The same question as on a card, asked the same way: someone you play is
-      // a person, and what they know travels with them too.
+      // a person, and the knowledge about them travels with them too.
       const connect = e.target.closest('[data-persona-connect]');
       if (connect) { connectKnowledge('persona', connect.dataset.personaConnect, { back: panelPersona }); return; }
       const ident = e.target.closest('[data-persona-identity]');
@@ -8206,7 +8219,12 @@ function knowledgeGroup(g) {
 }
 
 /**
- * Whether this story is reading what somebody knows, and the way to change it.
+ * Whether this story is reading somebody's reusable knowledge, and how to
+ * change it.
+ *
+ * Knowledge ABOUT them, not knowledge they hold: a deepest fear is true of
+ * Patrick whether or not Patrick has ever faced it. Saying "what they know"
+ * would spend a distinction a later layer needs.
  *
  * The person is the subject, never the file: "used in this story", not the name
  * of a container. Several containers are still several, because an old
@@ -8339,7 +8357,7 @@ async function connectKnowledge(kind, resourceId, { back = null } = {}) {
   const done = (msg) => { toast(msg, { kind: 'good' }); closeSheet(); if (back) back(); };
 
   sheet('Connect knowledge', `
-    <p class="rv-lede">Nexus has not been told who ${esc(s.name)} is. Once it knows, everything organised about that person shows up here — and what they know can travel to your stories.</p>
+    <p class="rv-lede">Nexus has not been told who ${esc(s.name)} is. Once it knows, everything organised about that person shows up here, and the knowledge about them can travel to your other stories.</p>
     ${s.candidates.length
     ? `<div class="why" style="margin-bottom:10px">Nexus never decides this on its own. Say who they are.</div>
         ${s.candidates.map((c) => candidateCard(c, s.name)).join('')}`
@@ -8381,7 +8399,7 @@ async function reviewConnection(kind, resourceId, { back = null } = {}) {
   if (!s.bound) { connectKnowledge(kind, resourceId, { back }); return; }
   const d = s.disconnect;
   const lines = [
-    d.depends.reading.length ? `${d.depends.reading.length === 1 ? 'One story reads' : `${num(d.depends.reading.length)} stories read`} what they know: ${d.depends.reading.map((x) => x.title).join(', ')}.` : '',
+    d.depends.reading.length ? `${d.depends.reading.length === 1 ? 'One story reads' : `${num(d.depends.reading.length)} stories read`} their reusable knowledge: ${d.depends.reading.map((x) => x.title).join(', ')}.` : '',
     d.depends.writing.length ? `${d.depends.writing.length === 1 ? 'One story has' : `${num(d.depends.writing.length)} stories have`} facts about them of their own.` : '',
     d.depends.parts ? `This card plays them in ${d.depends.parts === 1 ? 'one story' : `${num(d.depends.parts)} stories`}.` : '',
   ].filter(Boolean);
@@ -8530,7 +8548,7 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
       const source = e.target.closest('[data-open-source]');
       if (source) { closeSheet(); openLorebook(source.dataset.openSource); return; }
 
-      // ---- what this story reads of what they know
+      // ---- which of their reusable knowledge this story reads
       const on = e.target.closest('[data-reuse-on]');
       const off = e.target.closest('[data-reuse-off]');
       if ((on || off) && storyId) {

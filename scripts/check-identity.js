@@ -9,7 +9,7 @@
 // immediately and attaches nothing to any story, disconnecting deletes nothing,
 // and looking writes nothing.
 
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -183,7 +183,7 @@ section('Connecting shows what they know, and attaches nothing');
   ok('before: the story has no reusable knowledge of theirs', reuseState(db, patrick, { storyId: story }).usedHere === 0);
   const r = connectResource(db, { kind: 'character', resourceId: card, entityId: patrick });
   ok('the card now represents them', r.bound && r.entityId === patrick);
-  ok('and what they know is visible at once', r.reuse.total === 1 && r.reuse.entries === 2);
+  ok('and their reusable knowledge is visible at once', r.reuse.total === 1 && r.reuse.entries === 2);
   ok('no source was attached to the story',
     db.raw.prepare('SELECT COUNT(*) n FROM story_lorebooks WHERE story_id=?').get(story).n === sourcesBefore);
   ok('the story still reads none of it', reuseState(db, patrick, { storyId: story }).usedHere === 0);
@@ -260,7 +260,7 @@ section('Disconnecting says what leans on it, and deletes nothing');
   bindCard(db, { storyId: one, entityId: patrick, characterId: card });
 
   const pv = disconnectPreview(db, { kind: 'character', resourceId: card });
-  ok('the preview names the story reading what they know',
+  ok('the preview names the story reading their reusable knowledge',
     pv.depends.reading.length === 1 && pv.depends.reading[0].title === 'One');
   ok('and the story that wrote its own facts about them',
     pv.depends.writing.length === 1 && pv.depends.writing[0].title === 'Two');
@@ -355,6 +355,51 @@ section('A connected card is shown in full, and an unconnected one is not');
   ok('nothing about the card\'s own fields changed', db.getCharacter(card).description === 'Careful.');
   ok('and the profile reads the card\'s own words as core', String(p.core?.identity || '').includes('Careful'));
   db.close();
+}
+
+// ---------------------------------------------------------------------------
+section('Knowledge ABOUT somebody is never called knowledge they have');
+{
+  // A childhood, a deepest fear, an abandonment wound: all true of Patrick
+  // whether or not Patrick understands any of them. Reusable knowledge is
+  // structured knowledge about a person, and nothing in the app may describe it
+  // as what that person knows — that wording would spend a distinction a later
+  // "who knows what" layer needs, and would be a lie about the data today.
+  // Only what a reader can see: comments are where the rule itself is written
+  // down, so scanning them would fail on the explanation of the rule.
+  const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const ui = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const saying = (re) => (ui.match(re) || []).slice(0, 3);
+
+  // "what they know" / "they know" said of an entity's own knowledge.
+  const claims = saying(/[^\n]*\b(?:what|everything|anything) (?:they|he|she) knows?\b[^\n]*/gi)
+    .concat(saying(/[^\n]*\bentr(?:y|ies) (?:they|he|she) know\b[^\n]*/gi))
+    .concat(saying(/[^\n]*\bof what they know\b[^\n]*/gi))
+    .concat(saying(/[^\n]*\bthey know that can travel\b[^\n]*/gi))
+    // "what X knows" in an aria-label or title, same mistake said quietly.
+    .concat(saying(/[^\n]*aria-label="Use what [^"]*knows[^\n]*/gi));
+  ok('no screen says an entity knows its own reusable knowledge', claims.length === 0, claims.join(' | ').slice(0, 220));
+
+  // And the check has teeth: the wording this replaced is still caught.
+  const WRONG = [
+    '<span>5 entries they know that can travel.</span>',
+    '<span>3 of what they know is already available here.</span>',
+    'aria-label="Use what Patrick Moretti knows in this story"',
+    '<p>Pick who is in it and what they know.</p>',
+  ];
+  const caught = WRONG.filter((s) => /\b(?:what|everything|anything) (?:they|he|she) knows?\b/i.test(s)
+    || /\bentr(?:y|ies) (?:they|he|she) know\b/i.test(s)
+    || /\bof what they know\b/i.test(s)
+    || /\bthey know that can travel\b/i.test(s)
+    || /aria-label="Use what [^"]*knows/i.test(s));
+  ok('and the old wording would still be caught', caught.length === WRONG.length, `${caught.length}/${WRONG.length}`);
+
+  // The wording that IS correct keeps working: the knower is the reader.
+  ok('the reader\'s own knowledge is still said as theirs', /what you know about/.test(ui));
+  // And the review control names whose knowledge it is.
+  ok('the review offers it as the person\'s reusable knowledge', /reusable knowledge/.test(ui));
+  ok('counted as entries available, not as things the person holds', /entries' : 'entries'\)} available`/.test(ui)
+    || /\$\{said\}/.test(ui));
 }
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);

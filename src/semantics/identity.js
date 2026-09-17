@@ -1,7 +1,7 @@
 // Saying that a card and a person in your lore are the same person.
 //
-// Everything semantic hangs off the entity: what somebody knows, what travels
-// with them, what one story added. A character card or a persona is only a way
+// Everything semantic hangs off the entity: the knowledge about somebody, what
+// travels with them, what one story added. A card or a persona is only a way
 // of playing a person, so until Nexus is told which person a card represents,
 // it can say nothing about them beyond the card's own fields.
 //
@@ -267,7 +267,7 @@ export function disconnectPreview(db, { kind, resourceId }) {
   const reuse = reuseState(db, id);
 
   const depends = {
-    // Stories reading what they know, through this person.
+    // Stories reading their reusable knowledge, through this person.
     reading: stories.map((s) => ({ id: s.id, title: s.title })),
     // Stories that wrote their own facts about them.
     writing: own.map((s) => ({ id: s.id, title: s.title })),

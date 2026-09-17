@@ -706,8 +706,8 @@ route('DELETE', '/api/identity/:kind/:resourceId', async (req, res, { kind, reso
 // ------------------------------------- knowledge that travels with a person
 //
 // Two actions, both explicit, both ordinary underneath: letting a story read
-// what somebody knows is a source attachment, and using something across
-// stories is a copy into their own knowledge. Previews write nothing.
+// somebody's reusable knowledge is a source attachment, and using something
+// across stories is a copy into their own knowledge. Previews write nothing.
 
 /** What using their reusable knowledge here would attach. */
 route('GET', '/api/stories/:id/reuse/:entityId', async (req, res, { id, entityId }) => {
@@ -717,7 +717,7 @@ route('GET', '/api/stories/:id/reuse/:entityId', async (req, res, { id, entityId
   } catch (e) { throw e instanceof AuthoringError ? new HttpError(e.status, e.message) : e; }
 });
 
-/** Let this story read what somebody knows. */
+/** Let this story read somebody's reusable knowledge. */
 route('POST', '/api/stories/:id/reuse/:entityId', async (req, res, { id, entityId }) => {
   const { sourceIds = null } = await readJson(req).catch(() => ({}));
   try { return attachReusable(db, { entityId, storyId: id, sourceIds }); }
@@ -2692,7 +2692,8 @@ route('POST', '/api/builder/draft', async (req) => {
 });
 
 /**
- * Who in this draft already knows things, and whether the story would read it.
+ * Who in this draft has reusable knowledge about them, and whether the story
+ * would read it.
  *
  * Read-only, and the story does not have to exist yet: without one the answer
  * is what their library holds, and the review asks rather than assumes. Nothing

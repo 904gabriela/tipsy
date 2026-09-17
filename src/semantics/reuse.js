@@ -1,4 +1,9 @@
-// What somebody knows, and which stories know it.
+// Knowledge about a person, and which stories read it.
+//
+// About them, not held by them. A childhood, a deepest fear, an abandonment
+// wound: all true of Patrick whether or not Patrick understands any of them.
+// Nothing here means "Patrick knows this", and no wording in the app should say
+// so, because who knows what is a separate question a later layer may answer.
 //
 // Three scopes already exist in the database, and P10 is about making them
 // usable rather than inventing a fourth:
@@ -117,7 +122,7 @@ const requireStory = (db, storyId) => {
 };
 
 /**
- * Let a story read what somebody knows.
+ * Let a story read somebody's reusable knowledge.
  *
  * Attaching, and nothing else: the source, its entries and how each of them
  * fires are untouched, no card is made, no entity is made, and a source already
@@ -166,7 +171,7 @@ function copiesMadeHere(db, storyId, lorebookId) {
 }
 
 /**
- * Stop a story reading what somebody knows.
+ * Stop a story reading somebody's reusable knowledge.
  *
  * The attachment goes. The source, its entries, what anybody approved about
  * them, the person, their card or persona, this story's own material about
