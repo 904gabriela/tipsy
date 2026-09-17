@@ -783,7 +783,19 @@ function wrap(db) {
       return id;
     },
 
-    deleteEntry(id) { run(`DELETE FROM lore_entries WHERE id=?`, id); },
+    /**
+     * Take an entry out.
+     *
+     * A persona built from this entry keeps its own name and words — those were
+     * copied when it was made — and loses only the pointer back to where they
+     * came from. There is no foreign key on that column, so nothing else would
+     * ever clear it, and a persona pointing at a row that is gone is not a
+     * persona anybody can reason about.
+     */
+    deleteEntry(id) {
+      run(`UPDATE personas SET from_entry=NULL WHERE from_entry=?`, id);
+      run(`DELETE FROM lore_entries WHERE id=?`, id);
+    },
 
     /**
      * Copy entries into another book, keeping every setting they had.

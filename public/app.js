@@ -788,16 +788,26 @@ async function showCopiesAndVersions() {
   ].filter(Boolean).join(' · ');
   sheet('Copies and versions', `
     ${copies.length ? `<div class="band">Exact copies</div>
-      <div class="why" style="margin-bottom:8px">Identical, word for word and setting for setting. Keep one; the rest are clutter — unless a story is using them.</div>
-      ${copies.map((g, gi) => `<div class="edit-card">
-        <div class="edit-head"><b>${esc(g.items[0].name)}</b><span class="n">${num(g.items.length)} copies</span></div>
+      <div class="why" style="margin-bottom:8px">Identical, word for word and setting for setting. One of each group stays — choose which. Empty sources are not counted as copies of each other.</div>
+      ${copies.map((g, gi) => {
+    const held = g.items.filter((i) => i.used || i.protected);
+    return `<div class="edit-card">
+        <div class="edit-head"><b>${esc(g.items[0].name)}</b><span class="n">${num(g.items.length)} identical</span></div>
         <div class="edit-body" style="display:block">
+          <div class="why">${held.length
+      ? `A story is already using ${held.length === 1 ? 'one of these' : `${num(held.length)} of these`}, so ${num(g.items.length - held.length)} ${g.items.length - held.length === 1 ? 'is' : 'are'} spare.`
+      : `Choose which one to keep; the other ${g.items.length === 2 ? 'one' : `${num(g.items.length - 1)}`} would go.`}</div>
           ${g.items.map((i, ii) => `<div class="del-row">
-            <span class="del-name">${esc(i.name)}</span><span class="del-why">${esc(tell(i))}</span>
-            ${i.used ? '' : `<button class="btn quiet" data-keep="${gi}:${ii}">Keep this one</button>`}
+            <span class="del-name">${esc(i.name)}</span>
+            ${/* "Spare" is only true once something else is definitely staying.
+                 While the choice is still open, neither copy is the spare one. */''}
+            <span class="del-why">${esc(tell(i))}${held.length && i.redundant ? ' · spare' : ''}</span>
+            ${i.used || i.protected ? '<span class="del-why in-use">in use</span>'
+      : `<button class="btn quiet" data-keep="${gi}:${ii}">Keep this one</button>`}
           </div>`).join('')}
         </div>
-      </div>`).join('')}` : '<div class="band">Exact copies</div><div class="why">Nothing here is an exact copy of anything else.</div>'}
+      </div>`;
+  }).join('')}` : '<div class="band">Exact copies</div><div class="why">Nothing here is an exact copy of anything else.</div>'}
 
     ${versions.length ? `<div class="band">Possible versions</div>
       <div class="why" style="margin-bottom:8px">Related, but not the same. Compare them and decide — nothing here is merged, and neither one is picked for you.</div>

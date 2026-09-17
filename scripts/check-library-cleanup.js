@@ -14,8 +14,8 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { open } from '../src/db/index.js';
 import { analyzeLibraryDependencies, unusedResources, dependencyKey } from '../src/library/dependencies.js';
-import { findExactDuplicates, findPossibleVersions, compareSources, sourceFingerprint } from '../src/library/duplicates.js';
-import { previewLibraryDelete, applyLibraryDelete, LibraryDeleteError } from '../src/library/delete.js';
+import { findExactDuplicates, findPossibleVersions, compareSources, sourceFingerprint, redundantCopies } from '../src/library/duplicates.js';
+import { previewLibraryDelete, applyLibraryDelete, deleteOneResource, LibraryDeleteError } from '../src/library/delete.js';
 import { createEntity, declareInSource, setEntrySemantics, bindCharacterEntity } from '../src/semantics/store.js';
 import { createEntityKnowledge, storyMaterialSource } from '../src/semantics/authoring.js';
 
@@ -57,7 +57,11 @@ bindCharacterEntity(db, patrickCard, patrick);
 const story = db.createStory({ title: 'The Saint', characterIds: [patrickCard], lorebookIds: [shared] });
 const idle = db.createStory({ title: 'An Idle Telling' });
 
-const world = db.createFramework ? db.createFramework({ name: 'The Harbour' }) : null;
+const world = (() => {
+  const id = `fw-${Date.now()}`;
+  db.raw.prepare('INSERT INTO frameworks (id,name,created_at,updated_at) VALUES (?,?,?,?)').run(id, 'The Harbour', Date.now(), Date.now());
+  return id;
+})();
 const worldBook = db.createLorebook('World material', '');
 entry(worldBook, 'Tides', 'Twice a day.');
 if (world) db.raw.prepare("INSERT OR IGNORE INTO resource_lorebooks (owner_kind,owner_id,lorebook_id) VALUES ('framework',?,?)").run(world, worldBook);
@@ -268,6 +272,48 @@ section('the same thing twice');
   ok('so it is not in the copies group', !findExactDuplicates(db, 'source').some((g) => g.ids.includes(D) && g.ids.includes(A)));
 }
 
+section('empty is not evidence of anything');
+{
+  // Two packs with nothing in them match on content because there is no content
+  // to differ. That is arithmetic, not a finding: they are unrelated sources
+  // with unrelated names, and grouping them would invite keeping the wrong one.
+  const e1 = db.createLorebook('Mhsssass', '');
+  const e2 = db.createLorebook('Mha', '');
+  ok('two empty sources are not called copies of each other',
+    !findExactDuplicates(db, 'source').some((g) => g.ids.includes(e1) && g.ids.includes(e2)));
+  ok('nor is either grouped with anything else',
+    !findExactDuplicates(db, 'source').some((g) => g.ids.includes(e1) || g.ids.includes(e2)));
+  ok('but both are still ordinary unused things', !used('source', e1).used && !used('source', e2).used);
+  const names = unusedResources(db, 'source').map((r) => r.name);
+  ok('and cleanup still offers them', names.includes('Mhsssass') && names.includes('Mha'), names.join(' | '));
+  // An empty one and a full one with the same name are still worth comparing.
+  ok('emptiness does not hide a real difference either',
+    sourceFingerprint(db, e1) !== sourceFingerprint(db, shared));
+}
+
+section('being one of several copies is not being surplus');
+{
+  const copy = (name) => { const id = db.createLorebook(name, ''); entry(id, 'Only line', 'The same words.'); return id; };
+  const a = copy('Triplet'); const b = copy('Triplet'); const c = copy('Triplet');
+  const status = (id) => { const d = used('source', id); return d ? { used: d.used, protected: d.protected } : null; };
+  const groups = findExactDuplicates(db, 'source').filter((g) => g.ids.includes(a));
+  let t = redundantCopies(groups, status);
+  ok('three copies are one group of three members', t.groups === 1 && t.members === 3, JSON.stringify(t));
+  ok('of which two are surplus, not three', t.redundant.length === 2, `${t.redundant.length} surplus`);
+  ok('and the keeper is not counted as surplus', t.redundant.length + 1 === t.members);
+
+  // Once a story keeps one, the keeper is decided and every spare is spare.
+  db.raw.prepare('INSERT OR IGNORE INTO story_lorebooks (story_id,lorebook_id) VALUES (?,?)').run(idle, c);
+  t = redundantCopies(findExactDuplicates(db, 'source').filter((g) => g.ids.includes(a)), status);
+  ok('a copy a story reads counts as the keeper', t.redundant.length === 2 && !t.redundant.includes(c), JSON.stringify(t.redundant.length));
+  ok('and the used one is reported as such, not as surplus', t.blocked.includes(c));
+  ok('the numbers still add up', t.redundant.length + t.blocked.length === t.members);
+  // Nothing about this stops somebody deleting all the unused ones on purpose.
+  const pv = previewLibraryDelete(db, [a, b].map((id) => ({ kind: 'source', id })));
+  ok('selecting every spare on purpose is still allowed', pv.counts.safe === 2, JSON.stringify(pv.counts));
+  db.raw.prepare('DELETE FROM story_lorebooks WHERE story_id=? AND lorebook_id=?').run(idle, c);
+}
+
 section('two cards with one name are two people\'s worth of work');
 {
   const one1 = db.writeCharacter({ name: 'Elena', description: 'The lawyer.' });
@@ -339,6 +385,77 @@ section('what an import produced, after some of it is deleted');
   ok('but the history of having imported it is kept', !!one('SELECT 1 x FROM imports WHERE id=?', imp));
   ok('and the other file is still recognised', !!db.importByHash('file-two'));
   ok('no stale mapping survived the cleanup', q('SELECT resource_id FROM import_resources WHERE import_id=?', imp).length === 0);
+}
+
+section('the old one-tap Delete buttons obey the same rules');
+{
+  // Every Delete in the app now goes through one authority. These are the calls
+  // those buttons make, so a source a story reads cannot vanish out of it by a
+  // route that predates any of this.
+  const book = db.createLorebook('Read by a story', ''); entry(book, 'A line', 'Words.');
+  db.raw.prepare('INSERT OR IGNORE INTO story_lorebooks (story_id,lorebook_id) VALUES (?,?)').run(idle, book);
+  const e = threw(() => deleteOneResource(db, 'source', book));
+  ok('deleting one used source is refused', e instanceof LibraryDeleteError, e?.message);
+  ok('in words, naming the story', /Used by An Idle Telling/i.test(e?.message || ''), e?.message);
+  ok('and it is still attached to the story', !!one('SELECT 1 x FROM story_lorebooks WHERE lorebook_id=?', book));
+  ok('and still in the library', !!db.getLorebook(book));
+
+  const card = db.writeCharacter({ name: 'Cast somewhere', description: '' });
+  db.raw.prepare("INSERT OR IGNORE INTO story_characters (story_id,character_id,role) VALUES (?,?,'main')").run(idle, card);
+  const e2 = threw(() => deleteOneResource(db, 'character', card));
+  ok('deleting one cast character is refused', e2 instanceof LibraryDeleteError && /In the cast of/i.test(e2.message), e2?.message);
+
+  // The case that used to throw a raw foreign-key error out of the database.
+  const bound = db.writeCharacter({ name: 'Bound as a card', description: '' });
+  const who = createEntity(db, { type: 'person', name: 'Somebody Bound', aliases: [] });
+  db.raw.prepare('INSERT INTO story_entity_cards (story_id, entity_id, character_id, created_at) VALUES (?,?,?,?)')
+    .run(idle, who, bound, Date.now());
+  const e3 = threw(() => deleteOneResource(db, 'character', bound));
+  ok('a card a story chose is refused in words, not by a database error',
+    e3 instanceof LibraryDeleteError && !/FOREIGN KEY|constraint/i.test(e3.message), e3?.message);
+  ok('and names who it stands for', /Chosen as the card for Somebody Bound/i.test(e3?.message || ''), e3?.message);
+
+  const scene = (() => {
+    const id = `sc-${Date.now()}`;
+    db.raw.prepare('INSERT INTO scenarios (id,name,created_at,updated_at) VALUES (?,?,?,?)').run(id, 'A situation', Date.now(), Date.now());
+    return id;
+  })();
+  if (scene) {
+    db.raw.prepare('UPDATE stories SET scenario_id=? WHERE id=?').run(scene, idle);
+    const e4 = threw(() => deleteOneResource(db, 'scenario', scene));
+    ok('a scenario a story started from is refused', e4 instanceof LibraryDeleteError, e4?.message);
+    ok('and the story is untouched', one('SELECT scenario_id s FROM stories WHERE id=?', idle).s === scene);
+    db.raw.prepare('UPDATE stories SET scenario_id=NULL WHERE id=?').run(idle);
+  }
+  if (world) {
+    db.raw.prepare('UPDATE stories SET framework_id=? WHERE id=?').run(world, idle);
+    const e5 = threw(() => deleteOneResource(db, 'world', world));
+    ok('a world a story uses is refused', e5 instanceof LibraryDeleteError, e5?.message);
+    ok('and that story is untouched', one('SELECT framework_id f FROM stories WHERE id=?', idle).f === world);
+    db.raw.prepare('UPDATE stories SET framework_id=NULL WHERE id=?').run(idle);
+  }
+  // Knowledge somebody wrote stays protected on this path too.
+  const e6 = threw(() => deleteOneResource(db, 'source', knowledge.lorebookId));
+  ok('reusable knowledge is protected from one-tap deletion as well',
+    e6 instanceof LibraryDeleteError && /Knowledge you wrote/i.test(e6.message), e6?.message);
+  ok('and from the story-material container too',
+    threw(() => deleteOneResource(db, 'source', material)) instanceof LibraryDeleteError);
+
+  // And the safe case still works in one call.
+  const spare = db.createLorebook('Nobody wants this', ''); entry(spare, 'x', 'x');
+  const r = deleteOneResource(db, 'source', spare);
+  ok('something nothing stands on still goes in one tap', !db.getLorebook(spare) && r.deleted.length === 1);
+}
+
+section('a persona never points at an entry that is gone');
+{
+  const book = db.createLorebook('Persona source', '');
+  const e = entry(book, 'Reiko', 'Watchful.');
+  const persona = db.savePersona({ name: 'Reiko', description: 'You.' });
+  db.raw.prepare('UPDATE personas SET from_entry=? WHERE id=?').run(e, persona);
+  db.deleteEntry(e);
+  ok('deleting the entry unhooks the persona instead of leaving it dangling',
+    !!db.getPersona(persona) && one('SELECT from_entry f FROM personas WHERE id=?', persona).f === null);
 }
 
 db.close();

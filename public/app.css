@@ -2329,3 +2329,5 @@ button.cast-name[data-entry-open] { text-decoration: underline; text-decoration-
 }
 .cmp-more[open] > summary { border-bottom: 1px solid var(--line); }
 .cmp-more .del-list { border: 0; border-radius: 0; }
+/* A copy a story is reading. Said, not hidden: it is why there is no button. */
+.del-why.in-use { margin-left: auto; color: var(--warn); white-space: nowrap; }

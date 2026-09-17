@@ -196,6 +196,31 @@ export function applyLibraryDelete(db, selection, token, { safeOnly = true } = {
   });
 }
 
+/**
+ * Delete one thing, by the same rules as deleting fifty.
+ *
+ * The buttons that predate all this — the Delete on a character sheet, on a
+ * source, on a world — come through here now. They keep their one-tap shape;
+ * what they lose is the ability to do something the two-screen flow would have
+ * refused. There is one deletion authority, and this is it.
+ *
+ * Throws with a reason a person can read when something is holding it up.
+ */
+export function deleteOneResource(db, kind, id) {
+  const selection = [{ kind, id }];
+  const pv = previewLibraryDelete(db, selection);
+  if (pv.blocked.length) {
+    const b = pv.blocked[0];
+    throw new LibraryDeleteError(b.reasons.length
+      ? `${b.name} cannot be deleted yet — ${lower(b.reasons[0])}. Take it out first, then delete it.`
+      : `${b.name} is in use, so it was not deleted.`);
+  }
+  return applyLibraryDelete(db, selection, pv.token, { safeOnly: false });
+}
+
+/** "Used by The Saint" reads better mid-sentence than "used by The Saint". */
+const lower = (s) => (/^[A-Z][a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s);
+
 /** What `import_resources` calls each of these. */
 const importKind = (kind) => ({ character: 'character', source: 'lorebook', scenario: 'scenario', world: 'framework' }[kind]);
 

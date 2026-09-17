@@ -40,8 +40,8 @@ import { KINDS, WEIGHTS, classifyEntry, parsePasted } from './src/engine/classif
 import { defaultValues, costOf, driftFrom, parseScript } from './src/engine/script.js';
 import { createAuth, readCookie, sessionCookie } from './src/auth.js';
 import { analyzeLibraryDependencies, unusedResources } from './src/library/dependencies.js';
-import { findExactDuplicates, findPossibleVersions, compareSources } from './src/library/duplicates.js';
-import { previewLibraryDelete, applyLibraryDelete, LibraryDeleteError } from './src/library/delete.js';
+import { findExactDuplicates, findPossibleVersions, compareSources, redundantCopies } from './src/library/duplicates.js';
+import { previewLibraryDelete, applyLibraryDelete, deleteOneResource, LibraryDeleteError } from './src/library/delete.js';
 import * as memory from './src/memory/index.js';
 
 const PORT = Number(process.env.PORT || 8787);
@@ -628,7 +628,7 @@ route('GET', '/api/characters/:id', async (req, res, { id }) => {
   if (!c) throw new HttpError(404, 'No such character.');
   return c;
 });
-route('DELETE', '/api/characters/:id', async (req, res, { id }) => { db.deleteCharacter(id); return { ok: true }; });
+route('DELETE', '/api/characters/:id', async (req, res, { id }) => deleteOne('character', id));
 
 /**
  * Write a character by hand.
@@ -720,7 +720,7 @@ route('POST', '/api/lorebooks', async (req) => {
   if (!String(name || '').trim()) throw new HttpError(400, 'Give the lorebook a name.');
   return { id: db.createLorebook(name.trim(), description || '') };
 });
-route('DELETE', '/api/lorebooks/:id', async (req, res, { id }) => { db.deleteLorebook(id); return { ok: true }; });
+route('DELETE', '/api/lorebooks/:id', async (req, res, { id }) => deleteOne('source', id));
 route('POST', '/api/lorebooks/:id/entries', async (req, res, { id }) => {
   const entry = await readJson(req);
   return { id: db.saveEntry(id, entry) };
@@ -2019,10 +2019,7 @@ route('GET', '/api/frameworks/:id', async (req, res, { id }) => {
   };
 });
 
-route('DELETE', '/api/frameworks/:id', async (req, res, { id }) => {
-  db.deleteFramework(id);
-  return { ok: true };
-});
+route('DELETE', '/api/frameworks/:id', async (req, res, { id }) => deleteOne('world', id));
 
 
 // ============================================================== the library
@@ -2032,6 +2029,18 @@ route('DELETE', '/api/frameworks/:id', async (req, res, { id }) => {
 // nothing else, and the server works out what is holding what up. Preview is
 // read-only and says so; Apply recomputes the whole answer and refuses unless
 // it comes out the same. Nothing here asks a provider anything.
+
+/**
+ * One deletion authority, for one item or fifty.
+ *
+ * The older one-tap Delete buttons come through here, so a source The Saint is
+ * reading is refused with the same words the review screen would use instead of
+ * quietly vanishing out of the story.
+ */
+async function deleteOne(kind, id) {
+  try { return { ok: true, ...deleteOneResource(db, kind, id) }; }
+  catch (e) { throw e instanceof LibraryDeleteError ? new HttpError(e.status, e.message) : e; }
+}
 
 /** What each thing on a shelf is holding up, and what could go today. */
 route('GET', '/api/library/dependencies', async (req) => {
@@ -2062,10 +2071,22 @@ route('GET', '/api/library/duplicates', async () => {
           WHERE e.lorebook_id=? AND s.status='approved'`).get(id).n } : {}),
     };
   };
+  // Being one of several copies is not the same as being surplus: one of each
+  // group has to stay, and if a story already keeps one, that decides it.
+  const status = (id) => { const d = deps.get(`source:${id}`) || deps.get(`character:${id}`); return d ? { used: d.used, protected: d.protected } : null; };
+  const sourceGroups = findExactDuplicates(db, 'source');
+  const cardGroups = findExactDuplicates(db, 'character');
+  const tally = redundantCopies([...sourceGroups, ...cardGroups], status);
+  const surplus = new Set(tally.redundant);
+  const mark = (kind, g) => ({
+    kind,
+    items: g.ids.map((id) => ({ ...decorate(kind, id), redundant: surplus.has(id) })),
+  });
   return {
+    tally: { groups: tally.groups, members: tally.members, redundant: tally.redundant.length, inUse: tally.blocked.length },
     copies: [
-      ...findExactDuplicates(db, 'source').map((g) => ({ kind: 'source', items: g.ids.map((id) => decorate('source', id)) })),
-      ...findExactDuplicates(db, 'character').map((g) => ({ kind: 'character', items: g.ids.map((id) => decorate('character', id)) })),
+      ...sourceGroups.map((g) => mark('source', g)),
+      ...cardGroups.map((g) => mark('character', g)),
     ],
     versions: findPossibleVersions(db).map((g) => ({
       why: g.why, items: g.ids.map((id) => decorate('source', id)),
@@ -2107,10 +2128,7 @@ route('GET', '/api/scenarios/:id', async (req, res, { id }) => {
   };
 });
 
-route('DELETE', '/api/scenarios/:id', async (req, res, { id }) => {
-  db.deleteScenario(id);
-  return { ok: true };
-});
+route('DELETE', '/api/scenarios/:id', async (req, res, { id }) => deleteOne('scenario', id));
 
 /**
  * Begin a story from a scenario.

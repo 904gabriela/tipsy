@@ -104,7 +104,13 @@ export function characterFingerprint(db, characterId) {
  */
 export function findExactDuplicates(db, kind = 'source') {
   const ids = kind === 'source'
-    ? db.raw.prepare('SELECT id FROM lorebooks').all().map((r) => r.id)
+    // A source with nothing in it is not a copy of another source with nothing
+    // in it. Emptiness is not evidence: any two empty packs match, and calling
+    // them copies of each other would put two unrelated names in one group and
+    // invite somebody to keep the wrong one. They are still perfectly ordinary
+    // unused things, and cleanup still offers them as that.
+    ? db.raw.prepare(`SELECT id FROM lorebooks l
+        WHERE EXISTS (SELECT 1 FROM lore_entries e WHERE e.lorebook_id = l.id)`).all().map((r) => r.id)
     : db.raw.prepare('SELECT id FROM characters').all().map((r) => r.id);
   const byPrint = new Map();
   for (const id of ids) {
@@ -115,6 +121,38 @@ export function findExactDuplicates(db, kind = 'source') {
   return [...byPrint.entries()]
     .filter(([, group]) => group.length > 1)
     .map(([fingerprint, group]) => ({ kind, fingerprint, ids: group }));
+}
+
+/**
+ * Which copies are actually surplus.
+ *
+ * Being in a group of copies is not the same as being disposable. Three
+ * identical packs are three members of one group and TWO redundant copies: one
+ * has to stay. And if a story is already reading one of them, the keeper is
+ * decided — every unused copy beside it is surplus.
+ *
+ * This is a recommendation, not a rule. Somebody who deliberately selects every
+ * copy and is blocked by nothing may still delete the lot; that is their call,
+ * and it goes through the ordinary dependency preview like anything else.
+ *
+ * @param {Array} groups  from findExactDuplicates
+ * @param {function} status  id → { used, protected }
+ * @returns {{ groups, members, redundant: string[], blocked: string[] }}
+ */
+export function redundantCopies(groups, status) {
+  const redundant = [];
+  const blocked = [];
+  let members = 0;
+  for (const g of groups) {
+    members += g.ids.length;
+    const free = g.ids.filter((id) => { const s = status(id); return s && !s.used && !s.protected; });
+    const kept = g.ids.filter((id) => { const s = status(id); return !s || s.used || s.protected; });
+    blocked.push(...kept);
+    // Something already keeps this material: every spare copy is spare. Nothing
+    // does: one stays, and it is not this module's business which.
+    redundant.push(...(kept.length ? free : free.slice(1)));
+  }
+  return { groups: groups.length, members, redundant, blocked };
 }
 
 /** Names compared the way a person would: case, punctuation and spacing aside. */
