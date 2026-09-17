@@ -2,7 +2,7 @@
 // there is nothing to install and nothing to break.
 
 import { DatabaseSync } from 'node:sqlite';
-import { npcTableShape, npcMigrationReadiness, applyNpcMigration } from '../semantics/npc-migration.js';
+import { npcTableShape, npcMigrationReadiness } from '../semantics/npc-migration.js';
 import { resolveEntryPerson } from '../semantics/store.js';
 import { readFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -161,16 +161,16 @@ function migrateSemanticModel(db) {
 }
 
 /**
- * The cast table, in its final shape where that can be done without a
- * decision.
+ * Which shape the cast table has, and — if it is the old one — whether it
+ * could be rebuilt.
  *
- * A database made before people were entities has rows keyed by entry. Where
- * every one of those resolves to a person by approved semantics and none of
- * them disagree, the rebuild is deterministic and runs here, once. Where any
- * row needs somebody to decide, nothing is touched: the app runs on the table
- * as it is, `npc-migration:check` says what is waiting, and `npc-migration:apply`
- * runs the rebuild once it is clean. A database is never refused for one old
- * row.
+ * It does not rebuild it. Opening the application is not approving a change
+ * to the shape of somebody's database, however certain the change is: they
+ * started Nexus, they did not ask for a migration. So the app runs on
+ * whatever table it finds, through the compatibility layer below, and the
+ * rebuild waits for `npc-migration:apply`.
+ *
+ * Reading readiness here writes nothing.
  */
 function settleCastTable(api) {
   const shape = npcTableShape(api);
@@ -178,12 +178,10 @@ function settleCastTable(api) {
   api.npcMigration = null;
   if (shape !== 'transitional') return;
   const ready = npcMigrationReadiness(api);
-  if (ready.canApply) {
-    applyNpcMigration(api);
-    api.npcShape = 'canonical';
-  } else {
-    api.npcMigration = { pending: true, ready: ready.ready, needsDecision: ready.needsDecision };
-  }
+  api.npcMigration = {
+    pending: true, canApply: ready.canApply,
+    ready: ready.ready, needsDecision: ready.needsDecision,
+  };
 }
 
 export function open(path = 'data/tipsy.db') {

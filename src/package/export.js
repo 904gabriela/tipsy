@@ -45,14 +45,19 @@ export function exportStory(db, storyId) {
 
   const inExport = (entryId) => x.entryLocation.get(entryId);
   const exclusions = db.storyExclusions(storyId).map((r) => inExport(r.entry_id)).filter(Boolean);
-  // A cast member is a person. The package names them by entity where it can,
-  // and by the entry that introduced them as well, because v1 readers expect
-  // that; a cast member with no exportable entry has nothing a v1 reader could
-  // resolve, and is left out as before.
-  const npcs = db.storyNpcs(storyId).filter((n) => n.entry_id && inExport(n.entry_id)).map((n) => ({
-    ...inExport(n.entry_id), role: n.role,
-    ...(n.entity_id && x.entityRef(n.entity_id) ? { entity: x.entityRef(n.entity_id) } : {}),
-  }));
+  // Package v1 names a cast member by the entry that introduced them. That is
+  // the frozen wire shape and it stays: inside, the cast is people, and an
+  // importer works out who from the entry's own approved semantics.
+  //
+  // One cast member cannot be written this way: somebody whose introducing
+  // entry is gone, or who was merged from several. v1 has no way to name them,
+  // so they are left out and said out loud rather than dropped in silence.
+  const castRows = db.storyNpcs(storyId);
+  const npcs = castRows.filter((n) => n.entry_id && inExport(n.entry_id))
+    .map((n) => ({ ...inExport(n.entry_id), role: n.role }));
+  for (const n of castRows.filter((n) => !n.entry_id || !inExport(n.entry_id))) {
+    x.warn(`stories.${storyRef}.npcs`, `${n.name || n.title || 'Somebody'} is in this story's cast, but the entry that introduced them is not in this package, so Package v1 has no way to name them. They are not written.`);
+  }
 
   const provenance = x.provenance('story', storyId);
   const pkg = {

@@ -54,16 +54,17 @@ function survey(db) {
     storyPersonas: q('SELECT id, title, persona_id FROM stories WHERE persona_id IS NOT NULL'),
     scenarioWorlds: q('SELECT id, name, framework_id FROM scenarios WHERE framework_id IS NOT NULL'),
     ownedBooks: q("SELECT lorebook_id, owner_story_id FROM source_semantics WHERE owner_story_id IS NOT NULL"),
-    // A source a story's cast stands on: it introduced somebody who is cast
-    // there, or, attached to that story, it declares somebody who is. Identity
-    // is the person, so the second clause is the one that matters once the
-    // introducing entry is gone.
+    // A source a story's cast stands on: attached to that story, it declares
+    // somebody who is cast there. Deleting it would take material the story is
+    // actually reading about somebody it is actually performing.
+    //
+    // Merely having introduced them does NOT count. That is provenance: losing
+    // it clears a pointer and leaves the person in the cast, so it is not a
+    // reason to keep a source nothing else needs.
     npcBooks: (() => {
       const cols = new Set(q('PRAGMA table_info(story_npcs)').map((c) => c.name));
       if (cols.has('profile_entry_id')) {
-        return q(`SELECT DISTINCT n.story_id, e.lorebook_id FROM story_npcs n JOIN lore_entries e ON e.id = n.profile_entry_id
-                  UNION
-                  SELECT DISTINCT n.story_id, se.lorebook_id FROM story_npcs n
+        return q(`SELECT DISTINCT n.story_id, se.lorebook_id FROM story_npcs n
                     JOIN source_entities se ON se.entity_id = n.entity_id
                     JOIN story_lorebooks sl ON sl.story_id = n.story_id AND sl.lorebook_id = se.lorebook_id`);
       }

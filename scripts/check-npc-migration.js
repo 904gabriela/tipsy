@@ -294,10 +294,14 @@ section('a package says who is cast');
   const card = db.writeCharacter({ name: 'Lead', description: '' });
   const story = db.createStory({ title: 'Cast', characterIds: [card], lorebookIds: [book] });
   db.setStoryNpc(story, e, 'supporting');
-  const out = exportStory(db, story).package;
+  const exported = exportStory(db, story);
+  const out = exported.package;
   const npc = out.stories[0].npcs[0];
-  ok('the export names the cast member by entity', !!npc.entity && typeof npc.entity === 'string', JSON.stringify(npc));
-  ok('and keeps the entry it came from, for v1 readers', npc.source && npc.entry && npc.role === 'supporting');
+  // Package v1 was frozen with `{ source, entry, role }`, and it stays that
+  // way: who somebody is comes from the entry's own semantics on import.
+  ok('the wire shape is the frozen one, unchanged', JSON.stringify(Object.keys(npc).sort()) === '["entry","role","source"]', JSON.stringify(npc));
+  ok('naming the entry that introduced them', npc.source && npc.entry && npc.role === 'supporting');
+  ok('and nothing was exported that v1 has no word for', exported.warnings.length === 0, JSON.stringify(exported.warnings));
   const db2 = fresh();
   const r = importPackage(db2, out, { decisions: {}, filename: 'cast.json' });
   const sid = Object.values(r.stories)[0];
@@ -306,7 +310,186 @@ section('a package says who is cast');
   ok('with the entry kept as provenance', row.profile_entry_id !== null);
   const again = exportStory(db2, sid).package;
   ok('and it round-trips', JSON.stringify(again.stories[0].npcs) === JSON.stringify(out.stories[0].npcs));
+  // Somebody whose introducing entry is gone cannot be named in v1. That is
+  // said out loud rather than dropped in silence.
+  db2.deleteEntry(row.profile_entry_id);
+  const after = exportStory(db2, sid);
+  ok('a cast member v1 cannot name is reported, not silently lost',
+    after.warnings.some((w) => /has no way to name them/.test(w.message)), JSON.stringify(after.warnings.map((w) => w.message)));
+  ok('and they are still in the cast', db2.raw.prepare('SELECT COUNT(*) n FROM story_npcs WHERE story_id=?').get(sid).n === 1);
   db.close(); db2.close();
+}
+
+// ------------------------------------------------------- startup is not consent
+
+section('opening the app never rebuilds the table');
+{
+  const db = fresh();
+  const book = db.createLorebook('Harbour', '');
+  const carlo = createEntity(db, { type: 'person', name: 'Carlo', aliases: [] });
+  declareInSource(db, { lorebookId: book, entityId: carlo, localRef: 'c', localName: 'Carlo', origin: 'manual', status: 'approved' });
+  const e1 = entry(db, book, 'Carlo', 'Runs the docks.'); approveDefines(db, e1, carlo);
+  const story = db.createStory({ title: 'Ready', lorebookIds: [book] });
+  backToTransitional(db);
+  legacyRow(db, story, e1, 'supporting', 0);
+  const path = db.raw.location();
+  const before = createHash('sha256').update(JSON.stringify(db.raw.prepare('SELECT * FROM story_npcs ORDER BY rowid').all())).digest('hex');
+  const ddlBefore = db.raw.prepare("SELECT sql FROM sqlite_master WHERE name='story_npcs'").get().sql;
+  db.close();
+
+  // A database that COULD be rebuilt, opened the way starting Nexus opens it.
+  const again = open(path);
+  ok('readiness says it could be rebuilt', again.npcMigration?.canApply === true, JSON.stringify(again.npcMigration));
+  ok('but the table is untouched', npcTableShape(again) === 'transitional'
+    && again.raw.prepare("SELECT sql FROM sqlite_master WHERE name='story_npcs'").get().sql === ddlBefore);
+  ok('and not one row was written',
+    createHash('sha256').update(JSON.stringify(again.raw.prepare('SELECT * FROM story_npcs ORDER BY rowid').all())).digest('hex') === before);
+  ok('the app runs on the old table through the compatibility layer', again.npcShape === 'transitional'
+    && again.storyNpcs(story).length === 1 && again.storyNpcs(story)[0].entry_id === e1);
+  // Opening it repeatedly still changes nothing.
+  again.close();
+  const third = open(path);
+  ok('opening it again changes nothing either', npcTableShape(third) === 'transitional'
+    && createHash('sha256').update(JSON.stringify(third.raw.prepare('SELECT * FROM story_npcs ORDER BY rowid').all())).digest('hex') === before);
+  // Only an explicit apply does it.
+  const done = applyNpcMigration(third);
+  ok('an explicit apply rebuilds it', done.migrated === 1 && npcTableShape(third) === 'canonical');
+  ok('and the cast survived the rebuild', third.storyNpcs(story)[0]?.entity_id === carlo);
+  third.close();
+  const fourth = open(path);
+  ok('afterwards there is nothing pending', npcTableShape(fourth) === 'canonical' && fourth.npcMigration === null);
+  fourth.close();
+}
+
+// ------------------------------------------------------------ persona safety
+
+section('who you play, when nobody has said who that is');
+const personaCase = ({ bind, withRows }) => {
+  const db = fresh();
+  const book = db.createLorebook('Harbour', '');
+  const carlo = createEntity(db, { type: 'person', name: 'Carlo', aliases: [] });
+  const reiko = createEntity(db, { type: 'person', name: 'Reiko', aliases: [] });
+  for (const [id, ref] of [[carlo, 'c'], [reiko, 'r']]) {
+    declareInSource(db, { lorebookId: book, entityId: id, localRef: ref, localName: ref, origin: 'manual', status: 'approved' });
+  }
+  const eCarlo = entry(db, book, 'Carlo', 'Runs the docks.'); approveDefines(db, eCarlo, carlo);
+  const eReiko = entry(db, book, 'Reiko', 'Watchful.'); approveDefines(db, eReiko, reiko);
+  const persona = db.savePersona({ name: 'Reiko', description: 'You.' });
+  if (bind) bindPersonaEntity(db, persona, bind === 'same' ? reiko : carlo);
+  const story = db.createStory({ title: 'Played', lorebookIds: [book], personaId: persona });
+  backToTransitional(db);
+  if (withRows) legacyRow(db, story, bind === 'same' ? eReiko : eCarlo, 'main', 0);
+  const r = npcMigrationReadiness(db);
+  return { db, r, story };
+};
+{
+  // A. the persona is known, and is nobody in the cast.
+  const a = personaCase({ bind: 'other', withRows: true });
+  // bound to Carlo, and the cast row IS Carlo: that is a collision. Use a
+  // separate case for "known and different".
+  a.db.close();
+
+  const known = (() => {
+    const db = fresh();
+    const book = db.createLorebook('Harbour', '');
+    const carlo = createEntity(db, { type: 'person', name: 'Carlo', aliases: [] });
+    const reiko = createEntity(db, { type: 'person', name: 'Reiko', aliases: [] });
+    for (const [id, ref] of [[carlo, 'c'], [reiko, 'r']]) declareInSource(db, { lorebookId: book, entityId: id, localRef: ref, localName: ref, origin: 'manual', status: 'approved' });
+    const eCarlo = entry(db, book, 'Carlo', 'Runs the docks.'); approveDefines(db, eCarlo, carlo);
+    const persona = db.savePersona({ name: 'Reiko', description: 'You.' });
+    bindPersonaEntity(db, persona, reiko);
+    const story = db.createStory({ title: 'Played', lorebookIds: [book], personaId: persona });
+    backToTransitional(db);
+    legacyRow(db, story, eCarlo, 'main', 0);
+    return { db, r: npcMigrationReadiness(db) };
+  })();
+  ok('A. persona known and different from the cast: safe', known.r.canApply
+    && known.r.personaUnverified.length === 0 && known.r.collisions.length === 0, JSON.stringify(known.r.needsDecision));
+  ok('   and the rebuild runs', applyNpcMigration(known.db).migrated === 1);
+  known.db.close();
+
+  // B. the persona is known, and IS somebody in the cast.
+  const same = personaCase({ bind: 'same', withRows: true });
+  ok('B. persona known and in the cast: a collision, blocked', !same.r.canApply
+    && same.r.collisions.length === 1 && same.r.personaUnverified.length === 0);
+  ok('   and the reason names them', /who you play in this story/.test(same.r.collisions[0].why), same.r.collisions[0].why);
+  ok('   and apply refuses', threw(() => applyNpcMigration(same.db)) instanceof NpcMigrationError);
+  same.db.close();
+
+  // C. a persona with no identity at all, and legacy rows to canonicalise.
+  const unknown = personaCase({ bind: null, withRows: true });
+  ok('C. persona with no identity and legacy rows: unverifiable, blocked', !unknown.r.canApply
+    && unknown.r.personaUnverified.length === 1 && unknown.r.collisions.length === 0, JSON.stringify(unknown.r.needsDecision));
+  ok('   and it says nobody can prove it either way',
+    /has not been joined to an identity yet/.test(unknown.r.personaUnverified[0].why)
+    && /cannot prove that none of this cast is you/.test(unknown.r.personaUnverified[0].why), unknown.r.personaUnverified[0].why);
+  ok('   it is not called unresolved, and no identity was guessed',
+    unknown.r.unresolved.length === 0 && unknown.r.personaUnverified[0].resolved?.name === 'Carlo');
+  const e = threw(() => applyNpcMigration(unknown.db));
+  ok('   apply refuses, saying why', e instanceof NpcMigrationError && /persona has no identity yet/.test(e.message), e?.message);
+  ok('   and nothing was rebuilt', npcTableShape(unknown.db) === 'transitional');
+  // Once somebody says who they play, and it is not the cast, it is safe.
+  const reiko = unknown.db.raw.prepare("SELECT id FROM lore_entities WHERE canonical_name='Reiko'").get().id;
+  const persona = unknown.db.raw.prepare('SELECT persona_id p FROM stories WHERE id=?').get(unknown.story).p;
+  bindPersonaEntity(unknown.db, persona, reiko);
+  const after = npcMigrationReadiness(unknown.db);
+  ok('   joining the persona to an identity settles it', after.canApply && after.personaUnverified.length === 0);
+  unknown.db.close();
+
+  // D. a persona with no identity, and no legacy cast rows at all.
+  const empty = personaCase({ bind: null, withRows: false });
+  ok('D. persona with no identity but no cast rows: nothing to block', empty.r.canApply
+    && empty.r.personaUnverified.length === 0 && empty.r.rows.length === 0);
+  empty.db.close();
+}
+
+// ------------------------------------------- provenance never owns membership
+
+section('a profile entry is where somebody was read about, not whether they are here');
+{
+  const db = fresh();
+  const bookA = db.createLorebook('Patrick Lore', '');
+  const bookB = db.createLorebook('Second Harbour', '');
+  const carlo = createEntity(db, { type: 'person', name: 'Carlo Vancetti', aliases: [] });
+  for (const b of [bookA, bookB]) declareInSource(db, { lorebookId: b, entityId: carlo, localRef: 'carlo', localName: 'Carlo Vancetti', origin: 'manual', status: 'approved' });
+  const profile = entry(db, bookA, 'Carlo Vancetti', 'Runs the west docks.'); approveDefines(db, profile, carlo);
+  const alsoCarlo = entry(db, bookB, 'Carlo at the club', 'Drinks alone.'); approveDefines(db, alsoCarlo, carlo);
+  const card = db.writeCharacter({ name: 'Lead', description: '' });
+  const story = db.createStory({ title: 'The Quay', characterIds: [card], lorebookIds: [bookA, bookB] });
+  db.setStoryNpc(story, profile, 'supporting');
+
+  const row0 = db.raw.prepare('SELECT * FROM story_npcs WHERE story_id=?').get(story);
+  ok('cast, with the entry as provenance', row0.entity_id === carlo && row0.role === 'supporting' && row0.profile_entry_id === profile);
+  const inCast = () => db.storyNpcs(story);
+  ok('the cast read model names them', inCast().length === 1 && inCast()[0].name === 'Carlo Vancetti');
+
+  // Only the provenance entry goes.
+  db.deleteEntry(profile);
+  const row1 = db.raw.prepare('SELECT * FROM story_npcs WHERE story_id=?').get(story);
+  ok('deleting only the profile entry leaves the row', !!row1);
+  ok('the person is unchanged', row1.entity_id === carlo);
+  ok('the part is unchanged', row1.role === 'supporting');
+  ok('the provenance is cleared', row1.profile_entry_id === null);
+  ok('and the cast read model still names them', inCast().length === 1 && inCast()[0].name === 'Carlo Vancetti' && inCast()[0].role === 'supporting');
+  ok('with no entry to point at, and that is fine', inCast()[0].entry_id === null);
+
+  // Now the whole source that held the provenance, deleted as a library action.
+  db.setStoryNpc(story, { entityId: carlo, role: 'supporting', profileEntryId: alsoCarlo });
+  ok('provenance can be given again by another entry', db.raw.prepare('SELECT profile_entry_id p FROM story_npcs WHERE story_id=?').get(story).p === alsoCarlo);
+  // bookB is attached to the story, so deleting it is refused — take it out of
+  // the story first, which is the explicit decision, then delete the library
+  // resource. The cast row must survive the FK cascade either way.
+  const refused = threw(() => deleteOneResource(db, 'source', bookB));
+  ok('a source a story reads cannot just be deleted', !!refused, refused?.message);
+  db.raw.prepare('DELETE FROM story_lorebooks WHERE story_id=? AND lorebook_id=?').run(story, bookB);
+  deleteOneResource(db, 'source', bookB);
+  const row2 = db.raw.prepare('SELECT * FROM story_npcs WHERE story_id=?').get(story);
+  ok('deleting the source that held the provenance does not cascade the cast row away', !!row2);
+  ok('they are still the same person in the same part', row2.entity_id === carlo && row2.role === 'supporting');
+  ok('and the provenance went with the source', row2.profile_entry_id === null);
+  ok('the person themselves survives', !!db.raw.prepare('SELECT 1 x FROM lore_entities WHERE id=?').get(carlo));
+  ok('and the cast read model is unchanged', inCast().length === 1 && inCast()[0].name === 'Carlo Vancetti' && inCast()[0].role === 'supporting');
+  db.close();
 }
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);

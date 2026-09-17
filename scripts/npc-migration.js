@@ -27,6 +27,12 @@ console.log(`Cast table: ${r.shape}   rows: ${r.rows.length}`);
 console.log(`  Ready: ${r.ready}   Needs decision: ${r.needsDecision}`);
 if (r.groups.length) console.log(`  Same person, several rows: ${r.groups.length} group(s), ${r.conflicts.length} in conflict`);
 if (r.collisions.length) console.log(`  Rows that are the persona: ${r.collisions.length}`);
+if (r.personaUnverified.length) {
+  console.log(`  Rows held up by an unidentified persona: ${r.personaUnverified.length} in ${r.personaUnverifiedStories.length} story/stories`);
+  for (const st of r.personaUnverifiedStories) console.log(`    ${st.story}`);
+  console.log('    The person you play in those stories has not been joined to a semantic identity,');
+  console.log('    so Nexus cannot prove that none of the cast rows are you.');
+}
 if (r.notPeople.length) console.log(`  Rows pointing at something that is not a person: ${r.notPeople.length}`);
 console.log('');
 for (const row of r.rows) {

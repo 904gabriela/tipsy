@@ -257,11 +257,13 @@ export function importPackage(db, pkg, { decisions = {}, baseSettings = {}, file
       for (const a of st.sources) if (a.recursion === 'block') db.setStoryLorebookRecursion(storyId, out.sources[a.source], 'block');
       for (const x of st.exclusions || []) db.excludeEntry(storyId, out.entries[x.source][x.entry]);
       for (const n of st.npcs || []) {
-        // Who this is: the package's own word first, else what approved
-        // semantics say about the entry. Neither, and there is nobody to cast.
+        // Package v1 names a cast member by an entry. Who that is comes from
+        // the entry's own approved semantics, exactly as it does everywhere
+        // else — the package is not asked to assert an identity, and a name is
+        // never taken as one. An entry nobody has organised has nobody to cast.
         const entryId = out.entries[n.source]?.[n.entry] || null;
-        const entityId = (n.entity && out.entities[n.entity]) || (entryId ? resolveNpcEntity(db, entryId) : null);
-        if (!entityId) { out.skipped.push(`Cast member "${n.entry}" in "${st.title}": the package does not say who they are.`); continue; }
+        const entityId = entryId ? resolveNpcEntity(db, entryId) : null;
+        if (!entityId) { out.skipped.push(`Cast member "${n.entry}" in "${st.title}": nothing in the package says who they are.`); continue; }
         db.setStoryNpc(storyId, { entityId, role: n.role, profileEntryId: entryId });
       }
       // Which card is which person here: the story's own statement, else the card's.

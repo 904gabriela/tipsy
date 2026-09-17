@@ -52,7 +52,7 @@ export function npcTableShape(db) {
  */
 export function npcMigrationReadiness(db) {
   const shape = npcTableShape(db);
-  const out = { shape, rows: [], groups: [], ready: 0, needsDecision: 0, unresolved: [], conflicts: [], collisions: [], notPeople: [], canApply: false };
+  const out = { shape, rows: [], groups: [], ready: 0, needsDecision: 0, unresolved: [], conflicts: [], collisions: [], notPeople: [], personaUnverified: [], canApply: false };
   if (shape === 'canonical') { out.canApply = false; out.alreadyMigrated = true; return out; }
   if (shape === 'missing') return out;
 
@@ -97,11 +97,25 @@ export function npcMigrationReadiness(db) {
     }
     // The person you play is never cast. A row that resolves to them is a
     // question for a person, not something to normalise.
+    //
+    // And when the persona has not been joined to an identity at all, the
+    // answer is not "no collision" — it is that nobody can tell. Matching by
+    // name would be a guess, and the whole point of this table is that
+    // identity is never guessed. So the story waits until somebody says who
+    // they play: the invariant is unverifiable, not satisfied.
     const persona = personaOf(r.story_id, r.persona_id);
     if (row.resolved && persona?.entity_id && persona.entity_id === row.resolved.entityId) {
       row.status = 'persona';
       row.why = `this is ${persona.name}, who you play in this story`;
       out.collisions.push(row);
+    } else if (row.resolved && persona && !persona.entity_id) {
+      // Only a row that would otherwise have been fine is reclassified. A row
+      // that already had nothing saying who it is keeps that reason, which is
+      // the more useful one to read.
+      row.status = 'persona-unverified';
+      row.why = `the person you play in this story — ${persona.name} — has not been joined to an identity yet, `
+        + 'so Nexus cannot prove that none of this cast is you';
+      out.personaUnverified.push(row);
     }
     out.rows.push(row);
   }
@@ -109,7 +123,7 @@ export function npcMigrationReadiness(db) {
   // Rows that resolve to one person in one story become one row, if they agree.
   const byKey = new Map();
   for (const row of out.rows) {
-    if (!row.resolved || row.status === 'persona' || row.status === 'not-a-person') continue;
+    if (!row.resolved || ['persona', 'persona-unverified', 'not-a-person'].includes(row.status)) continue;
     const k = `${row.storyId}:${row.resolved.entityId}`;
     byKey.set(k, [...(byKey.get(k) || []), row]);
   }
@@ -125,6 +139,8 @@ export function npcMigrationReadiness(db) {
     if (g.conflict) { out.conflicts.push(g); for (const m of members) m.status = 'conflict'; }
   }
 
+  // Which stories cannot be proved safe, whatever their individual rows say.
+  out.personaUnverifiedStories = [...new Map(out.personaUnverified.map((r) => [r.storyId, { storyId: r.storyId, story: r.story }])).values()];
   for (const row of out.rows) {
     if (row.status === 'backed' || row.status === 'resolvable') out.ready++;
     else out.needsDecision++;
@@ -162,8 +178,14 @@ export function applyNpcMigration(db, { afterCopy = null } = {}) {
   if (readiness.shape === 'missing') return { alreadyMigrated: true, migrated: 0, merged: 0 };
   if (!readiness.canApply) {
     const n = readiness.needsDecision;
-    throw new NpcMigrationError(`${n} cast ${n === 1 ? 'row needs' : 'rows need'} a decision before the cast can be rebuilt: `
-      + `${readiness.unresolved.length} unresolved, ${readiness.conflicts.length} in conflict, ${readiness.collisions.length} ${readiness.collisions.length === 1 ? 'is' : 'are'} the persona, ${readiness.notPeople.length} not a person.`);
+    const parts = [
+      readiness.unresolved.length && `${readiness.unresolved.length} with nothing saying who they are`,
+      readiness.conflicts.length && `${readiness.conflicts.length} where two rows disagree about the same person`,
+      readiness.collisions.length && `${readiness.collisions.length} that ${readiness.collisions.length === 1 ? 'is' : 'are'} the person you play`,
+      readiness.personaUnverified.length && `${readiness.personaUnverified.length} in a story whose persona has no identity yet, so nobody can prove they are not you`,
+      readiness.notPeople.length && `${readiness.notPeople.length} pointing at something that is not a person`,
+    ].filter(Boolean);
+    throw new NpcMigrationError(`${n} cast ${n === 1 ? 'row needs' : 'rows need'} a decision before the cast can be rebuilt: ${parts.join('; ')}.`);
   }
 
   // One row per (story, person). Where several old rows fed one, no single
@@ -202,6 +224,10 @@ export function applyNpcMigration(db, { afterCopy = null } = {}) {
     const broken = db.raw.prepare('PRAGMA foreign_key_check').all();
     if (broken.length) throw new NpcMigrationError(`rebuilding the cast would have orphaned ${broken.length} rows`, 500);
     db.raw.exec('COMMIT');
+    // This handle now has the final table; anything holding it must not go on
+    // reading the old one through the compatibility layer.
+    db.npcShape = 'canonical';
+    db.npcMigration = null;
   } catch (e) {
     try { db.raw.exec('ROLLBACK'); } catch { /* already rolled back */ }
     try { db.raw.exec('DROP TABLE IF EXISTS story_npcs_rebuilt'); } catch { /* nothing to drop */ }

@@ -393,5 +393,38 @@ console.log('\nJ  entity-material is not about characters: a place carries Knowl
   ok('the second example round-trips byte for byte', JSON.stringify(out.package) === JSON.stringify(canonicalPackage(SECOND)) && out.warnings.length === 0);
 }
 
+// ---------------------------------------------------------------- K
+console.log('\nK  v1 was frozen, and the frozen files still say so');
+{
+  // These two fixtures are the examples exactly as they stood at the contract
+  // freeze, kept in examples/frozen and never edited to match new behaviour.
+  // A fixture that moves with the code can always agree with it; these cannot,
+  // which is the only way to notice that v1 has quietly stopped being v1.
+  const FROZEN_DIR = join(here, '..', 'examples', 'frozen');
+  for (const [label, file] of [
+    ['story package', 'nexus-package-v1.p2-frozen.example.json'],
+    ['frameworks and reference', 'nexus-package-v1.p2-frozen.frameworks.example.json'],
+  ]) {
+    const frozen = JSON.parse(readFileSync(join(FROZEN_DIR, file), 'utf8'));
+    const v = validatePackage(frozen);
+    ok(`the frozen ${label} still validates`, v.ok, v.errors.slice(0, 2).map((e) => `${e.path}: ${e.message}`).join(' | '));
+    const lib = fresh();
+    const r = importPackage(lib, frozen);
+    const storyRef = Object.keys(r.stories)[0];
+    const out = storyRef ? exportStory(lib, r.stories[storyRef]) : exportSources(lib, Object.values(r.sources));
+    ok(`the frozen ${label} round-trips to its own canonical form, byte for byte`,
+      JSON.stringify(out.package) === JSON.stringify(canonicalPackage(frozen)),
+      JSON.stringify(out.package.stories?.[0]?.npcs));
+    ok('with nothing the export could not say', out.warnings.length === 0, JSON.stringify(out.warnings));
+    if (storyRef) {
+      // The wire shape is v1's; what was persisted is entity-first.
+      const npc = out.package.stories[0].npcs?.[0];
+      ok('the cast is written the frozen way', !npc || JSON.stringify(Object.keys(npc).sort()) === '["entry","role","source"]', JSON.stringify(npc));
+      const rows = lib.raw.prepare('SELECT entity_id, profile_entry_id FROM story_npcs WHERE story_id=?').all(r.stories[storyRef]);
+      ok('and stored as people, whatever the wire says', rows.length > 0 && rows.every((x) => !!x.entity_id), JSON.stringify(rows));
+    }
+  }
+}
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 process.exitCode = fail ? 1 : 0;

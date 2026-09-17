@@ -328,7 +328,7 @@ prompt order.
 | `cast` | yes | Characters in the story. Exactly one has `"role": "lead"`; the others `"cast"`. |
 | `sources` | yes | Attached sources: `{ "source": ref, "recursion": null or "block" }`. |
 | `exclusions` | no | Entries of attached sources this story does not use: `{ "source": ref, "entry": ref }`. |
-| `npcs` | no | People without a card in the cast: `{ "source", "entry", "role", "entity"? }`, role `main`, `supporting` or `background`. `entity` names who they are; `source`/`entry` is the entry that introduced them. A reader that knows entities casts the entity; an older reader resolves the entry. |
+| `npcs` | no | People without a card, cast from an entry: `{ "source", "entry", "role" }`, role `main`, `supporting` or `background`. Who the person IS comes from that entry's own `semantics` on import; v1 does not carry an identity of its own here. A cast member whose introducing entry is not in the package cannot be named in v1 and is left out, with a note on the export. |
 | `directions` | no | The story's own instructions. |
 | `premise` | no | What the story is about. |
 
