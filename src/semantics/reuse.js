@@ -185,7 +185,16 @@ export function detachReusable(db, { entityId, storyId, sourceIds = null }) {
     for (const s of here) {
       db.raw.prepare('DELETE FROM story_lorebooks WHERE story_id=? AND lorebook_id=?').run(storyId, s.id);
     }
-    return { detached: here.map((s) => ({ id: s.id, name: s.name, entries: s.entries })), name: who.canonical_name, story: story.title };
+    // What the story still reads of theirs, so a message about stopping one set
+    // cannot claim the story stopped reading all of it.
+    const left = reuseState(db, who.id, { storyId });
+    return {
+      detached: here.map((s) => ({ id: s.id, name: s.name, entries: s.entries })),
+      remaining: left.usedHere,
+      entriesRemaining: left.entriesUsedHere,
+      name: who.canonical_name,
+      story: story.title,
+    };
   });
 }
 

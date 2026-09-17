@@ -8543,9 +8543,13 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
               ? await post(`/api/stories/${storyId}/reuse/${p.entity.id}`, only ? { sourceIds: [only] } : {})
               : await del(`/api/stories/${storyId}/reuse/${p.entity.id}${only ? `?sourceId=${encodeURIComponent(only)}` : ''}`);
             const moved = on ? r.attached.reduce((n, s) => n + s.entries, 0) : r.detached.reduce((n, s) => n + s.entries, 0);
+            // Stopping one set of several is not stopping all of them, and the
+            // message says which it was.
             toast(on
               ? `${num(moved)} ${moved === 1 ? 'entry' : 'entries'} about ${r.name} now available here.`
-              : `This story no longer uses what you know about ${r.name}.`, { kind: 'good' });
+              : r.remaining
+                ? `${num(moved)} ${moved === 1 ? 'entry' : 'entries'} no longer read here. ${num(r.entriesRemaining)} still available.`
+                : `This story no longer uses what you know about ${r.name}.`, { kind: 'good' });
             openEntityProfile(p.entity.id, { storyId, back });
           } catch (err) { btn.disabled = false; toast(err.message); }
         })();
