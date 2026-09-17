@@ -38,8 +38,11 @@ CREATE TABLE IF NOT EXISTS lorebooks (
   scan_depth  INTEGER,
   token_budget INTEGER,
   recursive   INTEGER NOT NULL DEFAULT 0,
-  -- when a book arrived inside a character card, remember whose it was
-  from_character TEXT REFERENCES characters(id) ON DELETE CASCADE,
+  -- When a book arrived inside a character card, remember whose it was.
+  -- Provenance, not ownership: material that came in with somebody is still
+  -- material of its own, and deleting the card it rode in on must not destroy
+  -- it. So the link is cleared on delete, never followed.
+  from_character TEXT REFERENCES characters(id) ON DELETE SET NULL,
   original    TEXT NOT NULL,
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL

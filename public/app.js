@@ -296,6 +296,15 @@ function renderStories() {
 
 const find = { text: '', tags: new Set(), shelf: 'people', sort: 'recent' };
 
+// Tidying up. Selection belongs to one shelf: what you ticked among your people
+// has nothing to do with your sources, and carrying it across would leave things
+// chosen that are not on the screen. Searching and filtering keep it, because
+// narrowing to find the fourth copy is exactly how somebody selects four copies.
+const tidy = { on: false, shelf: null, picked: new Set(), deps: null };
+
+/** What this shelf calls the things on it. */
+const SHELF_KIND = { people: 'character', sources: 'source', scenarios: 'scenario', worlds: 'world' };
+
 // What each shelf holds, and how a thing on it describes itself. One set of
 // search, tags and sorting serves all three: they are one collection kept in
 // three places, not three features.
@@ -374,6 +383,7 @@ function renderCharacters() {
   $('#shelf-count').textContent = shown.length === all.length
     ? `${num(all.length)}`
     : `${num(shown.length)} of ${num(all.length)}`;
+  renderTidy(shown);
 
   const list = $('#character-list');
   if (!all.length) {
@@ -403,15 +413,65 @@ function renderCharacters() {
   list.innerHTML = shown.map(shelf.card).join('');
 }
 
+// ---------------------------------------------------------------- tidying up
+//
+// Choosing several things and asking what would happen if they went. The
+// answer always comes from the server: this screen sends a list of what was
+// ticked and shows what comes back, and never decides for itself that
+// something is safe.
+
+/** Turn choosing on or off, and put the shelf back the way it was. */
+function setTidy(on) {
+  tidy.on = on;
+  tidy.shelf = on ? find.shelf : null;
+  tidy.picked.clear();
+  if (!on) tidy.deps = null;
+  $('#shelf-select').textContent = on ? 'Done' : 'Select';
+  $('#shelf-select').classList.toggle('is-on', on);
+  renderCharacters();
+}
+
+/** The bar of actions, and the count at the foot. */
+function renderTidy(shown) {
+  const on = tidy.on && tidy.shelf === find.shelf;
+  $('#shelf-pick').hidden = !on;
+  const foot = $('#pick-foot');
+  foot.hidden = !on;
+  document.body.classList.toggle('shelf-tidying', on);
+  if (!on) return;
+  const n = tidy.picked.size;
+  $('#pick-count').textContent = n
+    ? `${num(n)} selected`
+    : `Nothing selected · ${num(shown.length)} here`;
+  $('#pick-review').disabled = !n;
+  const unused = $('#pick-unused');
+  const known = tidy.deps ? tidy.deps.filter((r) => r.kind === SHELF_KIND[find.shelf] && !r.used && !r.protected).length : null;
+  unused.textContent = known === null ? 'Select unused' : `Select unused · ${num(known)}`;
+}
+
+/** Ask the server what is holding what up. One call, kept for this shelf. */
+async function loadTidyDeps() {
+  const kind = SHELF_KIND[find.shelf];
+  const r = await get(`/api/library/dependencies?kind=${encodeURIComponent(kind)}`);
+  tidy.deps = r.resources;
+  return r.resources;
+}
+
 /** The art, the name, and one line under it. Same shape on every shelf. */
 function artCard(o, { kind, sub, badge = '' }) {
   const initial = String(o.name || '?').trim()[0]?.toUpperCase() || '?';
+  // While tidying, the same card is a checkbox. Nothing moves and nothing is
+  // hidden: the tick simply appears on it, and tapping chooses instead of opens.
+  const choosing = tidy.on && tidy.shelf === find.shelf;
+  const picked = choosing && tidy.picked.has(o.id);
   return `
-    <button class="face${o.avatar ? '' : ' blank'}" data-${kind}="${esc(o.id)}">
+    <button class="face${o.avatar ? '' : ' blank'}${picked ? ' picked' : ''}"
+      ${choosing ? `data-pick="${esc(o.id)}" aria-pressed="${picked}"` : `data-${kind}="${esc(o.id)}"`}>
       ${o.avatar
     ? `<img src="${esc(o.avatar)}" alt="" loading="lazy">`
     : `<span class="initial">${esc(initial)}</span>`}
       ${badge ? `<span class="face-badge">${esc(badge)}</span>` : ''}
+      ${choosing ? '<span class="face-tick" aria-hidden="true">✓</span>' : ''}
       <span class="face-cap">
         <span class="face-name">${esc(o.name)}</span>
         <span class="face-sub">${esc(sub)}</span>
@@ -590,6 +650,20 @@ $('#library-scroll').addEventListener('click', async (e) => {
   if (e.target.closest('#btn-url-import') || e.target.closest('#btn-url-import-lore')) { importFromUrl(); return; }
   const imp = e.target.closest('[data-import]');
   if (imp) { $('#file-input').click(); return; }
+  // While tidying, a card is a checkbox and nothing opens.
+  const pick = e.target.closest('[data-pick]');
+  if (pick) {
+    const id = pick.dataset.pick;
+    const now = !tidy.picked.has(id);
+    if (now) tidy.picked.add(id); else tidy.picked.delete(id);
+    // The card itself changes, and nothing else does. Redrawing the whole wall
+    // to tick one box would throw away scroll position on a long shelf — and
+    // would replace the very element the next tap is aiming at.
+    pick.classList.toggle('picked', now);
+    pick.setAttribute('aria-pressed', String(now));
+    renderTidy(visibleOnShelf());
+    return;
+  }
   const s = e.target.closest('[data-story]');
   if (s) { openStory(s.dataset.story); return; }
   const c = e.target.closest('[data-character]');
@@ -601,6 +675,196 @@ $('#library-scroll').addEventListener('click', async (e) => {
   const b = e.target.closest('[data-lorebook]');
   if (b) { openLorebook(b.dataset.lorebook); return; }
 });
+
+$('#shelf-select').addEventListener('click', () => setTidy(!tidy.on));
+$('#pick-all').addEventListener('click', () => {
+  for (const o of visibleOnShelf()) tidy.picked.add(o.id);
+  renderCharacters();
+});
+$('#pick-none').addEventListener('click', () => { tidy.picked.clear(); renderCharacters(); });
+$('#pick-unused').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try {
+    const rows = await loadTidyDeps();
+    const free = new Set(rows.filter((r) => !r.used && !r.protected).map((r) => r.id));
+    const here = visibleOnShelf().filter((o) => free.has(o.id));
+    tidy.picked.clear();
+    for (const o of here) tidy.picked.add(o.id);
+    renderCharacters();
+    toast(here.length
+      ? `${num(here.length)} of ${num(visibleOnShelf().length)} here have nothing standing on them.`
+      : 'Everything here is being used by something.', { kind: here.length ? 'good' : 'plain' });
+  } catch (err) { toast(err.message); } finally { btn.disabled = false; }
+});
+$('#pick-tidy').addEventListener('click', () => showCopiesAndVersions());
+$('#pick-review').addEventListener('click', () => reviewDeletion());
+
+/** What is on the shelf right now, after search and tags. */
+function visibleOnShelf() {
+  const shelf = SHELF[find.shelf] || SHELF.people;
+  const words = find.text.toLowerCase().split(/\s+/).filter(Boolean);
+  return shelf.items().filter((c) => {
+    const mine = new Set((c.tags || []).map((t) => String(t).trim().toLowerCase()));
+    for (const t of find.tags) if (!mine.has(t)) return false;
+    if (!words.length) return true;
+    return words.every((w) => `${shelf.hay(c)} ${[...mine].join(' ')}`.toLowerCase().includes(w));
+  });
+}
+
+/**
+ * What would happen if these went.
+ *
+ * The server answers, in four parts a person can act on: what goes, what goes
+ * with it, what stays whatever happens, and what is refused and why. Nothing is
+ * written by opening this.
+ */
+async function reviewDeletion() {
+  const kind = SHELF_KIND[find.shelf];
+  const selection = [...tidy.picked].map((id) => ({ kind, id }));
+  sheet('Review deletion', '<div class="empty">Working out what these are holding up…</div>');
+  let p;
+  try { p = await post('/api/library/delete-preview', { selection }); } catch (err) {
+    sheet('Review deletion', `<div class="notice">${esc(err.message)}</div>
+      <div class="sheet-actions"><button class="btn primary" data-close>Close</button></div>`);
+    return;
+  }
+  const row = (r) => `<div class="del-row"><span class="del-name">${esc(r.name)}</span>
+    ${r.reasons.length ? `<span class="del-why">${esc(r.reasons.join(' · '))}</span>` : ''}</div>`;
+  sheet(p.safe.length ? `Delete ${num(p.safe.length)}?` : 'Nothing here can go yet', `
+    ${p.safe.length ? `<p class="rv-lede">These would be deleted:</p>
+      <div class="del-list">${p.safe.map(row).join('')}</div>` : ''}
+    ${p.detaches.length ? `<p class="rv-hint">${esc(p.detaches.join(' · '))}</p>` : ''}
+    ${p.remains.length ? `<div class="rv-keeps"><b>Stays either way</b>
+      <span>${esc(p.remains.slice(0, 8).join(' · '))}</span></div>` : ''}
+    ${p.blocked.length ? `<p class="rv-lede" style="margin-top:14px">Kept, because something is using ${p.blocked.length === 1 ? 'it' : 'them'}:</p>
+      <div class="del-list blocked">${p.blocked.map(row).join('')}</div>
+      <p class="rv-hint">Take ${p.blocked.length === 1 ? 'it' : 'them'} out of the story first, then delete ${p.blocked.length === 1 ? 'it' : 'them'} here.</p>` : ''}
+    <div class="sheet-actions">
+      <button class="btn quiet" data-close>Keep everything</button>
+      ${p.safe.length ? `<button class="btn danger" id="del-go">Delete ${num(p.safe.length)}${p.blocked.length ? ' safe' : ''}</button>` : ''}
+    </div>
+  `, (root) => {
+    const go = $('#del-go', root);
+    if (!go) return;
+    go.addEventListener('click', async () => {
+      go.disabled = true;
+      try {
+        const r = await post('/api/library/delete-apply', { selection, token: p.token, safeOnly: true });
+        await loadLibrary();
+        setTidy(false);
+        closeSheet();
+        toast(`${num(r.deleted.length)} deleted.`, {
+          kind: 'good',
+          sub: r.skipped.length ? `${num(r.skipped.length)} kept, still in use` : '',
+        });
+      } catch (err) { go.disabled = false; toast(err.message); }
+    });
+  });
+}
+
+/**
+ * Copies, and things that might be versions of each other.
+ *
+ * A copy is a copy: identical, to the letter, in everything it says and every
+ * way it fires. A version is not, and nothing here ever decides which version
+ * somebody wants.
+ */
+async function showCopiesAndVersions() {
+  sheet('Copies and versions', '<div class="empty">Comparing everything in your library…</div>');
+  let d;
+  try { d = await get('/api/library/duplicates'); } catch (err) {
+    sheet('Copies and versions', `<div class="notice">${esc(err.message)}</div>
+      <div class="sheet-actions"><button class="btn primary" data-close>Close</button></div>`);
+    return;
+  }
+  const kind = SHELF_KIND[find.shelf];
+  const copies = d.copies.filter((g) => g.kind === kind);
+  const versions = kind === 'source' ? d.versions : [];
+  const tell = (i) => [
+    i.entries !== undefined ? `${num(i.entries)} entries` : '',
+    i.organised ? `${num(i.organised)} organised` : '',
+    i.used ? (i.reasons[0] || 'in use') : '',
+  ].filter(Boolean).join(' · ');
+  sheet('Copies and versions', `
+    ${copies.length ? `<div class="band">Exact copies</div>
+      <div class="why" style="margin-bottom:8px">Identical, word for word and setting for setting. Keep one; the rest are clutter — unless a story is using them.</div>
+      ${copies.map((g, gi) => `<div class="edit-card">
+        <div class="edit-head"><b>${esc(g.items[0].name)}</b><span class="n">${num(g.items.length)} copies</span></div>
+        <div class="edit-body" style="display:block">
+          ${g.items.map((i, ii) => `<div class="del-row">
+            <span class="del-name">${esc(i.name)}</span><span class="del-why">${esc(tell(i))}</span>
+            ${i.used ? '' : `<button class="btn quiet" data-keep="${gi}:${ii}">Keep this one</button>`}
+          </div>`).join('')}
+        </div>
+      </div>`).join('')}` : '<div class="band">Exact copies</div><div class="why">Nothing here is an exact copy of anything else.</div>'}
+
+    ${versions.length ? `<div class="band">Possible versions</div>
+      <div class="why" style="margin-bottom:8px">Related, but not the same. Compare them and decide — nothing here is merged, and neither one is picked for you.</div>
+      ${versions.map((g, gi) => `<div class="edit-card">
+        <div class="edit-body" style="display:block">
+          <div class="del-row"><span class="del-name">${esc(g.items[0].name)}</span><span class="del-why">${esc(tell(g.items[0]))}</span></div>
+          <div class="del-row"><span class="del-name">${esc(g.items[1].name)}</span><span class="del-why">${esc(tell(g.items[1]))}</span></div>
+          <div class="why">${esc(g.why.join('; '))}</div>
+          <div class="row-actions" style="margin-top:8px;margin-bottom:0">
+            <button class="btn" data-compare="${gi}">Compare</button>
+          </div>
+        </div>
+      </div>`).join('')}` : ''}
+    <div class="sheet-actions"><button class="btn primary" data-close>Done</button></div>
+  `, (root) => {
+    root.addEventListener('click', async (e) => {
+      const keep = e.target.closest('[data-keep]');
+      if (keep) {
+        const [gi, ii] = keep.dataset.keep.split(':').map(Number);
+        const group = copies[gi];
+        tidy.picked.clear();
+        for (const [k, item] of group.items.entries()) if (k !== ii && !item.used) tidy.picked.add(item.id);
+        renderCharacters();
+        closeSheet();
+        toast(`Keeping ${group.items[ii].name}.`, { sub: `${num(tidy.picked.size)} other ${tidy.picked.size === 1 ? 'copy' : 'copies'} selected` });
+        return;
+      }
+      const cmp = e.target.closest('[data-compare]');
+      if (cmp) {
+        const g = versions[Number(cmp.dataset.compare)];
+        compareTwo(g.items[0], g.items[1], () => showCopiesAndVersions());
+      }
+    });
+  });
+}
+
+/** Two sources, side by side, in counts first and detail only if asked. */
+async function compareTwo(a, b, back) {
+  sheet('Compare', '<div class="empty">Reading both…</div>');
+  let c;
+  try { c = await get(`/api/library/compare/${a.id}/${b.id}`); } catch (err) {
+    sheet('Compare', `<div class="notice">${esc(err.message)}</div>
+      <div class="sheet-actions"><button class="btn primary" data-close>Close</button></div>`);
+    return;
+  }
+  const list = (items, label) => (items.length ? `<details class="cmp-more"><summary>${esc(label)} · ${num(items.length)}</summary>
+    <div class="del-list">${items.slice(0, 60).map((x) => `<div class="del-row"><span class="del-name">${esc(x.title)}</span>
+      ${x.how ? `<span class="del-why">${esc(x.how.join(', '))}</span>` : ''}</div>`).join('')}
+    ${items.length > 60 ? `<div class="why">and ${num(items.length - 60)} more</div>` : ''}</div></details>` : '');
+  sheet('Compare', `
+    <div class="rv-facts">
+      <div class="stat-row"><span>${esc(c.a.name)}</span><span>${num(c.a.entries)} entries</span></div>
+      <div class="stat-row"><span>${esc(c.b.name)}</span><span>${num(c.b.entries)} entries</span></div>
+    </div>
+    <div class="rv-facts" style="margin-top:12px">
+      <div class="stat-row"><span>The same in both</span><span>${num(c.same)}</span></div>
+      <div class="stat-row"><span>Only in the first</span><span>${num(c.removed)}</span></div>
+      <div class="stat-row"><span>Only in the second</span><span>${num(c.added)}</span></div>
+      <div class="stat-row"><span>Changed</span><span>${num(c.changed)}</span></div>
+    </div>
+    <p class="rv-hint">Nexus does not pick one. Keeping both is a perfectly good answer.</p>
+    ${list(c.details.changed, 'What changed')}
+    ${list(c.details.removed, 'Only in the first')}
+    ${list(c.details.added, 'Only in the second')}
+    <div class="sheet-actions"><button class="btn quiet" id="cmp-back">Back</button></div>
+  `, (root) => $('#cmp-back', root).addEventListener('click', back));
+}
 
 // ------------------------------------------------------------------ import
 

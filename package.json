@@ -26,6 +26,7 @@
     "entity-profile:check": "node scripts/check-entity-profile.js",
     "authoring:check": "node scripts/check-authoring.js",
     "composition-semantics:check": "node scripts/check-composition-semantics.js",
-    "entity-reconcile:check": "node scripts/check-entity-reconcile.js"
+    "entity-reconcile:check": "node scripts/check-entity-reconcile.js",
+    "library-cleanup:check": "node scripts/check-library-cleanup.js"
   }
 }

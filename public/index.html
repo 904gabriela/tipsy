@@ -71,8 +71,19 @@
               <option value="used">Recently used</option>
             </select>
             <span class="count" id="shelf-count"></span>
+            <button class="btn quiet shelf-select" id="shelf-select">Select</button>
+          </div>
+          <div class="pickbar" id="shelf-pick" hidden>
+            <button class="btn quiet" id="pick-unused">Select unused</button>
+            <button class="btn quiet" id="pick-all">Select all</button>
+            <button class="btn quiet" id="pick-none">Clear</button>
+            <button class="btn quiet" id="pick-tidy">Copies &amp; versions</button>
           </div>
           <div id="character-list" class="grid"></div>
+          <div class="pickfoot" id="pick-foot" hidden>
+            <span id="pick-count">Nothing selected</span>
+            <button class="btn primary" id="pick-review">Review deletion</button>
+          </div>
         </div>
 
         <div class="tab-panel" data-panel="lore">

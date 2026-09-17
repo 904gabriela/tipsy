@@ -76,6 +76,58 @@ const LATER_COLUMNS = [
  * Semantic-model steps that need the later columns. Every statement is
  * idempotent, so opening the same database again changes nothing.
  */
+/**
+ * Provenance is not ownership.
+ *
+ * A source that arrived inside a character card used to be deleted with the
+ * card: `lorebooks.from_character` cascaded. Someone tidying their people
+ * would lose whole bodies of material they never meant to touch. The column
+ * still records where the source came from; it no longer decides whether it
+ * lives. Nothing is moved, renamed or merged — the link is simply cleared when
+ * the card goes.
+ *
+ * SQLite cannot alter a foreign key, so the table is rebuilt. Idempotent: the
+ * rebuild is skipped once the key already reads SET NULL.
+ */
+function migrateSourceProvenance(db) {
+  const fk = db.prepare('PRAGMA foreign_key_list(lorebooks)').all()
+    .find((f) => f.from === 'from_character');
+  if (!fk || String(fk.on_delete).toUpperCase() !== 'CASCADE') return;
+
+  const sql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='lorebooks'").get()?.sql;
+  if (!sql) return;
+  // Replace only this column's clause, and keep every column the table has
+  // grown since — the stored DDL is the truth about that, not schema.sql.
+  const at = sql.indexOf('from_character');
+  const rebuilt = (sql.slice(0, at) + sql.slice(at).replace('ON DELETE CASCADE', 'ON DELETE SET NULL'))
+    .replace(/CREATE\s+TABLE\s+(IF\s+NOT\s+EXISTS\s+)?["'`\[]?lorebooks["'`\]]?/i, 'CREATE TABLE lorebooks_rebuilt');
+  const cols = db.prepare('PRAGMA table_info(lorebooks)').all().map((c) => `"${c.name}"`).join(', ');
+  // Dropping the table drops its indexes with it. There are none beyond the
+  // primary key today; recreating whatever is there keeps that true if that
+  // ever changes.
+  const indexes = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='lorebooks' AND sql IS NOT NULL").all();
+
+  // Off, and outside a transaction, or dropping the old table would take its
+  // children with it. The check at the end is what proves it did not.
+  db.exec('PRAGMA foreign_keys=OFF');
+  try {
+    db.exec('BEGIN');
+    db.exec(rebuilt);
+    db.exec(`INSERT INTO lorebooks_rebuilt (${cols}) SELECT ${cols} FROM lorebooks`);
+    db.exec('DROP TABLE lorebooks');
+    db.exec('ALTER TABLE lorebooks_rebuilt RENAME TO lorebooks');
+    for (const i of indexes) db.exec(i.sql);
+    const broken = db.prepare('PRAGMA foreign_key_check').all();
+    if (broken.length) throw new Error(`rebuilding sources would have orphaned ${broken.length} rows`);
+    db.exec('COMMIT');
+  } catch (e) {
+    try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+    throw e;
+  } finally {
+    db.exec('PRAGMA foreign_keys=ON');
+  }
+}
+
 function migrateSemanticModel(db) {
   // A person is cast once per story, however many entries describe them.
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_npc_entity
@@ -115,9 +167,21 @@ export function open(path = 'data/tipsy.db') {
       if (!/duplicate column/i.test(String(e.message))) throw e;
     }
   }
+  migrateSourceProvenance(db);
   migrateSemanticModel(db);
   return wrap(db);
 }
+
+// What an import produced, and whether it is still there. `import_resources`
+// is a mapping to living things, not a claim about the past: the row survives
+// only as long as the thing it points at does.
+const RESOURCE_TABLES = {
+  character: 'characters', lorebook: 'lorebooks', scenario: 'scenarios',
+  framework: 'frameworks', story: 'stories', preset: 'presets',
+};
+const LIVE_RESOURCE = `(${Object.entries(RESOURCE_TABLES)
+  .map(([kind, table]) => `(x.kind='${kind}' AND EXISTS (SELECT 1 FROM ${table} t WHERE t.id = x.resource_id))`)
+  .join(' OR ')})`;
 
 const j = (v) => JSON.stringify(v ?? null);
 const p = (v, fallback) => { try { return v ? JSON.parse(v) : fallback; } catch { return fallback; } };
@@ -253,15 +317,28 @@ function wrap(db) {
      * something: an analysis that was looked at and abandoned is not a
      * reason to refuse the same file later.
      */
+    /**
+     * The same file, already in the library.
+     *
+     * An import row is history: it keeps the original so a file can be looked
+     * at again in a year. It is not proof that anything it made still exists.
+     * Somebody who imports a pack, deletes everything it produced, and imports
+     * it again is not repeating themselves — they are starting over, and the
+     * answer must be yes. So this counts only imports with something still
+     * standing, and reports only the resources that are still there.
+     */
     importByHash(hash) {
       if (!hash) return null;
       const r = get(`SELECT id,filename,chosen_role,committed_at FROM imports
                      WHERE hash=? AND committed_at IS NOT NULL
+                       AND EXISTS (SELECT 1 FROM import_resources x
+                                    WHERE x.import_id = imports.id AND ${LIVE_RESOURCE})
                      ORDER BY committed_at LIMIT 1`, hash);
       if (!r) return null;
       return {
         ...r,
-        resources: all(`SELECT kind,resource_id,part FROM import_resources WHERE import_id=?`, r.id),
+        resources: all(`SELECT kind,resource_id,part FROM import_resources x
+                         WHERE x.import_id=? AND ${LIVE_RESOURCE}`, r.id),
       };
     },
 

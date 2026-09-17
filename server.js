@@ -39,6 +39,9 @@ import { stream, completeJson, listModels, credits, ModelError } from './src/llm
 import { KINDS, WEIGHTS, classifyEntry, parsePasted } from './src/engine/classify.js';
 import { defaultValues, costOf, driftFrom, parseScript } from './src/engine/script.js';
 import { createAuth, readCookie, sessionCookie } from './src/auth.js';
+import { analyzeLibraryDependencies, unusedResources } from './src/library/dependencies.js';
+import { findExactDuplicates, findPossibleVersions, compareSources } from './src/library/duplicates.js';
+import { previewLibraryDelete, applyLibraryDelete, LibraryDeleteError } from './src/library/delete.js';
 import * as memory from './src/memory/index.js';
 
 const PORT = Number(process.env.PORT || 8787);
@@ -2019,6 +2022,76 @@ route('GET', '/api/frameworks/:id', async (req, res, { id }) => {
 route('DELETE', '/api/frameworks/:id', async (req, res, { id }) => {
   db.deleteFramework(id);
   return { ok: true };
+});
+
+
+// ============================================================== the library
+//
+// Cleaning up, without the cleanup being the dangerous part. Every question
+// here is answered by the server: the browser sends what somebody ticked and
+// nothing else, and the server works out what is holding what up. Preview is
+// read-only and says so; Apply recomputes the whole answer and refuses unless
+// it comes out the same. Nothing here asks a provider anything.
+
+/** What each thing on a shelf is holding up, and what could go today. */
+route('GET', '/api/library/dependencies', async (req) => {
+  const kind = new URL(req.url, 'http://x').searchParams.get('kind');
+  const all = [...analyzeLibraryDependencies(db, null).values()]
+    .filter((r) => !kind || r.kind === kind)
+    .map((r) => ({
+      kind: r.kind, id: r.id, name: r.name, used: r.used, protected: r.protected,
+      reasons: r.reasons.map((x) => x.text),
+    }));
+  return { resources: all, unused: all.filter((r) => !r.used && !r.protected).map((r) => r.id) };
+});
+
+/** Copies, and things that might be versions of each other. */
+route('GET', '/api/library/duplicates', async () => {
+  const name = (kind, id) => (kind === 'source' ? db.getLorebook(id)?.name : db.getCharacter(id)?.name) || 'Untitled';
+  const entries = (id) => db.raw.prepare('SELECT COUNT(*) n FROM lore_entries WHERE lorebook_id=?').get(id).n;
+  const deps = analyzeLibraryDependencies(db, null);
+  const decorate = (kind, id) => {
+    const d = deps.get(`${kind}:${id}`);
+    return {
+      id, name: name(kind, id),
+      ...(kind === 'source' ? { entries: entries(id) } : {}),
+      used: !!d?.used, protected: !!d?.protected, reasons: (d?.reasons || []).map((x) => x.text),
+      // Which copy somebody has already put work into. Never a recommendation.
+      ...(kind === 'source' ? { organised: db.raw.prepare(
+        `SELECT COUNT(*) n FROM entry_semantics s JOIN lore_entries e ON e.id=s.entry_id
+          WHERE e.lorebook_id=? AND s.status='approved'`).get(id).n } : {}),
+    };
+  };
+  return {
+    copies: [
+      ...findExactDuplicates(db, 'source').map((g) => ({ kind: 'source', items: g.ids.map((id) => decorate('source', id)) })),
+      ...findExactDuplicates(db, 'character').map((g) => ({ kind: 'character', items: g.ids.map((id) => decorate('character', id)) })),
+    ],
+    versions: findPossibleVersions(db).map((g) => ({
+      why: g.why, items: g.ids.map((id) => decorate('source', id)),
+    })),
+  };
+});
+
+/** Two sources, side by side. */
+route('GET', '/api/library/compare/:a/:b', async (req, res, { a, b }) => {
+  if (!db.getLorebook(a) || !db.getLorebook(b)) throw new HttpError(404, 'One of those sources is no longer in your library.');
+  const of = (id) => ({ id, name: db.getLorebook(id).name, entries: db.listEntries(id).length });
+  return { a: of(a), b: of(b), ...compareSources(db, a, b) };
+});
+
+/** What deleting these would do. Writes nothing. */
+route('POST', '/api/library/delete-preview', async (req) => {
+  const { selection = [] } = await readJson(req);
+  try { return previewLibraryDelete(db, selection); }
+  catch (e) { throw e instanceof LibraryDeleteError ? new HttpError(e.status, e.message) : e; }
+});
+
+/** Do it, if the answer has not moved since. */
+route('POST', '/api/library/delete-apply', async (req) => {
+  const { selection = [], token = '', safeOnly = true } = await readJson(req);
+  try { return applyLibraryDelete(db, selection, token, { safeOnly: !!safeOnly }); }
+  catch (e) { throw e instanceof LibraryDeleteError ? new HttpError(e.status, e.message) : e; }
 });
 
 route('GET', '/api/scenarios', async () => ({ scenarios: db.listScenarios() }));
