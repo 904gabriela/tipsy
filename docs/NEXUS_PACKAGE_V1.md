@@ -449,6 +449,15 @@ ones that look like fields:
 - **Proposed or unconfirmed semantics.** Everything in `semantics` is authoritative. Leave it out
   instead (§11).
 - **Entity merges and "not the same" decisions.**
+- **Promotion lineage.** When something written for one story is kept for later, Nexus records
+  which story entry the reusable copy was made from, and that link is what makes pressing the
+  button twice safe. A package cannot carry it: on import, an entry's provenance is rewritten to
+  the importing package's own, so the link does not survive an export and re-import. Everything
+  else about that state does survive — the reusable source, the story's attachment to it, the
+  copy itself, and the story-level exclusion that stops the same fact arriving twice. What is
+  lost is only the memory of where the copy came from, so on a re-imported library "use across
+  stories" on the original entry would make a second copy. Carrying it needs a field v1 does not
+  have, so it is a **v2 requirement**, not a v1 gap to work around.
 - **Avatars and images.**
 - **Message history, memory and story state.** A story package is a beginning, not a transcript.
 - **Generation presets, models and sampler settings.**

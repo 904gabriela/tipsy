@@ -2353,3 +2353,7 @@ button.cast-name[data-entry-open] { text-decoration: underline; text-decoration-
 .reuse-more .del-list { border: 0; border-radius: 0; }
 /* A fold on a profile is something a thumb opens, so it is thumb-sized. */
 #sheet-body details > summary { min-height: 32px; display: flex; align-items: center; }
+/* The same line inside a review row, where it is one question among several. */
+.cast-row .reuse-line { margin: 6px 0 0; padding: 8px 10px; font-size: 13px; }
+.cast-row .reuse-line .switch { margin-left: auto; }
+.cast-row .reuse-line + .why { margin: 4px 0 0; }

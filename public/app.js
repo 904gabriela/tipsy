@@ -1356,7 +1356,7 @@ async function beginReview(opts) {
   let draft;
   try {
     draft = await post('/api/builder/draft', opts.mode === 'new'
-      ? { mode: 'organize', lorebookIds: opts.lorebookIds, characterIds: opts.characterIds, premise: opts.premise, title: opts.title }
+      ? { mode: 'organize', lorebookIds: opts.lorebookIds, characterIds: opts.characterIds, premise: opts.premise, title: opts.title, personaId: opts.personaId ?? null }
       : { mode: 'organize', lorebookIds: opts.lorebookIds, storyId: opts.storyId });
   } catch (err) {
     sheet('Something went wrong', `<div class="notice">${esc(err.message)}</div>
@@ -1382,6 +1382,9 @@ function openReview(opts, draft) {
     // Answers to "is this invented thing somebody who already exists?".
     // Apply waits until every open question here has one.
     dupes: new Map(),
+    // Whose knowledge this story should carry. Empty on purpose: having it in
+    // the library is not asking for it in the story.
+    reuse: new Set(),
   };
   for (const r of draft.casting) rv.roles.set(r.key, r.suggested);
   for (const l of draft.links) rv.links.set(linkKey(l), l.approved);
@@ -1749,6 +1752,40 @@ function reviewOpening() {
   });
 }
 
+// --------------------------------- knowledge a person brings to a new story
+//
+// Somebody being in the story does not hand the story everything ever written
+// about them. So the review asks, once, per person, and the answer travels with
+// the rest of the draft to Apply — where it becomes an ordinary attachment.
+
+/**
+ * What this person would bring, if they have anything and Nexus knows who they
+ * are.
+ *
+ * A row is a card or somebody read out of a source, and either way the offer is
+ * about the person behind it.
+ */
+const offerOf = (r) => (rv.draft.reuse || []).find((x) => (r.characterId && x.resourceId === r.characterId)
+  || (r.semantic?.entityId && x.entityId === r.semantic.entityId)) || null;
+
+function reuseOfferLine(o) {
+  const n = (k, one, many) => `${num(k)} ${k === 1 ? one : many}`;
+  // Nothing to ask: the story already reads all of it.
+  if (o.state === 'all') {
+    return `<div class="reuse-line on"><span>${n(o.entriesUsedHere, 'entry', 'entries')} of what they know is already available here.</span></div>`;
+  }
+  const on = rv.reuse.has(o.entityId);
+  const said = o.state === 'some'
+    ? `${num(o.entriesUsedHere)} of ${n(o.entries, 'entry', 'entries')} available in this story`
+    : `${n(o.entries, 'entry', 'entries')} they know that can travel`;
+  return `<div class="reuse-line${on ? ' on' : ''}">
+      <span>${said}.</span>
+      <button class="switch" data-rv-reuse="${esc(o.entityId)}" aria-pressed="${on}"
+        aria-label="Use what ${esc(o.name)} knows in this story"></button>
+    </div>
+    ${on && o.state === 'some' ? '<div class="why">The rest will be available here too.</div>' : ''}`;
+}
+
 /** Everyone the story has, with a part each, and the reasons for it. */
 function reviewCasting() {
   const d = rv.draft;
@@ -1798,6 +1835,7 @@ function reviewCasting() {
       ${r.semantic?.entityId ? `<div class="rv-item-actions" style="margin-top:2px">
         <button class="btn quiet" data-cast-profile="${esc(r.semantic.entityId)}">View profile</button>
       </div>` : ''}
+      ${offerOf(r) ? reuseOfferLine(offerOf(r)) : ''}
       ${roleMeans(role, r) ? `<div class="cast-means ${esc(role)}">${esc(roleMeans(role, r))}</div>` : ''}
       ${gen && r.summary ? `<div class="cast-why">${esc(r.summary)}</div>` : ''}
       ${!gen && r.why?.length ? `<div class="cast-why">${esc(r.why.slice(0, 3).join(' · '))}</div>` : ''}
@@ -1831,6 +1869,15 @@ function reviewCasting() {
     <div class="cast-list" id="cast-list">
       ${shown.map(castRow).join('') || `<div class="empty">${rows.length ? 'Nobody here.' : 'Nobody yet.'}</div>`}
     </div>
+    ${/* Someone you play is not cast, but they are in the story, and what they
+         know travels the same way. Asked here so it is asked in one place. */''}
+    ${(rv.draft.reuse || []).filter((o) => o.kind === 'persona').map((o) => `
+      <div class="sec-head">Someone you play</div>
+      <div class="cast-row">
+        <div class="cast-top"><span class="cast-name" tabindex="-1">${esc(o.name)}</span></div>
+        <div class="cast-meta"><span class="cast-backing">Played by you</span></div>
+        ${reuseOfferLine(o)}
+      </div>`).join('')}
     ${canSuggest() ? `<div class="rv-assist">
       <button class="btn" id="cast-suggest">Suggest people again</button>
       <span class="rv-hint">Replaces only the people Nexus suggested that you have not edited. Your characters and your sources stay.</span>
@@ -1841,6 +1888,14 @@ function reviewCasting() {
     root.addEventListener('click', (e) => {
       const f = e.target.closest('[data-filter]');
       if (f) { rv.castFilter = f.dataset.filter; reviewCasting(); return; }
+      // A tick, and nothing more: it is written when the story is.
+      const ru = e.target.closest('[data-rv-reuse]');
+      if (ru) {
+        const key = ru.dataset.rvReuse;
+        if (rv.reuse.has(key)) rv.reuse.delete(key); else rv.reuse.add(key);
+        reviewCasting();
+        return;
+      }
       const p = e.target.closest('[data-promote]');
       if (p) {
         const id = p.dataset.promote;
@@ -2162,6 +2217,9 @@ function reviewedComposition() {
       : { entryId: l.entryId, aboutId: l.aboutId })),
     recursion: rv.recursion,
     generated: acceptedSuggestions(),
+    // Only the people a person ticked. Nothing reusable travels because it
+    // exists, and an empty list is a real answer, not a missing one.
+    reuse: [...rv.reuse].map((entityId) => ({ entityId })),
   };
 }
 
@@ -2256,7 +2314,7 @@ async function applyReviewed(btn) {
   try {
     const storyId = rv.storyId;
     const out = await post(`/api/stories/${storyId}/compose`, {
-      lorebookIds: rv.lorebookIds, casting, links: c.links, recursion: c.recursion,
+      lorebookIds: rv.lorebookIds, casting, links: c.links, recursion: c.recursion, reuse: c.reuse,
       ...(c.generated ? { generated: c.generated, builder: builderMeta() } : {}),
     });
     rv = null;
@@ -4373,8 +4431,12 @@ async function showCharacter(id) {
     ${c.entity_id ? `
       <div class="row-actions" style="margin-top:var(--s5)">
         <button class="btn" id="deep-profile">Everything known about ${esc(c.name.split(' ')[0])}</button>
+        <button class="btn quiet" id="id-review">Connected person</button>
       </div>`
-    : `<div class="notice" style="margin-top:var(--s5)">This card is not joined to what your sources say about them yet. Organise a source about ${esc(c.name.split(' ')[0])} and Nexus can show them in full.</div>`}
+    : `<div class="notice" style="margin-top:var(--s5)">Nexus has not been told which person this card is, so it can only show what the card says. Connect it and everything organised about them — and anything they know that can travel — shows up here.</div>
+      <div class="row-actions" style="margin-top:8px">
+        <button class="btn" id="id-connect">Connect knowledge</button>
+      </div>`}
 
     <div class="row-actions" style="margin-top:var(--s5)">
       <button class="btn" id="edit-char">Edit</button>
@@ -4395,6 +4457,10 @@ async function showCharacter(id) {
         openEntityProfile(c.entity_id, { storyId: here, back: () => showCharacter(id), title: c.name });
       });
     }
+    // Saying who they are, or reading back what was said. Both from the card
+    // itself: there is nowhere else a person would look for it.
+    $('#id-connect', root)?.addEventListener('click', () => connectKnowledge('character', id, { back: () => showCharacter(id) }));
+    $('#id-review', root)?.addEventListener('click', () => reviewConnection('character', id, { back: () => showCharacter(id) }));
     $('#start-here', root).addEventListener('click', () => {
       closeSheet();
       draft.title = '';
@@ -4652,6 +4718,12 @@ function renderPersonaArea(root, data, currentId) {
     ${current && current.entityId ? `
       <div class="row-actions" style="margin-top:8px">
         <button class="btn quiet" data-persona-profile="${esc(current.entityId)}">Everything known about ${esc(current.name.split(' ')[0])}</button>
+        <button class="btn quiet" data-persona-identity="${esc(current.id)}">Connected person</button>
+      </div>`
+    : current ? `
+      <div class="why" style="margin-top:8px">Nexus has not been told which person this is, so what you know about them cannot travel here yet.</div>
+      <div class="row-actions" style="margin-top:6px">
+        <button class="btn quiet" data-persona-connect="${esc(current.id)}">Connect knowledge</button>
       </div>` : ''}
 
     ${personas.length ? `
@@ -4704,6 +4776,12 @@ function renderPersonaArea(root, data, currentId) {
         openEntityProfile(deep.dataset.personaProfile, { storyId: state.story?.id || null, back: panelPersona });
         return;
       }
+      // The same question as on a card, asked the same way: someone you play is
+      // a person, and what they know travels with them too.
+      const connect = e.target.closest('[data-persona-connect]');
+      if (connect) { connectKnowledge('persona', connect.dataset.personaConnect, { back: panelPersona }); return; }
+      const ident = e.target.closest('[data-persona-identity]');
+      if (ident) { reviewConnection('persona', ident.dataset.personaIdentity, { back: panelPersona }); return; }
       const pick = e.target.closest('[data-use-persona]');
       if (pick) {
         const fresh = await get(`/api/stories/${state.story.id}/playable`);
@@ -8138,13 +8216,16 @@ function knowledgeGroup(g) {
 function reuseHere(p) {
   const r = p.reuse;
   if (!r || !r.total) return '';
-  const who = esc(p.entity.name.split(' ')[0]);
   const n = (k, one, many) => `${num(k)} ${k === 1 ? one : many}`;
-  const detail = r.total > 1
-    ? `<details class="reuse-more"><summary>${n(r.total, 'place', 'places')} it is kept</summary>
+  // A set is what a reader has: something they wrote, or a file they brought.
+  // The container's own name is Nexus's business and stays in the details.
+  const setName = (s) => (s.managed ? 'Written by you' : s.name);
+  const many = r.total > 1;
+  const detail = many
+    ? `<details class="reuse-more"><summary>${n(r.total, 'knowledge set', 'knowledge sets')}</summary>
         <div class="del-list">${r.sources.map((s) => `<div class="del-row">
-          <span class="del-name">${esc(s.name)}</span>
-          <span class="del-why">${n(s.entries, 'entry', 'entries')}${s.managed ? ' · written by you' : ''}</span>
+          <span class="del-name">${esc(setName(s))}</span>
+          <span class="del-why">${n(s.entries, 'entry', 'entries')}</span>
           ${s.attached
     ? `<button class="btn quiet" data-reuse-off="${esc(s.id)}">Stop using</button>`
     : `<button class="btn quiet" data-reuse-on="${esc(s.id)}">Use here</button>`}
@@ -8152,13 +8233,14 @@ function reuseHere(p) {
     : '';
   if (r.state === 'all') {
     return `<div class="reuse-line on">
-      <span>${n(r.entriesUsedHere, 'entry', 'entries')} used in this story.</span>
-      <button class="btn quiet" data-reuse-off>Stop using here</button>
+      <span>${n(r.entriesUsedHere, 'entry', 'entries')} available in this story.</span>
+      <button class="btn quiet" data-reuse-off>${many ? 'Stop using all' : 'Stop using'}</button>
     </div>${detail}`;
   }
   if (r.state === 'some') {
+    // Some of it, said as some of it: never a switch that looks either-way.
     return `<div class="reuse-line on">
-      <span>${n(r.entriesUsedHere, 'entry', 'entries')} used here · ${num(r.entriesAvailable)} more available.</span>
+      <span>${num(r.entriesUsedHere)} of ${n(r.entries, 'entry', 'entries')} available in this story.</span>
       <button class="btn quiet" data-reuse-on>Use all</button>
     </div>${detail}`;
   }
@@ -8166,7 +8248,7 @@ function reuseHere(p) {
     <span>${n(r.entries, 'entry', 'entries')} in your library. Not used in this story.</span>
     <button class="btn" data-reuse-on>Use in this story</button>
   </div>${detail}
-  <div class="why">Using it here changes nothing about ${who}. Each entry still decides for itself when it comes up.</div>`;
+  <div class="why">This makes the knowledge available to this story. Each entry still decides when it becomes relevant.</div>`;
 }
 
 /**
@@ -8210,6 +8292,124 @@ async function offerAcrossStories(entryId, { profile, storyId, back }) {
         });
         reopen();
       } catch (err) { e.currentTarget.disabled = false; toast(err.message); }
+    });
+  });
+}
+
+// ------------------------------------ which person a card or a persona is
+//
+// Until Nexus is told, it can only show what the card itself says. It will not
+// work this out from a name: one story's Patrick Moretti must never inherit
+// another's. So it shows what it actually knows, says how it knows it, and
+// waits to be told — including being told that this is somebody new.
+
+const knownOf = (c) => [
+  c.entries ? `${num(c.entries)} ${c.entries === 1 ? 'entry' : 'entries'}` : '',
+  c.stories ? `in ${num(c.stories)} ${c.stories === 1 ? 'story' : 'stories'}` : '',
+].filter(Boolean).join(' · ');
+
+// Said without repeating a name that is already on the screen: with two cards
+// of one name, "already the character Patrick Moretti" reads like a bug.
+const alsoPlayedBy = (x, selfName) => {
+  const who = x.kind === 'persona' ? 'Someone you play' : 'A character card';
+  return x.name && x.name !== selfName ? `${who}, “${x.name}”, is already them` : `${who} is already them`;
+};
+
+const candidateCard = (c, selfName = '') => `
+  <div class="edit-card">
+    <div class="edit-head"><b>${esc(c.name)}</b>${knownOf(c) ? `<span class="n">${esc(knownOf(c))}</span>` : ''}</div>
+    <div class="edit-body" style="display:block">
+      <div class="why">${esc(c.why[0])}.</div>
+      ${c.why.length > 1 ? `<div class="why dim" style="margin-top:2px">${esc(c.why.slice(1).join(' · '))}</div>` : ''}
+      ${c.nameOnly ? '<div class="why dim" style="margin-top:2px">Only the name matches, so this is a guess and nothing more.</div>' : ''}
+      ${c.alreadyRepresented.length ? `<div class="why dim" style="margin-top:2px">${esc(c.alreadyRepresented
+    .map((x) => alsoPlayedBy(x, selfName)).join(' · '))}.</div>` : ''}
+      <div class="row-actions" style="margin-top:8px">
+        <button class="btn${c.prominent ? ' primary' : ''}" data-id-use="${esc(c.entityId)}">This is them</button>
+      </div>
+    </div>
+  </div>`;
+
+/** Ask who somebody is, and take the answer. */
+async function connectKnowledge(kind, resourceId, { back = null } = {}) {
+  let s;
+  try { s = await get(`/api/identity/${kind}/${resourceId}`); } catch (err) { toast(err.message); return; }
+  if (s.bound) { reviewConnection(kind, resourceId, { back }); return; }
+  const mine = kind === 'persona' ? 'the character you play' : 'this card';
+  const done = (msg) => { toast(msg, { kind: 'good' }); closeSheet(); if (back) back(); };
+
+  sheet('Connect knowledge', `
+    <p class="rv-lede">Nexus has not been told who ${esc(s.name)} is. Once it knows, everything organised about that person shows up here — and what they know can travel to your stories.</p>
+    ${s.candidates.length
+    ? `<div class="why" style="margin-bottom:10px">Nexus never decides this on its own. Say who they are.</div>
+        ${s.candidates.map((c) => candidateCard(c, s.name)).join('')}`
+    : `<div class="notice">Nobody in your organised sources looks like ${esc(s.name)}. You can still say they are someone new, and organise a source about them whenever you like.</div>`}
+    <div class="edit-card">
+      <div class="edit-head"><b>Someone new</b></div>
+      <div class="edit-body" style="display:block">
+        <div class="why">A person of their own${s.sameName.length
+    ? `, kept apart from the ${s.sameName.length === 1 ? 'one' : num(s.sameName.length)} of the same name above, on purpose and for good`
+    : ''}. Use this when ${esc(mine)} is not the ${esc(s.name)} your sources already know.</div>
+        <div class="row-actions" style="margin-top:8px"><button class="btn" id="id-new">They are someone new</button></div>
+      </div>
+    </div>
+    <div class="sheet-actions"><button class="btn quiet" data-close>Not now</button></div>
+  `, (root) => {
+    const send = async (body, btn) => {
+      btn.disabled = true;
+      try {
+        const r = await post(`/api/identity/${kind}/${resourceId}`, body);
+        await loadLibrary();
+        done(r.created
+          ? `${r.name} is their own person now.${r.keptApartFrom ? ' Kept apart from the same name.' : ''}`
+          : `${r.name} is ${r.entity.name}.`);
+      } catch (err) { btn.disabled = false; toast(err.message, { kind: 'bad' }); }
+    };
+    root.addEventListener('click', (e) => {
+      const use = e.target.closest('[data-id-use]');
+      if (use) { send({ entityId: use.dataset.idUse }, use); return; }
+      const fresh = e.target.closest('#id-new');
+      if (fresh) send({ newPerson: true }, fresh);
+    });
+  });
+}
+
+/** Who a card is connected to, and how to change it. */
+async function reviewConnection(kind, resourceId, { back = null } = {}) {
+  let s;
+  try { s = await get(`/api/identity/${kind}/${resourceId}`); } catch (err) { toast(err.message); return; }
+  if (!s.bound) { connectKnowledge(kind, resourceId, { back }); return; }
+  const d = s.disconnect;
+  const lines = [
+    d.depends.reading.length ? `${d.depends.reading.length === 1 ? 'One story reads' : `${num(d.depends.reading.length)} stories read`} what they know: ${d.depends.reading.map((x) => x.title).join(', ')}.` : '',
+    d.depends.writing.length ? `${d.depends.writing.length === 1 ? 'One story has' : `${num(d.depends.writing.length)} stories have`} facts about them of their own.` : '',
+    d.depends.parts ? `This card plays them in ${d.depends.parts === 1 ? 'one story' : `${num(d.depends.parts)} stories`}.` : '',
+  ].filter(Boolean);
+
+  sheet('Connected person', `
+    <p class="rv-lede">${esc(s.name)} is ${esc(s.entity.name)}${s.entity.aliases.length ? `, also called ${esc(s.entity.aliases.slice(0, 3).join(', '))}` : ''}.</p>
+    <div class="reuse-line on"><span>${d.depends.knowledge
+    ? `${num(d.depends.knowledge)} ${d.depends.knowledge === 1 ? 'entry' : 'entries'} in ${d.depends.sets === 1 ? 'one knowledge set' : `${num(d.depends.sets)} knowledge sets`}`
+    : 'Nothing written about them yet'}</span></div>
+    ${lines.length ? `<div class="why" style="margin-top:10px">${lines.map(esc).join('<br>')}</div>` : ''}
+    <div class="rv-keeps" style="margin-top:12px">
+      <b>Disconnecting deletes nothing</b>
+      <span>${esc(s.entity.name)} stays, everything written about them stays, and every story keeps what it is carrying. Nexus just stops putting this ${kind === 'persona' ? 'persona' : 'card'} and that person together.</span>
+    </div>
+    <div class="sheet-actions">
+      <button class="btn quiet" data-close>Close</button>
+      <button class="btn" id="id-off">Disconnect</button>
+    </div>
+  `, (root) => {
+    $('#id-off', root).addEventListener('click', async (e) => {
+      e.currentTarget.disabled = true;
+      try {
+        const r = await del(`/api/identity/${kind}/${resourceId}?token=${encodeURIComponent(d.token)}`);
+        await loadLibrary();
+        closeSheet();
+        toast(`No longer connected to ${r.was}.`, { kind: 'good', sub: 'Nothing was deleted.' });
+        if (back) back();
+      } catch (err) { e.currentTarget.disabled = false; toast(err.message, { kind: 'bad' }); }
     });
   });
 }

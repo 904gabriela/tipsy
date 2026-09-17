@@ -31,6 +31,7 @@
     "npc-migration:check": "node scripts/npc-migration.js check",
     "npc-migration:apply": "node scripts/npc-migration.js apply",
     "npc-migration:test": "node scripts/check-npc-migration.js",
-    "reuse:check": "node scripts/check-reuse.js"
+    "reuse:check": "node scripts/check-reuse.js",
+    "identity:check": "node scripts/check-identity.js"
   }
 }

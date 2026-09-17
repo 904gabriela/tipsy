@@ -21,7 +21,7 @@ import { fromComposition, checkDraft, HARD as BUILDER_HARD, MODES as BUILDER_MOD
 import { buildDraft, regenerate } from './src/builder/index.js';
 import { planGenerated, writeGenerated, createLeadCard, storyPackage } from './src/builder/apply.js';
 import { isDirection, semanticSection } from './src/semantics/authority.js';
-import { semanticViews, sourceOrganization, areDistinct, resolveNpcEntity } from './src/semantics/store.js';
+import { semanticViews, sourceOrganization, areDistinct, resolveNpcEntity, SemanticError } from './src/semantics/store.js';
 import { inspectPackage, importPackage } from './src/package/import.js';
 import { exportStory, exportSources } from './src/package/export.js';
 import { analyzeSource } from './src/conversion/analyze.js';
@@ -30,6 +30,10 @@ import { assist } from './src/conversion/assist.js';
 import { entityProfile } from './src/semantics/profile.js';
 import { createEntityKnowledge, updateEntityKnowledge, deleteEntityKnowledge, storyMaterialSource, AuthoringError } from './src/semantics/authoring.js';
 import { reuseState, attachPreview, attachReusable, detachReusable, promotePreview, promoteToReusable } from './src/semantics/reuse.js';
+import {
+  bindingFor, bindingCandidates, connectResource, newPersonFor,
+  disconnectPreview, disconnectResource, offerFor,
+} from './src/semantics/identity.js';
 import { readCompositionMaterial, setEntityExclusion, backfillNpcIdentities } from './src/semantics/composition.js';
 import { reconcileGenerated, sameName as sameEntityName } from './src/builder/reconcile-entities.js';
 import {
@@ -667,6 +671,38 @@ route('GET', '/api/entities/:id/profile', async (req, res, { id }, url) => {
   return { ...profile, reuse: reuseState(db, id, { storyId }) };
 });
 
+// ----------------------------------------- which person a card represents
+//
+// Nexus never answers this by itself. It gathers what it knows, says how it
+// knows it, and waits to be told. Reading writes nothing; connecting writes one
+// column and nothing else.
+
+/** Who this card or persona represents, and who it could be. */
+route('GET', '/api/identity/:kind/:resourceId', async (req, res, { kind, resourceId }) => {
+  try {
+    const state = bindingCandidates(db, { kind, resourceId });
+    return state.bound
+      ? { ...state, ...bindingFor(db, { kind, resourceId }), disconnect: disconnectPreview(db, { kind, resourceId }) }
+      : state;
+  } catch (e) { throw e instanceof SemanticError ? new HttpError(404, e.message) : e; }
+});
+
+/** Say who they are: one of the people offered, or somebody new. */
+route('POST', '/api/identity/:kind/:resourceId', async (req, res, { kind, resourceId }) => {
+  const b = await readJson(req).catch(() => ({}));
+  try {
+    return b.newPerson
+      ? newPersonFor(db, { kind, resourceId })
+      : connectResource(db, { kind, resourceId, entityId: b.entityId });
+  } catch (e) { throw e instanceof SemanticError ? new HttpError(400, e.message) : e; }
+});
+
+/** Stop this card representing them. Deletes nothing. */
+route('DELETE', '/api/identity/:kind/:resourceId', async (req, res, { kind, resourceId }, url) => {
+  try { return disconnectResource(db, { kind, resourceId, token: url.searchParams.get('token') }); }
+  catch (e) { throw e instanceof SemanticError ? new HttpError(400, e.message) : e; }
+});
+
 // ------------------------------------- knowledge that travels with a person
 //
 // Two actions, both explicit, both ordinary underneath: letting a story read
@@ -1230,6 +1266,9 @@ route('POST', '/api/stories', async (req) => {
     }
     if (plan) writeComposition(db, storyId, plan);
     if (genPlan) writeGenerated(db, storyId, genPlan, { title, builder: composition.builder || {}, leadCardId });
+    // Knowledge the review asked this story to carry. Nothing arrives here by
+    // existing: this is the tick, made real, at the same moment as the story.
+    if (composition?.reuse) attachChosenReuse(storyId, composition.reuse);
     if (opening) {
       const greeting = substitute(opening, {
         char: lead.nickname || lead.name,
@@ -2450,11 +2489,18 @@ route('POST', '/api/stories/:id/compose', async (req, res, { id }) => {
   const body = await readJson(req);
   const generated = body.generated && typeof body.generated === 'object' ? body.generated : null;
   if (body.opening) throw new HttpError(400, 'An existing story already began. Its opening is part of the story and is not replaced.');
-  if (!generated) return { ok: true, ...applyToStory(db, id, body) };
+  if (!generated) {
+    return db.transaction(() => {
+      const result = applyToStory(db, id, body);
+      const reuse = attachChosenReuse(id, body.reuse);
+      return { ok: true, ...result, reuse };
+    });
+  }
 
   // Source changes and accepted generated material, as one write.
   const out = db.transaction(() => {
     const result = applyToStory(db, id, body);
+    attachChosenReuse(id, body.reuse);
     const story = db.getStory(id);
     const pool = new Map(story.lorebookIds.flatMap((bid) => db.listEntries(bid)).map((e) => [e.id, e]));
     const genPlan = planGenerated(db, {
@@ -2642,8 +2688,58 @@ route('POST', '/api/builder/draft', async (req) => {
     idea: text(b.idea, 4000), tone: text(b.tone, 200), pointOfView: text(b.pointOfView, 200), instruction: text(b.instruction, 1000),
     callModel: mode === 'organize' ? null : builderModel(),
   });
-  return noteLibraryCards(draft);
+  return { ...noteLibraryCards(draft), reuse: reuseOffers(draft, { storyId: b.storyId || null, personaId: b.personaId || null }) };
 });
+
+/**
+ * Who in this draft already knows things, and whether the story would read it.
+ *
+ * Read-only, and the story does not have to exist yet: without one the answer
+ * is what their library holds, and the review asks rather than assumes. Nothing
+ * reusable enters a story because it exists — only because somebody said so.
+ */
+function reuseOffers(draft, { storyId = null, personaId = null } = {}) {
+  const story = storyId ? db.getStory(storyId) : null;
+  const out = [];
+  const seen = new Set();
+  const add = (entityId, kind, name, resourceId = null) => {
+    if (!entityId || seen.has(entityId)) return;
+    seen.add(entityId);
+    const r = offerFor(db, entityId, { storyId: story?.id || null });
+    // The row that asked, so a review can put the question next to the person
+    // whether they came from a card or out of a source.
+    if (r) out.push({ entityId: r.entityId, kind, name, resourceId, ...r });
+  };
+  // A card says who it represents; someone read out of a source says so through
+  // their approved semantics. Either way the person is the same kind of answer.
+  for (const r of draft.casting || []) {
+    const card = r.characterId ? db.getCharacter(r.characterId) : null;
+    add(card?.entity_id || r.semantic?.entityId, 'character', r.name, r.characterId || null);
+  }
+  const persona = personaId ? db.getPersona(personaId) : (story?.persona_id ? db.getPersona(story.persona_id) : null);
+  if (persona?.entity_id) add(persona.entity_id, 'persona', persona.name, persona.id);
+  return out;
+}
+
+/**
+ * The reusable knowledge a review asked for, attached to the story it was asked
+ * for.
+ *
+ * Only what was ticked. An offer that has since gone — knowledge deleted, a
+ * card disconnected between review and apply — is passed over rather than
+ * allowed to stop a story from starting.
+ */
+function attachChosenReuse(storyId, chosen) {
+  let attached = 0; let skipped = 0;
+  for (const item of Array.isArray(chosen) ? chosen : []) {
+    const entityId = typeof item === 'string' ? item : item?.entityId;
+    if (!entityId) continue;
+    const sourceIds = Array.isArray(item?.sourceIds) && item.sourceIds.length ? item.sourceIds : null;
+    try { attached += attachReusable(db, { entityId, storyId, sourceIds }).attached; }
+    catch (e) { if (e instanceof AuthoringError) skipped++; else throw e; }
+  }
+  return { attached, skipped };
+}
 
 /**
  * Help fill the gaps in a draft that is already being reviewed.
