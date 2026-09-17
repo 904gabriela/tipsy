@@ -21,14 +21,16 @@ import { fromComposition, checkDraft, HARD as BUILDER_HARD, MODES as BUILDER_MOD
 import { buildDraft, regenerate } from './src/builder/index.js';
 import { planGenerated, writeGenerated, createLeadCard, storyPackage } from './src/builder/apply.js';
 import { isDirection, semanticSection } from './src/semantics/authority.js';
-import { semanticViews, sourceOrganization } from './src/semantics/store.js';
+import { semanticViews, sourceOrganization, areDistinct, resolveNpcEntity } from './src/semantics/store.js';
 import { inspectPackage, importPackage } from './src/package/import.js';
 import { exportStory, exportSources } from './src/package/export.js';
 import { analyzeSource } from './src/conversion/analyze.js';
 import { applyReview } from './src/conversion/apply.js';
 import { assist } from './src/conversion/assist.js';
 import { entityProfile } from './src/semantics/profile.js';
-import { createEntityKnowledge, updateEntityKnowledge, deleteEntityKnowledge } from './src/semantics/authoring.js';
+import { createEntityKnowledge, updateEntityKnowledge, deleteEntityKnowledge, storyMaterialSource } from './src/semantics/authoring.js';
+import { readCompositionMaterial, setEntityExclusion, backfillNpcIdentities } from './src/semantics/composition.js';
+import { reconcileGenerated, sameName as sameEntityName } from './src/builder/reconcile-entities.js';
 import {
   planComposition, writeComposition, applyToStory, sourceRemovalPreview, removeSource,
 } from './src/import/compose-apply.js';
@@ -1135,6 +1137,8 @@ route('POST', '/api/stories', async (req) => {
       poolIds: new Set(pool.keys()),
       castNames: namesInPlay(characterIds, pool),
       allowLead: true,
+      bookIds: b.lorebookIds || [],
+      reconcile: generated.reconcile || {},
     })
     : null;
 
@@ -2237,6 +2241,26 @@ route('GET', '/api/stories/:id/bible', async (req, res, { id }) => {
  * `storyId` is optional: during creation there is no story yet, and the draft
  * is built without a transcript to weigh names against.
  */
+/**
+ * Everything semantic that composition reads beside the entries themselves:
+ * approved source roles, the reader's own entity, people excluded from the
+ * story as people, and which cards stand for whom. One read, handed in whole.
+ */
+function semanticContext(bookIds, story) {
+  const material = readCompositionMaterial(db, bookIds, { storyId: story?.id || null });
+  const entityCards = new Map();
+  for (const x of material.inventory) {
+    if (x.cards.length || x.storyCardId) entityCards.set(x.id, { storyCardId: x.storyCardId, cards: x.cards });
+  }
+  return {
+    sourceRoles: new Map([...material.sources].map(([id, s]) => [id, s.role])),
+    personaEntityId: story?.persona_id ? (db.getPersona(story.persona_id)?.entity_id || null) : null,
+    excludedEntities: material.excludedEntities,
+    entityCards,
+    inventory: material.inventory,
+  };
+}
+
 route('POST', '/api/compose', async (req) => {
   const {
     lorebookIds = [], storyId = null, mode = 'organize',
@@ -2266,6 +2290,7 @@ route('POST', '/api/compose', async (req) => {
     storyNpcs: story ? db.storyNpcs(story.id) : [],
     storyExclusions: story ? db.storyExclusionIds(story.id) : new Set(),
     semantics: semanticViews(db, entries),
+    ...semanticContext(lorebookIds, story),
     mode,
   });
 
@@ -2299,6 +2324,8 @@ route('POST', '/api/stories/:id/compose', async (req, res, { id }) => {
       poolIds: new Set(pool.keys()),
       castNames: namesInPlay(story.characters.map((c) => c.id), pool),
       allowLead: false,
+      bookIds: story.lorebookIds,
+      reconcile: generated.reconcile || {},
     });
     const written = writeGenerated(db, id, genPlan, { title: story.title, builder: body.builder || {} });
     return { ...result, generatedBook: written.bookId, generatedEntries: Object.keys(written.entryIds).length, npcs: db.storyNpcs(id).length };
@@ -2373,6 +2400,7 @@ function baseDraft({ storyId = null, lorebookIds = [], characterIds = [], premis
   if (leadCards.length !== (story ? 0 : characterIds.length)) throw new HttpError(404, 'One of those characters is no longer in the library.');
 
   const pooled = books.flatMap((bk) => bk.entries);
+  const semantic = semanticContext(bookIds, story);
   const draft = composeSource(pooled, {
     characters: db.listCharacters(),
     storyCards: story ? story.characters : [],
@@ -2383,6 +2411,7 @@ function baseDraft({ storyId = null, lorebookIds = [], characterIds = [], premis
     storyNpcs: story ? db.storyNpcs(story.id) : [],
     storyExclusions: story ? db.storyExclusionIds(story.id) : new Set(),
     semantics: semanticViews(db, pooled),
+    ...semantic,
   });
   // A story with no sources and no transcript still has its cards: the
   // composer only knows it is "existing" from those.
@@ -2394,6 +2423,12 @@ function baseDraft({ storyId = null, lorebookIds = [], characterIds = [], premis
       : { title, premise, opening: leadCards[0]?.first_message || '' },
   });
   base.sources = books.map((bk) => ({ id: bk.id, name: bk.name, entries: bk.entries.length }));
+  // Who these sources bring, compactly: what the builder is told to reuse, and
+  // what reconciliation measures its inventions against. Never the whole text.
+  base.entityInventory = semantic.inventory.map((x) => ({
+    id: x.id, name: x.name, type: x.type, aliases: x.aliases,
+    status: x.status, summary: x.summary,
+  }));
   return base;
 }
 
@@ -2418,6 +2453,28 @@ function noteLibraryCards(draft) {
       r.why = [...(r.why || []), 'a card with this name is in your library'];
     }
   }
+  return withReconciliation(draft);
+}
+
+/**
+ * What the draft invented, against who already exists — computed on the draft
+ * itself, deterministically, with no provider asked anything. The review reads
+ * this; Apply refuses while any of it is unanswered.
+ */
+function withReconciliation(draft) {
+  const ENTRY_TYPE = { places: 'place', factions: 'faction', events: 'event', items: 'item' };
+  const generated = [
+    ...draft.casting.filter((r) => r.origin === 'generated')
+      .map((r) => ({ draftId: r.draftId, name: r.name, type: 'person', ref: r.same || null })),
+    ...draft.sections.flatMap((s) => (ENTRY_TYPE[s.id]
+      ? s.items.filter((i) => i.origin === 'generated').map((i) => ({ draftId: i.draftId, name: i.title, type: ENTRY_TYPE[s.id] }))
+      : [])),
+  ];
+  if (!generated.length) { draft.reconciliation = { items: [], unresolved: 0 }; return draft; }
+  const allEntities = db.raw.prepare('SELECT id, canonical_name FROM lore_entities').all();
+  const isSettled = (candidateId, name) => allEntities.some((e) => e.id !== candidateId
+    && sameEntityName(e.canonical_name, name) && areDistinct(db, candidateId, e.id));
+  draft.reconciliation = reconcileGenerated(generated, draft.entityInventory || [], { isSettled });
   return draft;
 }
 

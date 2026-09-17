@@ -23,7 +23,21 @@
 import { nameFromTitle, personFromEntry, NPC_ROLES } from '../import/compose.js';
 import { CompositionError } from '../import/compose-apply.js';
 import { BUILDER_SECTIONS, SECTION_KIND, HARD } from './contract.js';
-import { resolveNpcEntity, recordLinkEvidence } from '../semantics/store.js';
+import { resolveNpcEntity, recordLinkEvidence, createEntity, declareInSource, setEntrySemantics, distinguish, areDistinct } from '../semantics/store.js';
+import { entityInventory } from '../semantics/composition.js';
+import { reconcileGenerated, sameName } from './reconcile-entities.js';
+import { storyMaterialSource } from '../semantics/authoring.js';
+import { slugRef } from '../package/format.js';
+
+/** Which sections carry things that ARE entities, and what kind. */
+const ENTRY_ENTITY_TYPE = { places: 'place', factions: 'faction', events: 'event', items: 'item' };
+
+/** "Something with exactly this name was already ruled not to be that one." */
+const settledLookup = (db) => {
+  const all = db.raw.prepare('SELECT id, canonical_name FROM lore_entities').all();
+  return (candidateId, name) => all.some((e) => e.id !== candidateId
+    && sameName(e.canonical_name, name) && areDistinct(db, candidateId, e.id));
+};
 
 const ID = /^[A-Za-z0-9_-]{1,40}$/;
 const MAX_ITEMS = 60;
@@ -41,7 +55,7 @@ const norm = (s) => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' 
  *   castNames  names already in the story (cards and lore-backed people)
  *   allowLead  whether a generated lead may be accepted (new stories only)
  */
-export function planGenerated(db, { items = [], links = [], poolIds = new Set(), castNames = [], allowLead = false }) {
+export function planGenerated(db, { items = [], links = [], poolIds = new Set(), castNames = [], allowLead = false, bookIds = [], reconcile = {} }) {
   if (!Array.isArray(items) || !Array.isArray(links)) throw new CompositionError('Generated material must be a list.');
   if (items.length > MAX_ITEMS) throw new CompositionError(`At most ${MAX_ITEMS} generated items can be accepted at once.`);
 
@@ -117,7 +131,41 @@ export function planGenerated(db, { items = [], links = [], poolIds = new Set(),
     }
   }
 
-  return { lead, people, entries, links: linkWrites, any: items.length > 0, generated: items.some((i) => i.origin === 'generated') };
+  // ---- who the accepted material claims to be, against who already exists.
+  // Deterministic, offline, and blocking: nothing that may be somebody already
+  // here is written until a person has said which it is.
+  const inventory = entityInventory(db, bookIds);
+  const claimed = [
+    ...(lead ? [{ draftId: lead.draftId, name: lead.name, type: 'person' }] : []),
+    ...people.map((p) => ({ draftId: p.draftId, name: p.name, type: 'person' })),
+    ...entries.filter((e) => ENTRY_ENTITY_TYPE[e.section]).map((e) => ({ draftId: e.draftId, name: e.title, type: ENTRY_ENTITY_TYPE[e.section] })),
+  ];
+  const reconciliation = reconcileGenerated(claimed, inventory, { isSettled: settledLookup(db), decisions: reconcile });
+  if (reconciliation.unresolved) {
+    const open = reconciliation.items.find((x) => x.resolution === null);
+    throw new CompositionError(
+      `Nexus cannot tell whether "${open.name}" is ${open.candidates.map((c) => c.name).join(' or ')}. In Review, choose the existing one or keep it as new before applying.`);
+  }
+  // Anything the reviewer said IS an existing entity, and anything that exactly
+  // is one, is not written again: the existing one is simply used.
+  const dropped = new Set(reconciliation.items.filter((x) => x.resolution === 'reuse').map((x) => x.draftId));
+  // Something ruled "keep as new" is a decision worth keeping: the pair is
+  // recorded as distinct so nobody is asked the same question again.
+  const distinctions = reconciliation.items
+    .filter((x) => x.decision === 'possible' && x.resolution === 'new')
+    .map((x) => ({ draftId: x.draftId, from: x.candidates.map((c) => c.id) }));
+
+  return {
+    lead: lead && dropped.has(lead.draftId) ? null : lead,
+    people: people.filter((p) => !dropped.has(p.draftId)),
+    entries: entries.filter((e) => !dropped.has(e.draftId)),
+    links: linkWrites,
+    any: items.length > 0,
+    generated: items.some((i) => i.origin === 'generated'),
+    reconciliation,
+    reusedExisting: reconciliation.items.filter((x) => x.resolution === 'reuse').map((x) => ({ name: x.name, as: x.entity?.name || x.name })),
+    distinctions,
+  };
 }
 
 /** Make the one card a generated lead is allowed to become. Before the story exists. */
@@ -134,11 +182,15 @@ export function createLeadCard(db, lead, { opening = '' } = {}) {
  * second one.
  */
 export function storyPackage(db, storyId) {
+  // Either mark means the same thing: this book is the story's own material.
+  // Old Builder books said it as generatedFor; the canonical container says it
+  // as managedFor, the way every Nexus-managed source is marked.
   return db.raw.prepare(
     `SELECT id, name, import_id FROM lorebooks
-     WHERE json_valid(original) AND json_extract(original, '$.generatedFor') = ?
+     WHERE json_valid(original) AND (json_extract(original, '$.generatedFor') = ?
+        OR json_extract(original, '$.managedFor.storyId') = ?)
      ORDER BY created_at LIMIT 1`,
-  ).get(storyId) || null;
+  ).get(storyId, storyId) || null;
 }
 
 /**
@@ -172,12 +224,25 @@ export function writeGenerated(db, storyId, plan, { title = 'Story', builder = {
     })
     : null;
 
+  // One story, one container of its own material. A story that already has an
+  // old Builder book keeps feeding it, so nothing splits; a story without one
+  // uses the same Story Material container that hand-written material uses —
+  // what distinguishes generated from manual is each entry's own provenance,
+  // not a second visible source.
   let pkg = storyPackage(db, storyId);
-  const created = !pkg;
+  const created = !pkg && !db.raw.prepare(
+    `SELECT 1 x FROM lorebooks WHERE json_valid(original) AND json_extract(original, '$.managedFor.kind')='story-material' AND json_extract(original, '$.managedFor.storyId')=?`).get(storyId);
   if (!pkg) {
-    const id = db.createLorebook(`${title} — Story Builder`, 'Made for this story with the Nexus Story Builder, and accepted in review.');
-    db.raw.prepare(`UPDATE lorebooks SET original=? WHERE id=?`).run(JSON.stringify({ generatedFor: storyId }), id);
-    pkg = { id, import_id: null };
+    const id = storyMaterialSource(db, storyId);
+    pkg = { id, import_id: db.raw.prepare('SELECT import_id FROM lorebooks WHERE id=?').get(id)?.import_id || null };
+  } else {
+    // A legacy Builder book gains the canonical ownership mark it always
+    // meant: this story's own material. Read-compatibly — generatedFor stays.
+    const owned = db.raw.prepare('SELECT owner_story_id FROM source_semantics WHERE lorebook_id=?').get(pkg.id);
+    if (!owned) {
+      db.raw.prepare(`INSERT INTO source_semantics (lorebook_id, package_role, domains, owner_story_id, origin, status, confidence, evidence, created_at, updated_at)
+        VALUES (?, 'mixed', '[]', ?, 'native', 'approved', 'high', '{}', ?, ?)`).run(pkg.id, storyId, Date.now(), Date.now());
+    }
   }
   const bookId = pkg.id;
   // The book points at the record that first filled it; every later record
@@ -191,6 +256,34 @@ export function writeGenerated(db, storyId, plan, { title = 'Story', builder = {
   const skipped = [];
   const provenance = (x) => ({ origin: x.origin, draftId: x.draftId, edited: x.edited, builder: importId });
 
+  // Accepted material gains its identity as it is written: the person said yes
+  // in review, so the entity, its declaration and its defining reading are
+  // approved — with an origin that says exactly how it got here. Nothing a
+  // model produced becomes truth before this moment.
+  const distinctFrom = new Map((plan.distinctions || []).map((d) => [d.draftId, d.from]));
+  const settleEntity = (draftId, entryId, name, type, origin) => {
+    const entityId = createEntity(db, { type, name });
+    declareInSource(db, {
+      lorebookId: bookId, entityId, localRef: uniqueRef(db, bookId, name), localName: name,
+      origin: 'generated', status: 'approved', evidence: { accepted: 'in Builder review' },
+    });
+    setEntrySemantics(db, {
+      entryId, scope: 'entity', category: 'profile', definesEntityId: entityId,
+      origin: origin === 'manual' ? 'manual' : 'generated', status: 'approved', confidence: 'high',
+      evidence: { accepted: 'in Builder review' },
+    });
+    for (const other of distinctFrom.get(draftId) || []) {
+      if (other !== entityId) distinguish(db, other, entityId);
+    }
+    return entityId;
+  };
+  const uniqueRef = (dbh, book, name) => {
+    const base = slugRef(name, 'entity');
+    let ref = base;
+    for (let n = 2; dbh.raw.prepare('SELECT 1 x FROM source_entities WHERE lorebook_id=? AND local_ref=?').get(book, ref); n++) ref = `${base}-${n}`;
+    return ref;
+  };
+
   for (const p of plan.people) {
     const already = existing.get(`character|${norm(p.name)}`);
     if (already) { entryIds[p.draftId] = already; skipped.push(p.name); continue; }
@@ -200,12 +293,13 @@ export function writeGenerated(db, storyId, plan, { title = 'Story', builder = {
     });
     existing.set(`character|${norm(p.name)}`, id);
     entryIds[p.draftId] = id;
+    const entityId = settleEntity(p.draftId, id, p.name, 'person', p.origin);
     if (NPC_ROLES.includes(p.role)) {
       // The same guard every cast member passes, however they got here.
       const entry = db.listEntries(bookId).find((e) => e.id === id);
       if (!personFromEntry(entry).person) throw new CompositionError(`"${p.name}" could not be read back as a person.`);
-      // A freshly generated person has no approved semantics yet, so this stays NULL.
-      db.setStoryNpc(storyId, id, p.role, resolveNpcEntity(db, id));
+      // One person, one cast row: the identity written a moment ago is theirs.
+      db.setStoryNpc(storyId, id, p.role, entityId || resolveNpcEntity(db, id));
     }
   }
   for (const e of plan.entries) {
@@ -218,6 +312,9 @@ export function writeGenerated(db, storyId, plan, { title = 'Story', builder = {
     });
     existing.set(key, id);
     entryIds[e.draftId] = id;
+    // A place, a faction, an event or a thing is an entity too, and the review
+    // just approved it.
+    if (ENTRY_ENTITY_TYPE[e.section]) settleEntity(e.draftId, id, e.title, ENTRY_ENTITY_TYPE[e.section], e.origin);
   }
   // A lead who became a card is linked to as that card.
   if (plan.lead && leadCardId) entryIds[plan.lead.draftId] = null;

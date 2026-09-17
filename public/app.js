@@ -999,6 +999,16 @@ const ROLE_MEANS = {
   excluded: 'Kept in the source, ignored by this story.',
 };
 const IN_CAST = new Set(['lead', 'main', 'supporting', 'background']);
+/**
+ * What a row's role means for this row.
+ *
+ * Leaving out somebody the material knows as a person is one decision about
+ * that person — not a decision about each thing written about them — and it is
+ * about this story only. Say so, and name nothing technical.
+ */
+const roleMeans = (role, r) => (role === 'excluded' && r.semantic?.entityId
+  ? `${r.name} is left out of this story. Nothing is removed: they stay in your library with everything known about them, and you can bring them back here any time.`
+  : ROLE_MEANS[role] || '');
 const SECTION_HELP = {
   places: 'Where it happens.',
   factions: 'Families, crews and organisations.',
@@ -1091,6 +1101,9 @@ function openReview(opts, draft) {
     promote: new Set(),
     castFilter: 'cast',
     castFind: '',
+    // Answers to "is this invented thing somebody who already exists?".
+    // Apply waits until every open question here has one.
+    dupes: new Map(),
   };
   for (const r of draft.casting) rv.roles.set(r.key, r.suggested);
   for (const l of draft.links) rv.links.set(linkKey(l), l.approved);
@@ -1103,6 +1116,27 @@ const suggestedCount = (items) => items.filter(isSuggested).length;
 /** Whether Nexus can be asked for more on this draft. */
 const canSuggest = () => !!rv.builder || rv.draft.invented > 0 || rv.draft.mode !== 'organize';
 
+/** The maybe-duplicates still waiting for an answer. */
+const openDupes = () => (rv.draft.reconciliation?.items || [])
+  .filter((x) => x.decision === 'possible' && !rv.dupes.has(x.draftId));
+
+/**
+ * Where something Nexus invented stands against who already exists: somebody
+ * the story already has, somebody it might already have, or somebody new.
+ * "New" is the ordinary case and says nothing; the other two say a little.
+ */
+const dupeOf = (draftId) => (rv.draft.reconciliation?.items || []).find((x) => x.draftId === draftId) || null;
+function reuseFlag(draftId) {
+  const x = dupeOf(draftId);
+  if (!x) return '';
+  const answer = rv.dupes.get(draftId);
+  if (x.decision === 'reuse') return `<span class="rv-flag">already in this story</span>`;
+  if (x.decision !== 'possible') return '';
+  if (answer?.use === 'existing') return `<span class="rv-flag">using ${esc((x.candidates.find((c) => c.id === answer.id) || {}).name || 'the existing one')}</span>`;
+  if (answer?.use === 'new') return '<span class="rv-flag">kept as new</span>';
+  return '<span class="rv-flag warn">may already exist</span>';
+}
+
 /** What stops the story starting, said plainly, or nothing. */
 function startBlocker() {
   const lead = leadRow();
@@ -1110,7 +1144,40 @@ function startBlocker() {
   if (lead.origin === 'generated' && !rv.promote.has(lead.draftId)) {
     return `${lead.name} leads, but has no character card yet. In Casting, turn on “Make this a full character”, or choose a lead from your library.`;
   }
+  const open = openDupes();
+  if (open.length) {
+    return `${open[0].name} may be ${open[0].candidates.map((c) => c.name).join(' or ')}, who already exists. Decide under “May already exist” before ${rv.mode === 'new' ? 'starting' : 'applying'}.`;
+  }
   return '';
+}
+
+/**
+ * The Builder said "Marco Rossi"; the story already knows Marco. Nobody merges
+ * that but the reader, and nothing applies while the question stands.
+ */
+function dupeCards() {
+  const items = (rv.draft.reconciliation?.items || []).filter((x) => x.decision === 'possible');
+  if (!items.length) return '';
+  return `
+    <div class="band">May already exist</div>
+    <div class="why" style="margin-bottom:10px">Nexus never merges these on its own. Say which each one is.</div>
+    ${items.map((x) => {
+    const chosen = rv.dupes.get(x.draftId) || null;
+    return `
+      <div class="edit-card rv-dupe">
+        <div class="edit-head"><b>${esc(x.name)}</b><span class="n">${esc(x.type)}</span></div>
+        <div class="edit-body" style="display:block">
+          <div class="why">This may be ${esc(x.candidates.map((c) => c.name).join(' or '))} — ${esc(x.candidates[0].why)}.</div>
+          <div class="row-actions" style="margin-top:8px">
+            ${x.candidates.map((c) => `<button class="btn${chosen?.use === 'existing' && chosen.id === c.id ? ' primary' : ''}"
+              data-dupe-use="${esc(x.draftId)}" data-dupe-id="${esc(c.id)}">Use ${esc(c.name)}</button>`).join('')}
+            <button class="btn${chosen?.use === 'new' ? ' primary' : ''}" data-dupe-new="${esc(x.draftId)}">Keep as new</button>
+          </div>
+          ${chosen?.use === 'existing' ? `<div class="why" style="margin-top:6px">The existing one will be used; this copy will not be written.</div>`
+    : chosen?.use === 'new' ? '<div class="why" style="margin-top:6px">Kept apart, and remembered as a separate one from now on.</div>' : ''}
+        </div>
+      </div>`;
+  }).join('')}`;
 }
 
 /** The overview: a story, not a list of rows. */
@@ -1201,6 +1268,8 @@ function reviewRoot() {
       </button>` : `<div class="rv-static dim">${rv.builder ? 'None. Nexus built this from your idea.' : 'None. The story starts from its cast alone.'}</div>`}
     </div>
 
+    ${dupeCards()}
+
     ${d.invented ? '<p class="rv-promise">Anything marked “Suggested by Nexus” is a proposal. Edit it, remove it, or keep it; only what is here when you start becomes part of the story.</p>'
     : d.sources?.length ? '<p class="rv-promise">Nothing here was invented. Every person, place and note is an entry from your source, and none of it is copied.</p>' : ''}
 
@@ -1224,6 +1293,10 @@ function reviewRoot() {
     const fill = $('#rv-fill', root);
     if (fill) fill.addEventListener('click', () => suggest({ fill: true }, reviewRoot));
     root.addEventListener('click', (e) => {
+      const use = e.target.closest('[data-dupe-use]');
+      if (use) { rv.dupes.set(use.dataset.dupeUse, { use: 'existing', id: use.dataset.dupeId }); reviewRoot(); return; }
+      const keep = e.target.closest('[data-dupe-new]');
+      if (keep) { rv.dupes.set(keep.dataset.dupeNew, { use: 'new' }); reviewRoot(); return; }
       const o = e.target.closest('[data-open]');
       if (!o) return;
       const to = o.dataset.open;
@@ -1423,8 +1496,17 @@ function reviewCasting() {
       <div class="cast-meta">
         <span class="cast-suggest${changed ? ' changed' : ''}">Suggested ${esc(CAST_LABEL[r.suggested])}</span>
         <span class="cast-backing${gen ? ' by-nexus' : ''}">${esc(originWords(r))}</span>
+        ${/* Where the row's identity comes from, said quietly: organised
+             material is silent, the rest says what it is. */''}
+        ${r.backing === 'lore' && !gen ? (r.semantic
+    ? (r.semantic.stale ? '<span class="rv-flag warn">needs review</span>' : '')
+    : '<span class="rv-flag">not organised yet</span>') : ''}
+        ${gen ? reuseFlag(r.draftId) : ''}
       </div>
-      ${ROLE_MEANS[role] ? `<div class="cast-means ${esc(role)}">${esc(ROLE_MEANS[role])}</div>` : ''}
+      ${r.semantic?.entityId ? `<div class="rv-item-actions" style="margin-top:2px">
+        <button class="btn quiet" data-cast-profile="${esc(r.semantic.entityId)}">View profile</button>
+      </div>` : ''}
+      ${roleMeans(role, r) ? `<div class="cast-means ${esc(role)}">${esc(roleMeans(role, r))}</div>` : ''}
       ${gen && r.summary ? `<div class="cast-why">${esc(r.summary)}</div>` : ''}
       ${!gen && r.why?.length ? `<div class="cast-why">${esc(r.why.slice(0, 3).join(' · '))}</div>` : ''}
       ${gen && r.promotionSuggested && !promoting ? '<div class="cast-why">Nexus thinks they could be worth a full character.</div>' : ''}
@@ -1478,6 +1560,8 @@ function reviewCasting() {
       if (ed) { editSuggestion({ person: ed.dataset.editPerson }, reviewCasting); return; }
       const rm = e.target.closest('[data-remove-person]');
       if (rm) { removeSuggestion(rm.dataset.removePerson); reviewCasting(); return; }
+      const prof = e.target.closest('[data-cast-profile]');
+      if (prof) { openEntityProfile(prof.dataset.castProfile, { back: reviewCasting, storyId: rv.storyId || null }); return; }
       const o = e.target.closest('[data-entry-open]');
       if (o) reviewEntry(o.dataset.entryOpen, reviewCasting);
     });
@@ -1642,6 +1726,9 @@ function reviewSection(id) {
         <span class="rv-entry-title">${esc(e.title)}</span>
         <span class="rv-entry-meta">
           ${gen ? `<span class="by-nexus">${esc(originWords(e))}</span>` : ''}
+          ${gen ? reuseFlag(e.draftId) : ''}
+          ${!gen && e.semantic?.state === 'recheck' ? '<span class="rv-flag warn">needs review</span>' : ''}
+          ${!gen && !e.placedBy && e.entryId && (!e.semantic || e.semantic.state === 'none' || e.semantic.state === 'proposed') ? '<span class="rv-flag">not organised yet</span>' : ''}
           ${e.always ? '<b class="pin">always on</b>' : ''}
           ${e.enabled === false ? '<b class="off-tag">switched off</b>' : ''}
           ${gen ? '' : `<span>${esc((e.keys || []).slice(0, 3).join(', ') || 'no keys')}</span>`}
@@ -1813,7 +1900,10 @@ function acceptedSuggestions() {
   const links = d.links
     .filter((l) => l.origin === 'generated' && rv.links.get(linkKey(l)) && alive.has(l.fromDraftId) && (!l.aboutDraftId || alive.has(l.aboutDraftId)))
     .map((l) => ({ fromDraftId: l.fromDraftId, ...(l.aboutDraftId ? { aboutDraftId: l.aboutDraftId } : l.aboutId ? { aboutId: l.aboutId } : { characterId: l.characterId }) }));
-  return items.length ? { items, links } : undefined;
+  // What the reader answered about maybe-duplicates travels with the material,
+  // and the server holds Apply to it: nothing unresolved gets through, and
+  // "use existing" writes nothing new.
+  return items.length ? { items, links, reconcile: Object.fromEntries(rv.dupes) } : undefined;
 }
 
 const builderMeta = () => ({ mode: rv.draft.mode, depth: rv.draft.generation?.depth || null, model: rv.draft.generation?.model || null });
@@ -2039,6 +2129,13 @@ async function confirmSourceRemoval(storyId, bookId, after) {
     </div>
     ${p.castLeaving.length ? `<p class="rv-lede" style="margin-top:14px">Leaving the cast:</p>
       <div class="rv-facts">${p.castLeaving.map((c) => `<div class="stat-row"><span>${esc(c.name)}</span><span>${esc(CAST_LABEL[c.role] || c.role)}</span></div>`).join('')}</div>` : ''}
+    ${/* Who the story would stop knowing, and who it would still know from
+          somewhere else. Neither sentence is about the Library: nobody is
+          deleted, and their material stays where it is. */''}
+    ${p.entitiesLeaving?.length ? `<p class="rv-lede" style="margin-top:14px">No longer available to this story:</p>
+      <div class="rv-facts">${p.entitiesLeaving.map((x) => `<div class="stat-row"><span>${esc(x.name)}</span><span>${esc(x.type)}</span></div>`).join('')}</div>
+      <p class="rv-hint">They stay in your library and in every other story that carries them.</p>` : ''}
+    ${p.entitiesStaying?.length ? `<p class="rv-hint">${esc(p.entitiesStaying.map((x) => x.name).join(', '))} ${p.entitiesStaying.length === 1 ? 'is' : 'are'} still available to this story from another source.</p>` : ''}
     ${p.exclusionsForgotten?.length ? `<p class="rv-hint">This story ignores ${esc(p.exclusionsForgotten.map((x) => x.name).join(', '))} from this source. That choice goes with it, and nothing is removed from the source.</p>` : ''}
     ${p.recursion === 'block' ? '<p class="rv-hint">Its setting for this story, keeping entries from pulling in others, is forgotten with it.</p>' : ''}
     ${p.personaFrom ? `<p class="rv-hint">${esc(p.personaFrom)} was made from an entry in this source and stays as your persona.</p>` : ''}
@@ -2099,8 +2196,11 @@ async function panelStorySheet() {
       ${(L.lorebooks || []).filter((b) => (st.lorebookIds || []).includes(b.id)).map((b) => `
         <div class="item" style="align-items:center">
           <span class="item-main">
-            <span class="item-title">${esc(b.generated_for === st.id ? 'Nexus Story Builder' : b.name)}</span>
-            <span class="item-sub">${b.generated_for === st.id ? 'Made for this story · ' : ''}${num(b.entry_count)} entries${b.always_on ? `, ${num(b.always_on)} always on` : ''}</span>
+            ${/* The story's own material — what was written here by hand and
+                 what the Builder added and somebody kept — is one thing, and
+                 it is the story's. Its internal name is nobody's business. */''}
+            <span class="item-title">${esc(b.generated_for === st.id ? 'Story material' : b.name)}</span>
+            <span class="item-sub">${b.generated_for === st.id ? 'Written for this story · ' : ''}${num(b.entry_count)} entries${b.always_on ? `, ${num(b.always_on)} always on` : ''}</span>
           </span>
           <button class="btn quiet" data-editbook="${esc(b.id)}">Edit</button>
           <button class="btn quiet" data-removebook="${esc(b.id)}">Remove</button>
@@ -2856,8 +2956,8 @@ async function storyBible() {
     <h4 class="bible-h">Where it comes from</h4>
     ${b.sources.connected.map((c) => `
       <div class="srcrow">
-        <span class="t">${esc(c.madeForThisStory ? 'Nexus Story Builder' : c.name)}</span>
-        <span class="w">${c.madeForThisStory ? 'made for this story · ' : ''}${num(c.entries)} entries${c.recursion === 'block' ? ' · kept from spreading' : ''}</span>
+        <span class="t">${esc(c.madeForThisStory ? 'Story material' : c.name)}</span>
+        <span class="w">${c.madeForThisStory ? 'written for this story · ' : ''}${num(c.entries)} entries${c.recursion === 'block' ? ' · kept from spreading' : ''}</span>
       </div>`).join('')}
     ${b.sources.related.length ? `
       <div class="why" style="margin-top:10px">Not being used, but related:</div>

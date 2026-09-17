@@ -171,13 +171,22 @@ export function canonOf(draft, { maxItems = 150, snippet = 160 } = {}) {
   const lines = [];
   let n = 0;
   const cut = (s, k) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, k);
+  // Approved identity travels with its canon line: what else someone is
+  // called, and whether they are settled or still a guess. The model reuses
+  // people by these names instead of inventing near-copies of them.
+  const inventory = new Map((draft.entityInventory || []).map((x) => [x.id, x]));
   for (const r of draft.casting) {
     const ref = `C${++n}`;
+    const known = r.semantic?.entityId ? inventory.get(r.semantic.entityId) : null;
     refs.set(ref, {
       ...(r.characterId ? { characterId: r.characterId } : r.entryId ? { entryId: r.entryId } : { draftId: r.draftId }),
       name: r.name, section: 'people', kind: 'person',
+      ...(known?.aliases?.length ? { aliases: known.aliases } : {}),
+      ...(r.semantic?.entityId ? { entityId: r.semantic.entityId } : {}),
     });
-    lines.push({ ref, section: 'people', name: r.name, role: r.suggested, text: cut(r.content || r.why?.join('; '), snippet) });
+    const alias = known?.aliases?.length ? ` (also called ${known.aliases.slice(0, 3).join(', ')})` : '';
+    const sure = !r.semantic && r.backing === 'lore' ? ' [unconfirmed]' : '';
+    lines.push({ ref, section: 'people', name: `${r.name}${alias}${sure}`, role: r.suggested, text: cut(r.content || r.why?.join('; '), snippet) });
   }
   let m = 0;
   for (const s of draft.sections) {
@@ -264,6 +273,12 @@ export function validateGeneration(raw, ctx) {
   for (const [ref, v] of canon.refs) {
     const k = `${v.kind}|${norm(v.name)}`;
     if (!canonByKind.has(k)) canonByKind.set(k, { ref, ...v });
+    // An approved alias is the same person by another name — The Saint is
+    // Patrick — so generating them under it is reuse, not a new proposal.
+    for (const alias of v.aliases || []) {
+      const ak = `${v.kind}|${norm(alias)}`;
+      if (norm(alias) && !canonByKind.has(ak)) canonByKind.set(ak, { ref, ...v });
+    }
   }
   const reused = [];
   const existingOf = (v) => ({ ...(v.characterId ? { characterId: v.characterId } : {}), ...(v.entryId ? { entryId: v.entryId } : {}), ...(v.draftId ? { draftId: v.draftId } : {}) });

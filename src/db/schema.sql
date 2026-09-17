@@ -519,6 +519,18 @@ CREATE TABLE IF NOT EXISTS story_entity_cards (
   PRIMARY KEY (story_id, entity_id)
 );
 
+-- "This person is not in this story", decided once about the person rather than
+-- entry by entry. Assembly then holds back entries whose approved meaning is
+-- that they DEFINE this entity or are ABOUT it — never entries that merely
+-- mention it, and never anything whose meaning nobody has approved. Entry-level
+-- exclusions remain valid alongside; neither rewrites the other.
+CREATE TABLE IF NOT EXISTS story_entity_exclusions (
+  story_id   TEXT NOT NULL REFERENCES stories(id)       ON DELETE CASCADE,
+  entity_id  TEXT NOT NULL REFERENCES lore_entities(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (story_id, entity_id)
+);
+
 -- "These two are NOT the same", decided once. Stored with the smaller id first,
 -- so A≠B and B≠A are one decision.
 CREATE TABLE IF NOT EXISTS entity_distinctions (

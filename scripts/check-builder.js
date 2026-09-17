@@ -404,8 +404,14 @@ try {
   const x = open(dbPath);
   const q = (sql, ...a) => x.raw.prepare(sql).all(...a);
   const after = counts(x);
-  const bb = q("SELECT l.id, l.name, l.import_id FROM lorebooks l JOIN story_lorebooks sl ON sl.lorebook_id=l.id WHERE sl.story_id=? AND l.name LIKE '%Story Builder'", sid)[0];
-  ok('one Story Builder book, connected to the story', !!bb && q('SELECT COUNT(*) n FROM story_lorebooks WHERE story_id=?', sid)[0].n === 2);
+  // Since P8, accepted material lives in the story's one canonical container —
+  // the same Story Material that hand-written material uses — marked on the
+  // book itself and owned by the story. Provenance stays per entry and per
+  // import record, not as a second visible source.
+  const bb = q(`SELECT l.id, l.name, l.import_id FROM lorebooks l JOIN story_lorebooks sl ON sl.lorebook_id=l.id
+      WHERE sl.story_id=? AND json_valid(l.original) AND json_extract(l.original,'$.managedFor.kind')='story-material'`, sid)[0];
+  ok('one Story Material book of its own, connected to the story', !!bb && q('SELECT COUNT(*) n FROM story_lorebooks WHERE story_id=?', sid)[0].n === 2, bb?.name);
+  ok('owned by the story in the canonical way', q('SELECT owner_story_id o, status FROM source_semantics WHERE lorebook_id=?', bb.id)[0]?.o === sid);
   const rec = bb && q('SELECT source, format, committed_at, analysis FROM imports WHERE id=?', bb.import_id)[0];
   ok('its provenance record says Story Builder', rec?.source === 'builder' && rec.format === 'story-builder' && !!rec.committed_at && JSON.parse(rec.analysis).mode === 'build');
   ok('and what that record produced', q('SELECT kind FROM import_resources WHERE import_id=? ORDER BY kind', bb.import_id).map((r) => r.kind).join() === 'lorebook,story');
@@ -464,7 +470,7 @@ try {
   ok('accepts generated or hand-written additions', existing.status === 200 && existing.body.generatedEntries === 1, JSON.stringify(existing.body));
   const z = open(dbPath);
   // Hand-written additions join the story's one package, marked as written by hand.
-  const packages = z.raw.prepare("SELECT l.id FROM lorebooks l WHERE json_valid(l.original) AND json_extract(l.original,'$.generatedFor')=?").all(sid);
+  const packages = z.raw.prepare("SELECT l.id FROM lorebooks l WHERE json_valid(l.original) AND json_extract(l.original,'$.managedFor.storyId')=?").all(sid);
   const lamp = z.raw.prepare("SELECT lorebook_id, original FROM lore_entries WHERE title='The Storm Lamp'").get();
   ok('hand-written material joins the same package, not a new one', packages.length === 1 && lamp.lorebook_id === packages[0].id);
   ok('and says it was written by hand, with no Story Builder record of its own', JSON.parse(lamp.original).origin === 'manual' && JSON.parse(lamp.original).builder === null);
@@ -474,7 +480,7 @@ try {
   const opening2 = await J(`/api/stories/${sid}/compose`, { opening: { text: 'A new beginning' } });
   ok('cannot replace its opening', opening2.status === 400);
   console.log('\nM  one package per story, however often material is accepted');
-  const pkgOf = (dd, storyId) => dd.raw.prepare("SELECT id, name, import_id FROM lorebooks WHERE json_valid(original) AND json_extract(original,'$.generatedFor')=?").all(storyId);
+  const pkgOf = (dd, storyId) => dd.raw.prepare("SELECT id, name, import_id FROM lorebooks WHERE json_valid(original) AND json_extract(original,'$.managedFor.storyId')=?").all(storyId);
   let w = open(dbPath);
   const firstPkg = pkgOf(w, sid);
   const importsBefore = w.raw.prepare("SELECT COUNT(*) n FROM imports WHERE source='builder'").get().n;

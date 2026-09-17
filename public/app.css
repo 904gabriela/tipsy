@@ -1829,11 +1829,25 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
   display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-style: normal;
   font-size: 10.5px; letter-spacing: .04em; background: var(--surface-2); color: var(--ink-faint); border: 1px solid var(--line);
 }
+/* In a meta row the gap already spaces them; the flag stays a quiet aside and
+   never competes with the name it follows. */
+.cast-meta .rv-flag, .rv-entry-meta .rv-flag { margin-left: 0; }
+/* Approved once, and the words have moved since. Worth a look, not an alarm. */
+.rv-flag.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .rv-suggest {
   display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between;
   padding: 9px 10px; margin: 8px 0; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2);
 }
 .rv-suggest .btn { flex: none; }
+
+/* "This may be somebody you already have." An open question, so it is a card
+   and not a line: the two answers are full-width targets on a phone, and the
+   one that was chosen carries the accent, like every other choice here. */
+.rv-dupe .edit-head { padding: 10px 12px 6px; }
+.rv-dupe .edit-body { padding: 0 12px 12px; }
+.rv-dupe .row-actions { margin-bottom: 0; gap: 6px; }
+.rv-dupe .row-actions .btn { flex: 1 1 auto; min-width: 44%; min-height: 40px; justify-content: center; }
+@media (max-width: 360px) { .rv-dupe .row-actions .btn { flex: 1 0 100%; } }
 
 /* A closer look. Deliberately unlike a decision: a marked-off aside that says
    where it came from, sitting beside the ordinary choice rather than replacing

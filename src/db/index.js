@@ -492,7 +492,7 @@ function wrap(db) {
                     (SELECT COUNT(*) FROM lore_entries e WHERE e.lorebook_id=b.id AND e.constant=1 AND e.enabled=1) AS always_on,
                     (SELECT COALESCE(SUM(length(e.content)),0) FROM lore_entries e WHERE e.lorebook_id=b.id AND e.constant=1 AND e.enabled=1) AS always_on_chars,
                     -- The story a book was made for, when it is a story's own Story Builder package.
-                    CASE WHEN json_valid(b.original) THEN json_extract(b.original, '$.generatedFor') END AS generated_for
+                    CASE WHEN json_valid(b.original) THEN COALESCE(json_extract(b.original, '$.generatedFor'), json_extract(b.original, '$.managedFor.storyId')) END AS generated_for
                   FROM lorebooks b LEFT JOIN characters c ON c.id=b.from_character
                   ORDER BY b.name COLLATE NOCASE`);
     },
@@ -524,7 +524,20 @@ function wrap(db) {
         `SELECT e.*, sl.recursion AS book_recursion FROM lore_entries e
          JOIN story_lorebooks sl ON sl.lorebook_id = e.lorebook_id
          WHERE sl.story_id = ? AND e.enabled = 1
-           AND e.id NOT IN (SELECT entry_id FROM story_entry_exclusions WHERE story_id = ?)`, storyId, storyId
+           AND e.id NOT IN (SELECT entry_id FROM story_entry_exclusions WHERE story_id = ?)
+           -- A person excluded from this story as a person: entries whose
+           -- APPROVED meaning is that they define them or are about them stay
+           -- out. Mere mentions stay in, and unorganised material is never
+           -- guessed away.
+           AND e.id NOT IN (
+             SELECT s.entry_id FROM entry_semantics s
+               JOIN story_entity_exclusions x ON x.entity_id = s.defines_entity_id AND x.story_id = ?
+              WHERE s.status = 'approved')
+           AND e.id NOT IN (
+             SELECT r.entry_id FROM entry_relations r
+               JOIN story_entity_exclusions x ON x.entity_id = r.entity_id AND x.story_id = ?
+               JOIN entry_semantics s2 ON s2.entry_id = r.entry_id AND s2.status = 'approved'
+              WHERE r.relation = 'subject' AND r.status = 'approved')`, storyId, storyId, storyId, storyId
       ).map((r) => ({ ...rowToEntry(r), bookRecursion: r.book_recursion || null }));
     },
 

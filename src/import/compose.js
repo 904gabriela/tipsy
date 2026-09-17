@@ -282,8 +282,21 @@ export function composeSource(entries, ctx = {}) {
   } = ctx;
   const excludedIds = new Set(ctx.storyExclusions || []);
   const existing = storyCards.length > 0 || !!transcript;
+  // What each source IS, where somebody has approved it: a framework of
+  // narration, reference knowledge, someone's material. Presentation follows
+  // the role; nothing about activation does.
+  const sourceRoles = ctx.sourceRoles instanceof Map ? ctx.sourceRoles : new Map();
+  // The person the reader plays. Their entity may be all through the material,
+  // and they are still not a character for the model to run.
+  const personaEntityId = ctx.personaEntityId || null;
+  // People excluded from this story as people, not entry by entry.
+  const excludedEntities = new Set(ctx.excludedEntities || []);
+  // Cards that stand for an entity: an explicit choice for this story first,
+  // else the one reusable card that is bound to them — offered, never assumed.
+  const entityCards = ctx.entityCards instanceof Map ? ctx.entityCards : new Map();
 
   const all = entries.map((e) => ({ ...e, enabled: !(e.enabled === 0 || e.enabled === false) }));
+  const roleOf = (e) => sourceRoles.get(e.lorebookId || e.lorebook_id)?.role || null;
 
   // ---------------------------------------------------------------- people
   const views = ctx.semantics instanceof Map ? ctx.semantics : new Map();
@@ -336,8 +349,16 @@ export function composeSource(entries, ctx = {}) {
 
   const casting = [];
   const matchedCardIds = new Set();
+  let personaEntity = null;
 
   for (const g of groups.values()) {
+    // The reader's own person is never offered to the model as cast. Their
+    // entries stay theirs; the row simply is not a casting decision.
+    const groupEntity = g.entries.map((e) => verdicts.get(e.id).entityId).find(Boolean) || null;
+    if (personaEntityId && groupEntity === personaEntityId) {
+      personaEntity = { entityId: groupEntity, name: g.name, entryIds: g.entries.map((e) => e.id) };
+      continue;
+    }
     const primary = [...g.entries].sort((a, b) => {
       const ka = norm(keysOf(a)[0] || '').startsWith(norm(g.name).split(' ')[0]) ? 1 : 0;
       const kb = norm(keysOf(b)[0] || '').startsWith(norm(g.name).split(' ')[0]) ? 1 : 0;
@@ -389,14 +410,19 @@ export function composeSource(entries, ctx = {}) {
     // A choice already made for this story is what the draft shows: in the
     // cast in some part, or excluded from it.
     const current = g.entries.map((e) => npcRole.get(e.id)).find(Boolean)
-      || (g.entries.some((e) => excludedIds.has(e.id)) ? 'excluded' : null);
+      // Excluded as a person, or entry by entry: either way the story said no.
+      || ((groupEntity && excludedEntities.has(groupEntity)) || g.entries.some((e) => excludedIds.has(e.id)) ? 'excluded' : null);
     const elsewhere = !current ? castByName.get(norm(g.name)) : null;
+    // A card that stands for this entity: the story's explicit choice first,
+    // else the one reusable card bound to them, offered and no more.
+    const bound = groupEntity ? entityCards.get(groupEntity) || null : null;
+    const offeredCard = bound?.storyCardId || (bound?.cards?.length === 1 ? bound.cards[0].id : null);
     casting.push({
       key: `entry:${primary.id}`,
       entryId: primary.id,
       entryIds: [...ids],
       characterId: null,
-      libraryCardId: libraryCard ? libraryCard.id : null,
+      libraryCardId: offeredCard || (libraryCard ? libraryCard.id : null),
       name: g.name,
       backing: 'lore',
       canLead: false,
@@ -416,7 +442,16 @@ export function composeSource(entries, ctx = {}) {
       lorebookId: primary.lorebookId || primary.lorebook_id || null,
       // Who says this is a person: approved semantics (possibly stale) or the legacy reading.
       ...(verdicts.get(primary.id).authority === 'semantics'
-        ? { semantic: { entityId: verdicts.get(primary.id).entityId, stale: g.entries.some((e) => verdicts.get(e.id).stale) } }
+        ? {
+          semantic: {
+            entityId: verdicts.get(primary.id).entityId,
+            stale: g.entries.some((e) => verdicts.get(e.id).stale),
+            // The story's explicit card for them, when it has one. An offer
+            // travels in libraryCardId; this is the decision already made.
+            ...(bound?.storyCardId ? { boundCardId: bound.storyCardId } : {}),
+            ...(bound?.cards?.length > 1 ? { cardChoices: bound.cards.map((c) => c.id) } : {}),
+          },
+        }
         : {}),
     });
   }
@@ -465,7 +500,7 @@ export function composeSource(entries, ctx = {}) {
       kind: 'entry', id: r.entryId, name: r.name, handles: handlesFor(r.name, shared), entryIds: new Set(r.entryIds),
     })),
   ];
-  const peopleIds = new Set(casting.flatMap((r) => r.entryIds));
+  const peopleIds = new Set([...casting.flatMap((r) => r.entryIds), ...(personaEntity?.entryIds || [])]);
   const links = [];
   for (const e of all) {
     // People are people. What they are to each other is a relationship, and
@@ -511,21 +546,34 @@ export function composeSource(entries, ctx = {}) {
     ...(note ? { note } : {}),
   });
 
-  // Organised entries go where their approved semantics put them; the rest by kind, as always.
-  const byKind = (kinds) => all.filter((e) => kinds.includes(e.kind) && !peopleIds.has(e.id) && !authoritative(e));
+  // Organised entries go where their approved semantics put them; the rest by
+  // kind, as always — except that a source's approved role outranks a kind
+  // guess: a narrative framework's unorganised entries are still narration
+  // rules, not world building, and a reference pack's are still reference.
+  const ROLE_SECTION = { 'narrative-framework': 'directions', 'reference-pack': 'other' };
+  const roleHome = (e) => (!authoritative(e) ? ROLE_SECTION[roleOf(e)] || null : null);
+  const byKind = (kinds) => all.filter((e) => kinds.includes(e.kind) && !peopleIds.has(e.id) && !authoritative(e) && !roleHome(e));
   const bySemantics = (id) => all.filter((e) => !peopleIds.has(e.id) && authoritative(e) && semanticSection(views.get(e.id)) === id);
+  const byRole = (id) => all.filter((e) => !peopleIds.has(e.id) && roleHome(e) === id);
   const sections = SECTIONS.filter((s) => s.id !== 'casting').map((s) => {
-    let items = [...byKind(s.kinds), ...bySemantics(s.id)].map((e) => brief(e));
+    let items = [
+      ...byKind(s.kinds).map((e) => brief(e)),
+      ...bySemantics(s.id).map((e) => brief(e)),
+      // Placed by their source's approved role, not by a guess at their kind:
+      // a screen should not call this unorganised, because what decided it was
+      // somebody's decision about the source.
+      ...byRole(s.id).map((e) => ({ ...brief(e, roleOf(e) === 'narrative-framework' ? 'part of a narrative framework' : 'reference knowledge'), placedBy: 'role' })),
+    ];
     if (s.id === 'backstory') {
       // A character entry that is not a person is a sheet about somebody —
       // "Core Identity", "Abandonment". It is background, not cast.
       items = [...items, ...all
-        .filter((e) => e.kind === 'character' && !peopleIds.has(e.id) && !authoritative(e) && !verdicts.get(e.id).mismatch)
+        .filter((e) => e.kind === 'character' && !peopleIds.has(e.id) && !authoritative(e) && !roleHome(e) && !verdicts.get(e.id).mismatch)
         .map((e) => brief(e, verdicts.get(e.id).reason))];
     }
     if (s.id === 'other') {
       items = [...items, ...all
-        .filter((e) => e.kind === 'character' && !peopleIds.has(e.id) && !authoritative(e) && verdicts.get(e.id).mismatch)
+        .filter((e) => e.kind === 'character' && !peopleIds.has(e.id) && !authoritative(e) && !roleHome(e) && verdicts.get(e.id).mismatch)
         .map((e) => brief(e, 'titled as a person, but the text is about someone else'))];
     }
     return { id: s.id, label: s.label, kinds: s.kinds, count: items.length, items };
@@ -544,6 +592,14 @@ export function composeSource(entries, ctx = {}) {
     sections,
     unclear,
     links,
+    // The reader's own person, named so a screen can say "this is you" instead
+    // of offering them to the model.
+    ...(personaEntity ? { personaEntity: { entityId: personaEntity.entityId, name: personaEntity.name } } : {}),
+    // Approved source roles, for presentation: a framework reads as narration
+    // guidance, a reference pack as reference, wherever their entries land.
+    ...(sourceRoles.size ? {
+      sourceRoles: Object.fromEntries([...sourceRoles].filter(([, v]) => v.role).map(([id, v]) => [id, v.role])),
+    } : {}),
     totals: {
       entries: all.length,
       enabled: all.filter((e) => e.enabled).length,

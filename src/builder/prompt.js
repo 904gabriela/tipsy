@@ -34,6 +34,8 @@ Format: return one JSON object and nothing else.
 - "role": "lead" only if WRITE says a lead is needed. Otherwise main, supporting, background, or known (exists, not in the cast).
 - "promotionSuggested": true only for someone important enough that the author might want them as a reusable character. It is advice; the author decides.
 - Do not return anything that already exists in CANON. If you must refer to it, use its ref in "about". If an item you are describing IS a CANON item, add "same": its ref, and it will be treated as that item rather than a new one.
+- CANON names are identities, not suggestions. Do not rename a CANON person or place, and do not make one sound more specific to pass it off as new: "Marco" does not become "Marco Rossi", "Penthouse" does not become "Patrick's Penthouse". A name marked (also called ...) lists the same entity's other names. A name marked [unconfirmed] is material nobody has organised yet: you may build on it, but do not invent a rival version of it.
+- The richer the CANON, the less you invent. Sources are the foundation; the idea is direction; you supply only what is missing.
 - Sections: places = locations; factions = families, gangs, organisations; backstory = background and premise facts; rules = how this world works; directions = how the story should be written; events = hooks and things that happen or happened; items = objects that matter; other = anything else.`;
 
 const DEPTH_WORDS = {

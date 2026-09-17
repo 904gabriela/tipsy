@@ -11,6 +11,7 @@
 import { personFromEntry, nameFromTitle, normalizeRole, NPC_ROLES, SECTIONS } from './compose.js';
 import { personVerdict } from '../semantics/authority.js';
 import { semanticViews, resolveNpcEntity, recordLinkEvidence } from '../semantics/store.js';
+import { setEntityExclusion, backfillNpcIdentities, entityInventory } from '../semantics/composition.js';
 
 export class CompositionError extends Error {
   constructor(message, status = 400) {
@@ -45,7 +46,18 @@ export function planComposition(db, {
   const cards = [];      // { characterId, role } — new stories only
   const excludes = [];   // entryIds this story will ignore
   const includes = [];   // entryIds this story stops ignoring
+  const entityExcludes = []; // people excluded from this story as people
+  const entityIncludes = []; // people let back in the same way
   const seen = new Set();
+
+  // The person the reader plays. The draft never offers them as cast; this is
+  // the same rule where it cannot be routed around — by an older client, or by
+  // a request made by hand. Being written about is not being cast.
+  const personaEntityId = (() => {
+    if (!storyId) return null;
+    const story = db.getStory(storyId);
+    return story?.persona_id ? db.getPersona(story.persona_id)?.entity_id || null : null;
+  })();
 
   // Every entry that describes one person. A person described in two entries
   // is excluded, or let back in, as one person.
@@ -82,14 +94,32 @@ export function planComposition(db, {
 
     // Known: in the story's knowledge, not its cast, and eligible as normal.
     // Excluded: not in the cast and not eligible at all, in this story only.
-    if (role === 'known') { drop.push(...ids); includes.push(...ids); continue; }
-    if (role === 'excluded') { drop.push(...ids); excludes.push(...ids); continue; }
+    // A person with an approved identity is excluded AS that person — one
+    // decision about who they are, not a pile of decisions about entries —
+    // and let back in the same way.
+    const identity = semanticViews(db, [entry]).get(entry.id);
+    const personEntity = identity?.authoritative && identity.defines?.type === 'person' ? identity.defines.id : null;
+    if (role === 'known') {
+      drop.push(...ids); includes.push(...ids);
+      if (personEntity) entityIncludes.push(personEntity);
+      continue;
+    }
+    if (role === 'excluded') {
+      drop.push(...ids);
+      if (personEntity) entityExcludes.push(personEntity);
+      else excludes.push(...ids);
+      continue;
+    }
+    if (personEntity && personEntity === personaEntityId) {
+      throw new CompositionError(`${entry.title} is you in this story. Your persona is yours to play, so they cannot also be a part the story performs. Change your persona first if you meant somebody else.`);
+    }
     includes.push(...ids);
+    if (personEntity) entityIncludes.push(personEntity);
 
     // Checked here and not only in the draft, so nothing that calls this can
     // put "Vancetti Family" in the cast however the request was made. Approved
     // semantics decide first; the legacy reading only where there are none.
-    const verdict = personVerdict(entry, semanticViews(db, [entry]).get(entry.id), personFromEntry);
+    const verdict = personVerdict(entry, identity, personFromEntry);
     if (!verdict.person) {
       throw new CompositionError(`"${entry.title}" is not a person, so it cannot be in the cast. It stays in the story's material.`);
     }
@@ -136,6 +166,7 @@ export function planComposition(db, {
   return {
     storyId, newBooks, policies, npcs, drop, cards, leads, links: linkWrites,
     excludes: unique(excludes), includes: unique(includes),
+    entityExcludes: unique(entityExcludes), entityIncludes: unique(entityIncludes),
   };
 }
 
@@ -152,7 +183,14 @@ export function writeComposition(db, storyId, plan) {
   }
   // The person each cast member IS, only where that is certain. Otherwise NULL.
   for (const n of plan.npcs) db.setStoryNpc(storyId, n.entryId, n.role, resolveNpcEntity(db, n.entryId));
+  // And the same certainty, given to cast rows from before there were
+  // identities to give: deterministic, or left NULL exactly as it was.
+  backfillNpcIdentities(db, storyId, { resolve: resolveNpcEntity });
   for (const id of plan.drop) db.removeStoryNpc(storyId, id);
+  // People excluded as people, and let back in as people. Reversible, this
+  // story only, and never a rewrite of anyone's entry-level decisions.
+  for (const entityId of plan.entityExcludes || []) setEntityExclusion(db, { storyId, entityId, excluded: true });
+  for (const entityId of plan.entityIncludes || []) setEntityExclusion(db, { storyId, entityId, excluded: false });
   for (const id of plan.includes || []) db.includeEntry(storyId, id);
   for (const id of plan.excludes || []) {
     // Ignored material is not in the cast either, however it got there.
@@ -209,7 +247,20 @@ export function sourceRemovalPreview(db, storyId, lorebookId, compose) {
   const policy = db.storyLorebookSettings(storyId).find((r) => r.lorebook_id === lorebookId)?.recursion || null;
   const personaFrom = story.persona && story.persona.from_entry && ids.has(story.persona.from_entry) ? story.persona.name : null;
 
+  // Who leaves with this source, and who stays because another attached source
+  // still carries them. Nothing global changes either way: the person, their
+  // cards and their material elsewhere are untouched.
+  const remaining = story.lorebookIds.filter((id) => id !== lorebookId);
+  const here = entityInventory(db, [lorebookId]);
+  const still = new Set(entityInventory(db, remaining).map((x) => x.id));
+  const entitiesLeaving = here.filter((x) => !still.has(x.id))
+    .map((x) => ({ id: x.id, name: x.name, type: x.type }));
+  const entitiesStaying = here.filter((x) => still.has(x.id))
+    .map((x) => ({ id: x.id, name: x.name, type: x.type }));
+
   return {
+    entitiesLeaving,
+    entitiesStaying,
     source: { id: book.id, name: book.name, entries: book.entries.length },
     loses: [
       { id: 'people', label: 'People written about in it', count: draft.casting.filter((r) => r.backing === 'lore').length },
