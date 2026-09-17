@@ -18,6 +18,7 @@ import { analyzeSource, DRAFT_FORMAT, DRAFT_VERSION } from '../src/conversion/an
 import { createEntity, declareInSource, distinguish } from '../src/semantics/store.js';
 import { directiveSentence } from '../src/conversion/text.js';
 import { PERSON_CATEGORIES } from '../src/semantics/authority.js';
+import { normalize as normalizeName } from '../src/conversion/text.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 let pass = 0; let fail = 0;
@@ -525,6 +526,101 @@ console.log('\nS  a warning means a real contradiction');
   ok('and it says the stored kind is left alone', kinds.every((w) => /left as it is/.test(w.message)));
   ok('the warnings stay few enough to read', dd.warnings.length <= dd.entries.length,
     `${dd.warnings.length} warnings for ${dd.entries.length} entries`);
+  d2.close();
+}
+
+// ---------------------------------------------------------------- T
+console.log('\nT  a name the source never explains is not somebody else');
+{
+  // The trap: an entry is plainly about one person, whom this source never
+  // describes, and it happens to mention a person the source DOES know. Filing
+  // it under the one it can name would put one character's psychology under
+  // another, at a confidence that says "accept this without reading it".
+  const d2 = open(tmp());
+  const S = build(d2, 'Ledger', [
+    // The person this source does describe.
+    { title: 'Imre Bosch', kind: 'character', keys: ['Imre Bosch', 'Imre'], content: 'Imre Bosch: fifty, deliberate, a harbourmaster. He keeps the tide book himself and trusts no copy of it.' },
+    // Somebody it only ever refers to. Keyed, written possessively elsewhere.
+    { title: 'Tamsin Reed — Temperament', kind: 'character', keys: ['Tamsin Reed', 'Tamsin'], content: 'She is quick, sceptical and hard to impress. She can face Imre Bosch down without raising her voice.' },
+    { title: "Tamsin Reed's Mornings", kind: 'note', keys: ['Tamsin Reed'], content: 'She is on the quay before six, and says the light is better then.' },
+    { title: 'A Kept Promise', kind: 'note', keys: ['promise'], content: "Tamsin Reed's promise was kept to the day, which surprised Imre Bosch more than he admitted." },
+    // The known person genuinely IS the subject here, with somebody else merely
+    // related. This must keep its high confidence.
+    { title: 'The Tide Book', kind: 'note', keys: ['tide book'], content: 'Imre Bosch writes in the tide book each dawn. Tamsin Reed has never been allowed to read it.' },
+    // A title of ordinary capitalised words, naming nobody.
+    { title: 'Criminal Identity', kind: 'character', keys: ['identity'], content: 'The name is known on the water long before the face is. Imre Bosch has used that for thirty years.' },
+    // Naming nobody at all.
+    { title: 'A Quiet Habit', kind: 'note', keys: ['stairs'], content: 'She counts the stairs on the way up, every time, and has never said why.' },
+  ]);
+  const dd = analyzeSource(d2, S);
+  const get = (t) => dd.entries.find((e) => e.title === t);
+  const subjOf = (t) => { const p = get(t).proposal; return p?.subject ? dd.entities.find((x) => x.ref === p.subject).name : null; };
+  const unknown = (t) => get(t).namedButUnknown || [];
+
+  // 1. title strongly names an unknown person; body mentions a known one
+  const temper = get('Tamsin Reed — Temperament');
+  ok('a title naming somebody unknown is not filed under whoever is mentioned',
+    subjOf('Tamsin Reed — Temperament') !== 'Imre Bosch' || temper.confidence !== 'high',
+    `${subjOf('Tamsin Reed — Temperament')} at ${temper.confidence}`);
+  ok('and it is never high confidence', temper.confidence !== 'high', temper.confidence);
+  ok('the unresolved name is reported', unknown('Tamsin Reed — Temperament').includes('Tamsin Reed'),
+    JSON.stringify(unknown('Tamsin Reed — Temperament')));
+  ok('said in words a person can act on',
+    temper.unresolved.some((u) => /nothing in this source says who that is/.test(u)),
+    JSON.stringify(temper.unresolved));
+
+  // 2. a possessive title naming an unknown person
+  const morn = get("Tamsin Reed's Mornings");
+  ok('a possessive title naming somebody unknown is caught too', unknown("Tamsin Reed's Mornings").length > 0,
+    JSON.stringify(unknown("Tamsin Reed's Mornings")));
+  ok('and is not high confidence', morn.confidence !== 'high', morn.confidence);
+
+  // 3. the known person genuinely is the subject, another merely related
+  ok('somebody genuinely the subject keeps it', subjOf('The Tide Book') === 'Imre Bosch', subjOf('The Tide Book'));
+  ok('with no unresolved name invented against them', unknown('The Tide Book').length === 0,
+    JSON.stringify(unknown('The Tide Book')));
+  ok('and the other person does not take it', subjOf('The Tide Book') !== 'Tamsin Reed');
+
+  // 4. an ambiguous title of ordinary words is not read as a name
+  ok('a title of ordinary words names nobody', unknown('Criminal Identity').length === 0,
+    JSON.stringify(unknown('Criminal Identity')));
+  ok('and a single passing mention still does not make somebody the subject',
+    get('Criminal Identity').confidence !== 'high',
+    `${subjOf('Criminal Identity')} at ${get('Criminal Identity').confidence}`);
+
+  // 5. no named subject at all
+  ok('an entry naming nobody claims nobody unknown', unknown('A Quiet Habit').length === 0);
+
+  // 6. an already correctly resolved subject is untouched
+  ok('a profile still defines its own person', get('Imre Bosch').proposal.defines
+    && dd.entities.find((x) => x.ref === get('Imre Bosch').proposal.defines).name === 'Imre Bosch');
+  ok('at full confidence', get('Imre Bosch').confidence === 'high', get('Imre Bosch').confidence);
+
+  // And the promise that matters: nothing survives at high confidence on the
+  // strength of a mention while a stronger unresolved name points elsewhere.
+  const falseHigh = dd.entries.filter((e) => e.confidence === 'high'
+    && e.proposal?.subject
+    && (e.namedButUnknown || []).length
+    && !(e.namedButUnknown || []).some((n) => normalizeName(n) === normalizeName(dd.entities.find((x) => x.ref === e.proposal.subject).name)));
+  ok('no false high-confidence subject survives anywhere in the draft', falseHigh.length === 0,
+    falseHigh.map((e) => `${e.title} → ${dd.entities.find((x) => x.ref === e.proposal.subject).name}`).join(', '));
+  ok('and nobody was invented for the unresolved name',
+    !dd.entities.some((x) => x.name === 'Tamsin Reed'), dd.entities.map((x) => x.name).join(', '));
+  ok('nor merged into the person it does know',
+    !dd.entities.some((x) => x.aliases.some((a) => /tamsin/i.test(a))));
+  d2.close();
+}
+
+console.log('\n   and the same-name warning says what the model actually allows');
+{
+  const d2 = open(tmp());
+  const S = build(d2, 'The Marsh', [
+    { title: 'Ash', kind: 'character', keys: ['Ash'], content: 'Ash: forty, unhurried, a ferryman. He has worked this crossing since he was a boy.' },
+    { title: 'Ash', kind: 'faction', keys: ['Ash'], content: 'The Ash is a syndicate of four families. It controls the marsh crossings and taxes every barge.' },
+  ]);
+  const w = analyzeSource(d2, S).warnings.find((x) => x.code === 'name-collision');
+  ok('it says Nexus keeps them separate', /keeps them separate/i.test(w.message), w.message);
+  ok('and asks about the kind, not about sameness', /change its kind/i.test(w.message) && !/are the same/i.test(w.message));
   d2.close();
 }
 

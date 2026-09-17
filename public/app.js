@@ -7857,7 +7857,7 @@ function entityCard(x) {
         ${state.aliases.length ? `<div class="why">Also called ${esc(state.aliases.join(', '))}.</div>` : ''}
         ${/* A word doing two jobs in one source. Kept apart, and said so, because
              the alternative is one entity of the wrong kind. */''}
-        ${(x.nameSharedWith || []).length ? `<div class="why dim">“${esc(state.name)}” is also the name of ${esc((x.nameSharedWith || []).map((t) => `a ${(TYPE_LABEL[t] || t).toLowerCase()}`).join(' and '))} in this source. They are kept apart.</div>` : ''}
+        ${(x.nameSharedWith || []).length ? `<div class="why dim">“${esc(state.name)}” is also the name of ${esc((x.nameSharedWith || []).map((t) => `a ${(TYPE_LABEL[t] || t).toLowerCase()}`).join(' and '))} in this source. Nexus keeps them separate — they are different kinds of thing. If one of them was read as the wrong kind, change its kind below.</div>` : ''}
         ${x.mayBeSeveral ? '<div class="why dim">The entries describing them have little in common. They may be one written twice, or they may not be the same at all.</div>' : ''}
         ${entityChoice(x, state)}
         <details${editing ? ' open' : ''}><summary>Change the name or what they are</summary>

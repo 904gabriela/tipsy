@@ -218,7 +218,10 @@ function flagIdentityDoubts(ctx) {
     ctx.warnings.push({
       code: 'name-collision',
       entities: ctx.entities.filter((e) => normalize(e.name) === c.name).map((e) => e.ref),
-      message: `"${c.display}" is used for ${c.types.length} different kinds of thing in this source (${c.types.join(', ')}). They are kept apart; say if any of them are the same.`,
+      // They cannot be the same thing: their kinds differ, and a person is not
+      // a faction. So the question is not "are these the same" — it is "is one
+      // of them the wrong kind".
+      message: `"${c.display}" is used for different kinds of thing in this source (${c.types.join(', ')}). Nexus keeps them separate. If one of them was read as the wrong kind, change its kind.`,
     });
   }
 
@@ -285,17 +288,20 @@ function discoverEntities(ctx) {
   const { entries } = ctx;
   // How often each capitalised name appears mid-sentence, and in how many entries.
   const stats = new Map();
-  const note = (name, entry, { mid = false, key = false } = {}) => {
+  const note = (name, entry, { mid = false, key = false, poss = false } = {}) => {
     const k = normalize(name);
     if (!k) return;
-    const s = stats.get(k) || { name, entries: new Set(), mid: 0, keys: 0 };
+    const s = stats.get(k) || { name, entries: new Set(), mid: 0, keys: 0, poss: 0 };
     s.entries.add(entry.ref);
     if (mid) s.mid++;
     if (key) s.keys++;
+    // "Jane's eyes" is how a source writes about a person. A common noun is
+    // rarely written that way, which is most of what tells them apart.
+    if (poss) s.poss++;
     stats.set(k, s);
   };
   for (const e of entries) {
-    for (const r of e.runs) note(r.name, e, { mid: r.midSentence });
+    for (const r of e.runs) note(r.name, e, { mid: r.midSentence, poss: r.possessive });
     for (const k of capitalisedKeys(e.keys)) note(k, e, { key: true });
   }
   ctx.nameStats = stats;
@@ -647,6 +653,83 @@ function proposeInstruction(ctx, e) {
   return true;
 }
 
+/** Words in a title that say what KIND of information it is, not who it is about. */
+const ASPECT_WORD = (t) => lexiconHit(t, PERSON_LEXICON) || lexiconHit(t, WORLD_LEXICON)
+  || /\b(guidance|reminder|register|stage|overview|surface|tension|probing|warning|style|status|condition|mechanics|notes?|profile|current|full|established)\b/i.test(t);
+
+/**
+ * A name the entry itself puts forward as its subject, which this source never
+ * says anything about.
+ *
+ * "Jane Vale Personality Guidance" is about somebody called Jane Vale. If this
+ * happens to mention a person it DOES know once in the body, that person is not
+ * thereby the subject — and saying so at high confidence would file one
+ * character's personality under another. So the name is found, reported as a
+ * name Nexus cannot resolve, and the entry waits.
+ *
+ * Deliberately narrow: the name has to be where a subject goes (the front of the
+ * title, a possessive, the start of the first sentence) and has to look like a
+ * name somewhere else in the source — a keyword, or used mid-sentence — so that
+ * "Criminal Identity" and "Phase Engine" are not read as people.
+ */
+function unresolvedSubjectName(ctx, e) {
+  const known = (name) => {
+    const k = normalize(name);
+    if (!k) return true;
+    return ctx.entities.some((x) => normalize(x.name) === k
+      || normalize(x.name).split(' ').includes(k)
+      || x.aliases.some((a) => normalize(a) === k));
+  };
+  // A person's name, if this source writes about it as one. A possessive is the
+  // signal that carries: sources say "Jane's eyes" and do not say "Power's" or
+  // "Phase's". A word that is itself a kind of information is never a name,
+  // however often it is capitalised.
+  const looksLikeAName = (name) => {
+    if (ASPECT_WORD(name) || lexiconHit(name, PERSON_LEXICON) || lexiconHit(name, WORLD_LEXICON)) return false;
+    if (typeOfWord(name.split(/\s+/).pop())) return false;
+    const s = ctx.nameStats?.get(normalize(name));
+    if (!s) return false;
+    // Written possessively somewhere, or carried as a keyword by more than one
+    // entry: either way the source is treating it as somebody.
+    return s.poss > 0 || (s.keys > 0 && s.entries.size >= 2);
+  };
+  // Trailing words that say what kind of information this is are not part of
+  // the name: "Jane Vale Personality Guidance" offers "Jane Vale".
+  const trimAspect = (words) => {
+    const out = [...words];
+    while (out.length > 1 && ASPECT_WORD(out[out.length - 1])) out.pop();
+    return out;
+  };
+
+  const offers = [];
+  const title = String(e.name || '').trim();
+  const poss = title.match(/^(.+?)[’']s\s+(.+)$/);
+  if (poss) offers.push({ name: poss[1].trim(), how: 'possessive-title' });
+  // The front of the title, as far as the first aspect word.
+  const runs = nameRuns(title);
+  const lead = runs.find((r) => r.atStart) || runs[0];
+  if (lead) {
+    const trimmed = trimAspect(lead.name.split(/\s+/));
+    if (trimmed.length) offers.push({ name: trimmed.join(' '), how: 'title-name' });
+  }
+  // Whoever the first sentence opens on.
+  const firstRuns = nameRuns(e.sents[0] || '');
+  const opener = firstRuns.find((r) => r.atStart);
+  if (opener) offers.push({ name: opener.name, how: 'first-sentence-subject' });
+
+  const seen = new Set();
+  const out = [];
+  for (const o of offers) {
+    const k = normalize(o.name);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    if (known(o.name)) continue;
+    if (!looksLikeAName(o.name)) continue;
+    out.push(o);
+  }
+  return out;
+}
+
 function proposeAbout(ctx, e) {
   const candidates = [];
   const titleHits = mentions(ctx, e.name);
@@ -707,15 +790,39 @@ function proposeAbout(ctx, e) {
   // of the source counts towards settling it.
   const named = top && top.evidence.some((v) => v.basis === 'content' && v.type !== 'source-context' && v.points > 0);
 
+  // Somebody the entry itself puts forward, whom this source never defines. The
+  // person Nexus does know may be in here too — mentioned, related, argued with
+  // — and being the only one it can name does not make them the subject.
+  const unknownNames = unresolvedSubjectName(ctx, e);
+  // Where the entry's own subject slot names somebody Nexus cannot resolve, no
+  // other candidate takes it at high confidence. It may still be offered, at
+  // medium, and the unresolved name is said.
+  const outranked = unknownNames.length
+    && !unknownNames.some((o) => top && normalize(o.name) === normalize(top.x.name));
+
   let subject = null;
   let subjectConfidence = 'low';
-  if (top && named && top.points >= 5 && top.explicit && margin >= 3) { subject = top.x; subjectConfidence = 'high'; }
+  if (top && named && !outranked && top.points >= 5 && top.explicit && margin >= 3) { subject = top.x; subjectConfidence = 'high'; }
   else if (top && top.points >= 3 && margin >= 2) {
     subject = top.x;
     subjectConfidence = 'medium';
     // Offered, never settled: a medium reading waits for a person to tick it,
-    // and this one says plainly that the entry itself named nobody.
+    // and this one says plainly what is unsettled about it.
     if (!named) e.unresolved.push(`nobody is named here; ${top.x.name} is only who this source is mostly about`);
+  }
+
+  if (unknownNames.length) {
+    const say = unknownNames.map((o) => o.name);
+    e.namedButUnknown = say;
+    e.unresolved.push(`this reads as being about ${say.join(' or ')}, and nothing in this source says who that is`);
+    for (const o of unknownNames) {
+      e.evidence.push(ev(o.how, `the entry names ${o.name} where its subject goes, and this source never describes them`, 0));
+    }
+    ctx.warnings.push({
+      code: 'subject-unknown-name',
+      entries: [e.ref],
+      message: `"${e.title}" reads as being about ${say.join(' or ')}, and nothing in this source says who that is.${subject ? ` It is not filed under ${subject.name}.` : ''}`,
+    });
   }
 
   e.subjectCandidates = candidates.slice(0, 3).map((c) => ({ entity: c.x.ref, points: c.points, evidence: c.evidence }));
@@ -959,6 +1066,10 @@ function finalize(ctx) {
     confidence: e.confidence,
     evidence: e.evidence,
     unresolved: e.unresolved,
+    // Somebody the entry puts forward as its subject whom this source never
+    // describes. Named so review can say who they are, or organise a source
+    // that does; nobody is created from this.
+    namedButUnknown: e.namedButUnknown || [],
   }));
   const counts = (k) => entries.reduce((m, e) => ({ ...m, [e[k]]: (m[e[k]] || 0) + 1 }), {});
   return {
