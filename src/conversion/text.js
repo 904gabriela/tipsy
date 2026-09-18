@@ -73,23 +73,38 @@ export function countPhrase(text, phrase) {
 export function nameRuns(text) {
   const out = [];
   sentences(String(text || '').replace(PLACEHOLDER, 'SOMEONE')).forEach((sentence, si) => {
-    const words = sentence.split(/\s+/);
+    // A line ending is a boundary. A record written a field to a line —
+    //   NAME: Rina Okabe
+    //   STABLE CORE: Determined, watchful
+    // is not somebody called "Rina Okabe STABLE CORE", which is what reading
+    // straight through the break makes of it.
+    const words = [];
+    let broke = false;
+    for (const piece of sentence.split(/(\s+)/)) {
+      if (!piece) continue;
+      if (/^\s+$/.test(piece)) { if (/[\r\n]/.test(piece)) broke = true; continue; }
+      words.push({ raw: piece, breakBefore: broke });
+      broke = false;
+    }
     let run = [];
     let runStart = -1;
     let possessive = false;
-    const flush = (endIndex) => {
+    let labelled = false;
+    const flush = () => {
       while (run.length && (CONNECTORS.has(run[run.length - 1]) || run[run.length - 1] === 'The')) run.pop();
       while (run.length && NOT_NAMES.has(run[0]) && !(run[0] === 'The' && run.length > 1)) { run.shift(); runStart++; }
       if (run.length && !(run.length === 1 && (HONORIFICS.has(run[0]) || run[0] === 'The'))) {
         const name = run.join(' ');
         if (!(run.length === 1 && NOT_NAMES.has(run[0]))) {
-          out.push({ name, midSentence: runStart > 0, atStart: runStart === 0, possessive, sentence: si });
+          // `label` means the text was written as "NAME:" — a field this record
+          // fills in, rather than something the record is talking about.
+          out.push({ name, midSentence: runStart > 0, atStart: runStart === 0, possessive, label: labelled, sentence: si });
         }
       }
-      run = []; runStart = -1; possessive = false;
-      void endIndex;
+      run = []; runStart = -1; possessive = false; labelled = false;
     };
-    words.forEach((raw, wi) => {
+    words.forEach(({ raw, breakBefore }, wi) => {
+      if (breakBefore && run.length) flush();
       const lead = raw.replace(/^["“'‘(\[]+/, '');
       const poss = /[’']s[,.;:!?)"”]*$/.test(lead);
       const word = lead.replace(/[’']s[,.;:!?)"”]*$/, '').replace(/[,.;:!?)"”\]]+$/, '');
@@ -102,10 +117,10 @@ export function nameRuns(text) {
         if (!run.length) runStart = wi;
         run.push(word);
         if (poss) possessive = true;
-        if (endsClause) flush(wi);
-      } else if (run.length) flush(wi);
+        if (endsClause) { labelled = /:$/.test(lead); flush(); }
+      } else if (run.length) flush();
     });
-    if (run.length) flush(words.length);
+    if (run.length) flush();
   });
   return out;
 }

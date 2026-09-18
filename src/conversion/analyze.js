@@ -136,6 +136,7 @@ function analyzeOne(db, lorebookId) {
   });
 
   const ctx = { db, book, card: cardRow, roleRow, declared, entries, entities: [], byName: new Map(), warnings: [], collisions: [] };
+  dropFilingPrefixes(ctx);
   groupsFromTitles(ctx);
   discoverEntities(ctx);
   flagIdentityDoubts(ctx);
@@ -284,26 +285,77 @@ const typeOfWord = (word) => {
 const termIn = (text, term) => new RegExp(`(^|[^\\p{L}])${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${term.length <= 4 ? 's?(?![\\p{L}])' : ''}`, 'iu').test(String(text || ''));
 const lexiconHit = (text, lexicon) => Object.values(lexicon).some((terms) => terms.some((t) => termIn(text, t)));
 
+/**
+ * Some sources file their entries before they name them:
+ *
+ *   04 CLASS 1-A — Rina Okabe
+ *   07 STAFF — Hana Terada
+ *
+ * The part before the dash is the filing system, and it says so by repeating:
+ * many entries share it, and what follows differs every time. Read as a name it
+ * hides the person entirely. The stored title is untouched — this only changes
+ * the name the pass reads out of it.
+ */
+function dropFilingPrefixes(ctx) {
+  const { entries } = ctx;
+  const counts = new Map();
+  for (const e of entries) {
+    const m = String(e.title || '').match(/^(.{2,40}?)\s+[—–]\s+(\S.*)$/);
+    if (!m) continue;
+    const prefix = m[1].trim();
+    // A filing code, not a phrase: it is numbered, or shouted, or both.
+    if (!/^[\dIVX]+[\s.)-]/.test(prefix) && !/^[A-Z0-9][A-Z0-9 .\-/]{2,}$/.test(prefix)) continue;
+    const s = counts.get(prefix) || { n: 0, rests: new Set() };
+    s.n++;
+    s.rests.add(normalize(m[2]));
+    counts.set(prefix, s);
+  }
+  const filing = new Set([...counts.entries()]
+    .filter(([, s]) => s.n >= 3 && s.rests.size === s.n)
+    .map(([p]) => p));
+  if (!filing.size) return;
+  for (const e of entries) {
+    const m = String(e.title || '').match(/^(.{2,40}?)\s+[—–]\s+(\S.*)$/);
+    if (!m || !filing.has(m[1].trim())) continue;
+    const rest = cleanTitle(m[2]);
+    if (!rest.name) continue;
+    e.filedUnder = m[1].trim();
+    e.name = rest.name;
+    if (rest.phase && !e.phase) e.phase = rest.phase;
+    for (const k of rest.markers) if (!e.markers.includes(k)) e.markers.push(k);
+  }
+}
+
 function discoverEntities(ctx) {
   const { entries } = ctx;
   // How often each capitalised name appears mid-sentence, and in how many entries.
   const stats = new Map();
-  const note = (name, entry, { mid = false, key = false, poss = false } = {}) => {
+  const note = (name, entry, { mid = false, key = false, poss = false, label = false } = {}) => {
     const k = normalize(name);
     if (!k) return;
-    const s = stats.get(k) || { name, entries: new Set(), mid: 0, keys: 0, poss: 0 };
+    const s = stats.get(k) || { name, entries: new Set(), mid: 0, keys: 0, poss: 0, label: 0, seen: 0 };
     s.entries.add(entry.ref);
+    s.seen++;
     if (mid) s.mid++;
     if (key) s.keys++;
     // "Jane's eyes" is how a source writes about a person. A common noun is
     // rarely written that way, which is most of what tells them apart.
     if (poss) s.poss++;
+    // Written as "STABLE CORE:" — a heading this record fills in.
+    if (label) s.label++;
     stats.set(k, s);
   };
   for (const e of entries) {
-    for (const r of e.runs) note(r.name, e, { mid: r.midSentence, poss: r.possessive });
+    for (const r of e.runs) note(r.name, e, { mid: r.midSentence, poss: r.possessive, label: r.label });
     for (const k of capitalisedKeys(e.keys)) note(k, e, { key: true });
   }
+  /**
+   * Text that is nearly always written as a heading is the shape of the record,
+   * not somebody in it. A source that files every character the same way
+   * repeats its own headings more often than it names anyone, and repetition
+   * is exactly what would otherwise promote them.
+   */
+  const isFieldLabel = (s) => s && s.label > 0 && s.label >= s.seen - s.keys && s.poss === 0;
   ctx.nameStats = stats;
   const proper = (name, entry) => {
     const s = stats.get(normalize(name));
@@ -430,6 +482,13 @@ function discoverEntities(ctx) {
     if (known().includes(key) || (!key.includes(' ') && known().some((k) => k.split(' ').includes(key)))) continue;
     const words = s.name.replace(/^The\s+/, '').split(/\s+/);
     if (s.entries.size < 2 || (words.length < 2) || (s.mid === 0 && s.keys === 0)) continue;
+    if (isFieldLabel(s)) continue;
+    // Recurring capitalised words are not yet somebody. A source says a name is
+    // a name in one of two ways: it writes "Jane's", or it lists the words as a
+    // keyword to look the thing up by. A phrase that does neither — "Full
+    // Cowling", "Ultimate Moves" — is vocabulary this world happens to
+    // capitalise, and inventing a person from it is how a technique became one.
+    if (s.poss === 0 && s.keys === 0) continue;
     const headWord = /^\d+$/.test(words[words.length - 1]) ? words[words.length - 2] : words[words.length - 1];
     let type = typeOfWord(headWord);
     const around = entries.filter((e) => s.entries.has(e.ref)).map((e) => e.content).join(' ');
@@ -443,12 +502,26 @@ function discoverEntities(ctx) {
   }
 
   // First names, and surnames nobody else shares: once every person is known.
-  for (const entity of ctx.entities.filter((x) => x.type === 'person')) {
+  //
+  // Only for somebody this source actually introduces — an entry that defines
+  // them, or one that opens with their name. "Aurelio" means Aurelio Fontana
+  // because some entry says who he is. A two-word name met only in passing
+  // might be an epithet, a technique or a heading, and letting half of it stand
+  // for the whole makes the ordinary word "Hero" evidence that a Hero Killer
+  // is in a sentence about a Hero Course.
+  const introduced = new Set(entries.flatMap((e) => [e.defines, e.profileOf]).filter(Boolean));
+  // Words this source also uses as ordinary words. "All For One" is a name, but
+  // "all" and "one" are not ways of saying it, and treating them as such makes
+  // every sentence in the book a mention of him.
+  const ordinary = new Set();
+  for (const e of entries) for (const w of String(e.content).match(/\b[a-z][a-z'’-]{1,}\b/g) || []) ordinary.add(w);
+  for (const entity of ctx.entities.filter((x) => x.type === 'person'
+    && (x.profileEntries.length || introduced.has(x) || ctx.declared?.some?.((d) => normalize(d.local_name) === normalize(x.name))))) {
     const parts = entity.name.split(/\s+/).filter((w) => !/^(Don|Donna|Mr|Mrs|Ms|Dr|Lord|Lady|Sir|Captain|The)$/.test(w));
     if (parts.length < 2) continue;
     for (const part of [parts[0], parts[parts.length - 1]]) {
       const shared = ctx.entities.some((x) => x !== entity && normalize(x.name).split(' ').includes(normalize(part)));
-      if (!shared) addAlias(ctx, entity, part);
+      if (!shared && !ordinary.has(part.toLowerCase())) addAlias(ctx, entity, part);
     }
   }
 
