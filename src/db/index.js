@@ -17,6 +17,28 @@ export function newId() {
   return `${t}${randomUUID().replace(/-/g, '').slice(0, 12)}`;
 }
 
+/**
+ * A few keys are built by joining two pieces of text with a NUL between them —
+ * a message's hash chain, and the fingerprint that decides an entry is already
+ * a copy. That only tells "A" + "BC" from "AB" + "C" while the NUL cannot
+ * appear in the halves, so it is refused from them here, at the one door every
+ * route, import and tool comes through.
+ *
+ * Refused, not repaired: quietly deleting a character out of what someone wrote
+ * would be a worse surprise than being told it cannot be stored. Only U+0000 is
+ * reserved; tabs, newlines, accents and emoji are ordinary writing.
+ */
+const RESERVED = String.fromCharCode(0);
+function noReserved(value, what) {
+  const s = String(value ?? '');
+  if (!s.includes(RESERVED)) return s;
+  const err = new Error(`${what} cannot contain the character U+0000, which Nexus keeps as a separator.`);
+  // Something was sent that cannot be stored, which is not the server falling
+  // over. The route layer already turns a status on the error into that answer.
+  err.status = 400;
+  throw err;
+}
+
 /** Columns added after the first release. Adding one twice is not an error. */
 const LATER_COLUMNS = [
   ['lore_entries', 'kind', "TEXT NOT NULL DEFAULT 'note'"],
@@ -805,6 +827,10 @@ function wrap(db) {
       // mention keeps its stored value rather than snapping back to a default,
       // so editing a title cannot quietly wipe an entry's timing rules.
       const e = exists ? { ...rowToEntry(row), ...incoming } : incoming;
+      // An entry's title and body are the two halves of the fingerprint that
+      // decides whether copying it here would make a second of something.
+      noReserved(e.title, 'An entry title');
+      noReserved(e.content, 'An entry');
       const num = (v, d) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? d : Number(v));
       const vals = [
         e.title || '', e.content || '', j(e.keys || []), j(e.secondaryKeys || []),
@@ -1185,6 +1211,8 @@ function wrap(db) {
     // -------------------------------------------------------------- messages
 
     addMessage({ storyId, parentId = null, role, content, model = null, meta = {} }) {
+      noReserved(role, 'A message role');
+      noReserved(content, 'A message');
       const parent = parentId ? get(`SELECT depth, chain_hash FROM messages WHERE id=?`, parentId) : null;
       const depth = parent ? parent.depth + 1 : 0;
       const siblings = get(
@@ -1245,6 +1273,7 @@ function wrap(db) {
      * key all of that are recomputed for the whole subtree.
      */
     editMessage(id, content) {
+      noReserved(content, 'A message');
       const m = get(`SELECT story_id, parent_id FROM messages WHERE id=?`, id);
       if (!m) return;
       api.transaction(() => {
