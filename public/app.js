@@ -7263,7 +7263,7 @@ const ROLE_LABEL = {
 
 /** The four things a proposal can be, from a reader's point of view. */
 const BUCKET = {
-  clear: { title: 'Understood', pip: 'understood', why: 'Nexus is sure about these.' },
+  clear: { title: 'Understood', pip: 'understood', why: 'Nexus is sure about these. Any left unticked are ones it would not decide for you; each says why.' },
   likely: { title: 'Likely', pip: 'likely', why: 'Nexus has a suggestion, on weaker evidence.' },
   decision: { title: 'Need your decision', pip: 'need your decision', why: 'Nexus has more than one reading and cannot choose between them.' },
   unsorted: { title: 'Not understood yet', pip: 'not understood yet', why: 'Not enough in the text to suggest anything useful.' },
@@ -7447,7 +7447,6 @@ function reviewCounts() {
     unsorted: of('unsorted').length,
     ready: [...review.entries.values()].filter((d) => d.approve).length,
     already: [...review.entries.values()].filter((d) => d.current === 'approved').length,
-    clearWaiting: of('clear').filter((d) => !d.approve).length,
   };
 }
 
@@ -7603,7 +7602,11 @@ function renderReview() {
         ${c.already ? `<span class="rv-pip">${num(c.already)} already saved</span>` : ''}
       </div>
     </div>
-    ${c.clearWaiting ? `<div class="row-actions" style="margin-bottom:12px"><button class="btn" id="rv-accept-clear">Accept the ${num(c.clearWaiting)} clear ${c.clearWaiting === 1 ? 'suggestion' : 'suggestions'}</button></div>` : ''}
+    ${/* There is no "accept everything Nexus is sure of" button. What Nexus is
+         sure of, and willing to decide for you, is already ticked when this
+         screen opens. The strong readings it left unticked are the ones it
+         deliberately would not decide — a button that swept them up would be a
+         way around the asking, so the asking happens on the card instead. */''}
     ${sections.map((s) => `
       <div class="edit-card" data-section="${esc(s.id)}">
         <div class="edit-head"><b>${esc(s.title)}</b><span class="n">${num(s.n)}</span>
@@ -8102,15 +8105,6 @@ function onReviewClick(e) {
 
   if (e.target.closest('#rv-change-role')) { review.changingRole = !review.changingRole; renderReview(); return; }
 
-  if (e.target.closest('#rv-accept-clear')) {
-    // Pressing this is an explicit choice even for rows that were already
-    // ticked, so it is recorded as one rather than left looking untouched.
-    for (const d of review.entries.values()) {
-      if (bucketOf(d) === 'clear' && d.current !== 'approved') { d.approve = true; d.reselected = true; }
-    }
-    renderReview();
-    return;
-  }
   if (e.target.closest('#rv-save')) { confirmSave(); return; }
 
   // Anywhere else on a card's header opens or closes it: the row is the target,

@@ -142,6 +142,21 @@ console.log('\nH  a reading already saved is left exactly alone');
     draft.entries.every((e) => e.current !== 'approved' || !e.autoSelect));
 }
 
+console.log('\nI  nothing sweeps up what Nexus would not decide');
+{
+  const app = readFileSync(join(here, '..', 'public', 'app.js'), 'utf8');
+  // What Nexus is willing to decide is already ticked when the screen opens, so
+  // an "accept everything understood" button could only ever add the readings it
+  // deliberately withheld. There is no such button, and no handler behind one.
+  ok('no bulk action accepts every strong reading at once', !/rv-accept-clear/.test(app));
+  ok('and nothing counts them as waiting to be swept up', !/clearWaiting/.test(app));
+  // The one bulk action that remains is the per-section weaker-suggestion one,
+  // which only ever touches readings that were never eligible to be ticked.
+  const handler = app.slice(app.indexOf("const acceptSection = e.target.closest('[data-accept-section]')"), app.indexOf("const acceptSection = e.target.closest('[data-accept-section]')") + 600);
+  ok('the section action still touches only the weaker suggestions', /bucketOf\(d\) === 'likely'/.test(handler), handler.split('\n')[4]?.trim().slice(0, 90));
+  ok('and never a reading held back by the safety policy', !/autoSelect|reviewRisk/.test(handler));
+}
+
 console.log('\nF  the screen uses the same rule, and says why');
 {
   const app = readFileSync(join(here, '..', 'public', 'app.js'), 'utf8');
