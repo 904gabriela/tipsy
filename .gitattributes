@@ -1,0 +1,18 @@
+# One line-ending policy, decided here rather than by whatever Git settings a
+# machine happens to have. Every text file is LF in the repository and LF when
+# checked out, so two clones of the same commit are byte-identical and a test
+# that reads a file can rely on what it will find.
+#
+# Nothing tracked here needs CRLF: the only batch file, start.bat, is LF today
+# and cmd.exe runs it the same either way, if-blocks included.
+* text=auto eol=lf
+
+# Pictures are bytes, never text.
+*.png binary
+
+# Two source files carry stray NUL bytes. Git's own content check already reads
+# them as binary and `text=auto` above keeps doing so, which is what stops them
+# being rewritten; naming them here says so out loud rather than leaving it to
+# a heuristic nobody can see.
+src/db/index.js binary
+src/package/format.js binary
