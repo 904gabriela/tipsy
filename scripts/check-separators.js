@@ -153,5 +153,92 @@ console.log('\nD  the separator is the NUL character itself');
   ok('and it is one code unit', `a${'\0'}b`.length === 3);
 }
 
+// ---------------------------------------------------------------- E
+// Because the separator is reserved, the words it joins must not contain it.
+// A message whose role ends in a NUL and one whose text begins with one would
+// otherwise join to the same string, and Nexus would read two different
+// messages as the same one. So the character is refused where it would be
+// ambiguous, out loud rather than by quietly deleting it.
+console.log('\nE  the reserved character is refused from the words it joins');
+{
+  const NUL = String.fromCharCode(0);
+  const threw = (fn) => { try { fn(); return null; } catch (e) { return e; } };
+
+  const db = open(tmp());
+  const storyId = db.createStory({ title: 'Reserved' });
+  const book = db.createLorebook('Reserved', '');
+  const base = { order: 100, enabled: true, constant: false, probability: 100, keys: [] };
+
+  // The collision this prevents, stated as the two halves that would join the
+  // same way: "user" + NUL + "x" against "user" + NUL + "x".
+  const roleErr = threw(() => db.addMessage({ storyId, role: `user${NUL}`, content: 'x' }));
+  ok('a message role containing it is refused', !!roleErr, roleErr ? roleErr.message.slice(0, 70) : 'accepted');
+  const contentErr = threw(() => db.addMessage({ storyId, role: 'user', content: `${NUL}x` }));
+  ok('a message text containing it is refused', !!contentErr, contentErr ? contentErr.message.slice(0, 70) : 'accepted');
+  ok('so the two that used to collide cannot both be stored', !!roleErr && !!contentErr);
+
+  const id = db.addMessage({ storyId, role: 'user', content: 'ordinary' });
+  const editErr = threw(() => db.editMessage(id, `edited${NUL}text`));
+  ok('editing a message to contain it is refused', !!editErr, editErr ? editErr.message.slice(0, 70) : 'accepted');
+  ok('and the message keeps what it said', db.getMessage(id).content === 'ordinary', db.getMessage(id).content);
+
+  const titleErr = threw(() => db.saveEntry(book, { ...base, title: `T${NUL}X`, content: 'body' }));
+  ok('an entry title containing it is refused', !!titleErr, titleErr ? titleErr.message.slice(0, 70) : 'accepted');
+  const bodyErr = threw(() => db.saveEntry(book, { ...base, title: 'T', content: `a${NUL}b` }));
+  ok('an entry body containing it is refused', !!bodyErr, bodyErr ? bodyErr.message.slice(0, 70) : 'accepted');
+  ok('and nothing was written by the refusals', db.listEntries(book).length === 0, `${db.listEntries(book).length} entries`);
+
+  // Refusing must mean refusing, not quietly editing what someone wrote.
+  const kept = db.saveEntry(book, { ...base, title: 'Kept', content: 'left exactly as written' });
+  const stored = db.listEntries(book).find((e) => e.id === (kept.id ?? kept));
+  ok('accepted text is stored untouched', stored.content === 'left exactly as written', JSON.stringify(stored.content));
+
+  // Ordinary writing must still go through. Only U+0000 is reserved: other
+  // control characters, accents, emoji and newlines are things people type.
+  const ordinary = [
+    ['plain roleplay', 'He looked up. "You came back," he said, and meant it.'],
+    ['newlines and tabs', 'First line\nSecond line\tindented'],
+    ['a carriage return', 'line one\r\nline two'],
+    ['accents and punctuation', 'Café — naïve, “quoted”, ellipsis… 50% ± 2'],
+    ['emoji', 'She smiled 🙂 and left 🚪'],
+    ['other control characters', `bell${String.fromCharCode(7)} escape${String.fromCharCode(27)}`],
+    ['a lone backslash and a zero', 'C:\\path\\0dir'],
+    ['CJK and RTL', '日本語のテキスト and العربية'],
+  ];
+  for (const [what, text] of ordinary) {
+    const e = threw(() => db.addMessage({ storyId, role: 'user', content: text }));
+    ok(`${what} is still accepted in a message`, !e, e ? e.message.slice(0, 60) : '');
+    const e2 = threw(() => db.saveEntry(book, { ...base, title: `t ${what}`, content: text }));
+    ok(`  and in an entry`, !e2, e2 ? e2.message.slice(0, 60) : '');
+  }
+  db.close();
+}
+
+// Package refs already refuse it, by the rule that says what a ref may contain.
+// Nothing here changes that; this only records that it is covered.
+console.log('\nF  package refs already refuse it');
+{
+  const NUL = String.fromCharCode(0);
+  const withRef = (ref) => ({
+    format: 'nexus-package',
+    version: 1,
+    package: { id: 'reserved', title: 'Reserved', role: 'story-package' },
+    entities: [],
+    characters: [{ ref: 'lead', name: 'Lead' }],
+    personas: [],
+    sources: [{
+      ref,
+      name: 'B',
+      role: 'world',
+      entries: [{ ref: 'e', title: 'T', content: 'c', enabled: true, summary: '', activation: { policy: 'always' } }],
+    }],
+    stories: [{ ref: 'st', title: 'S', cast: [{ character: 'lead', role: 'lead' }], sources: [{ source: ref }] }],
+  });
+  const errs = (p) => (validatePackage(p).errors || []);
+  ok('a source ref containing it is rejected', errs(withRef(`book${NUL}a`)).length > 0,
+    errs(withRef(`book${NUL}a`))[0]?.message.slice(0, 60));
+  ok('and an ordinary ref is still accepted', errs(withRef('book')).length === 0);
+}
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 process.exitCode = fail ? 1 : 0;
