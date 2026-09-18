@@ -7369,7 +7369,10 @@ async function openSourceReview(bookId) {
   // What needs deciding is the one thing open when the screen arrives.
   review.open = new Set(['attention', 'decision']);
   review.changingRole = false;
-  review.entities = new Map(draft.entities.map((x) => [x.ref, { ...x, decision: 'new' }]));
+  // The deterministic pass named these people. Retyping a name, changing a type,
+  // or saying somebody is one Nexus already knows makes the declaration a
+  // person's, and it is stored as one.
+  review.entities = new Map(draft.entities.map((x) => [x.ref, { ...x, decision: 'new', proposedBy: 'deterministic-conversion' }]));
   // Which entries the original file called one kind of thing and Nexus reads as
   // another. Only a real disagreement counts: a "character" entry that turns out
   // to be a faction, or a note that is really a place. A "character" entry that
@@ -7401,6 +7404,16 @@ async function openSourceReview(bookId) {
     // when they take a model's suggestion, and it is stored either way — the
     // approval is always theirs, but what they approved has a history.
     proposedBy: 'deterministic-conversion',
+    // What the person did here, which is a different question from who produced
+    // the reading. Both are recorded because neither implies the other: a
+    // deterministic reading can be one somebody sought out, and a model's
+    // suggestion can be one they took without changing a word.
+    //
+    // Only these two facts are tracked, and only when they happen. Everything
+    // else is derived at save time, because a final tick cannot tell you whether
+    // it was ever unticked.
+    reselected: false,   // they changed this entry's own selection
+    editedContent: false, // they changed what the reading says
   }]));
   // Nothing is asked of any model by opening this screen.
   review.suggestions = new Map();
@@ -7408,7 +7421,11 @@ async function openSourceReview(bookId) {
   review.trouble = new Map();
   review.spent = [];
   review.opened = new Set();
-  review.role = { role: draft.source.proposedRole.role, subject: draft.source.proposedRole.subject };
+  review.role = {
+    role: draft.source.proposedRole.role,
+    subject: draft.source.proposedRole.subject,
+    proposedBy: 'deterministic-conversion',
+  };
   review.matches = new Map(draft.matches.map((m, i) => [`${m.entity}:${i}`, { ...m, decision: 'later' }]));
   renderReview();
 }
@@ -7932,6 +7949,10 @@ function onReviewClick(e) {
     const d = review.entries.get(tick.dataset.tick);
     if (!d.approve && !isSettled(d)) { toast('Say who this is about first.'); return; }
     d.approve = !d.approve;
+    // Touching the tick at all is the person deciding, whichever way it lands.
+    // Unticking and ticking again leaves no trace in the tick itself, so it is
+    // recorded here instead of guessed from the end state.
+    d.reselected = true;
     renderReview();
     return;
   }
@@ -7950,6 +7971,7 @@ function onReviewClick(e) {
       if (PERSON_CATEGORY.includes(d.category)) d.category = 'background';
     }
     d.proposedBy = 'manual';
+    d.editedContent = true;
     d.approve = true;
     renderReview();
     return;
@@ -7959,6 +7981,7 @@ function onReviewClick(e) {
     const d = review.entries.get(unrelate.dataset.unrelate);
     d.related = d.related.filter((r) => r !== unrelate.dataset.entity);
     d.proposedBy = 'manual';
+    d.editedContent = true;
     renderReview();
     return;
   }
@@ -7967,6 +7990,7 @@ function onReviewClick(e) {
   if (entNew) {
     const ref = entNew.dataset.entNew;
     review.entities.get(ref).decision = 'new';
+    review.entities.get(ref).proposedBy = 'manual';
     for (const [, m] of review.matches) if (m.entity === ref && m.decision === 'same') m.decision = 'separate';
     renderReview();
     return;
@@ -7977,6 +8001,7 @@ function onReviewClick(e) {
     m.decision = 'same';
     review.entities.get(m.entity).decision = 'existing';
     review.entities.get(m.entity).entityId = m.candidate.entityId;
+    review.entities.get(m.entity).proposedBy = 'manual';
     renderReview();
     return;
   }
@@ -7984,6 +8009,7 @@ function onReviewClick(e) {
   if (entSkip) {
     const state = review.entities.get(entSkip.dataset.entSkip);
     state.decision = state.decision === 'skip' ? 'new' : 'skip';
+    state.proposedBy = 'manual';
     renderReview();
     return;
   }
@@ -7996,7 +8022,13 @@ function onReviewClick(e) {
     return;
   }
   const use = e.target.closest('[data-use]');
-  if (use) { review.entries.get(use.dataset.use).approve = true; renderReview(); return; }
+  if (use) {
+    const d = review.entries.get(use.dataset.use);
+    d.approve = true;
+    d.reselected = true;   // taking a suggestion is choosing it, not editing it
+    renderReview();
+    return;
+  }
 
   // ---- changing a reading that was already saved
   const correct = e.target.closest('[data-correct]');
@@ -8051,7 +8083,7 @@ function onReviewClick(e) {
     const id = acceptSection.dataset.acceptSection;
     review.open.add(id);
     for (const d of review.entries.values()) {
-      if (bucketOf(d) === 'likely' && d.current !== 'approved' && sectionOfEntry(d) === id) d.approve = true;
+      if (bucketOf(d) === 'likely' && d.current !== 'approved' && sectionOfEntry(d) === id) { d.approve = true; d.reselected = true; }
     }
     renderReview();
     return;
@@ -8060,8 +8092,10 @@ function onReviewClick(e) {
   if (e.target.closest('#rv-change-role')) { review.changingRole = !review.changingRole; renderReview(); return; }
 
   if (e.target.closest('#rv-accept-clear')) {
+    // Pressing this is an explicit choice even for rows that were already
+    // ticked, so it is recorded as one rather than left looking untouched.
     for (const d of review.entries.values()) {
-      if (bucketOf(d) === 'clear' && d.current !== 'approved') d.approve = true;
+      if (bucketOf(d) === 'clear' && d.current !== 'approved') { d.approve = true; d.reselected = true; }
     }
     renderReview();
     return;
@@ -8170,6 +8204,10 @@ function takeSuggestion(ref) {
   // approval is theirs, and the suggestion was not Nexus reading the text.
   d.proposedBy = 'model-assist';
   if (review.model) d.model = review.model;
+  // Taking a suggestion whole is choosing it, not editing it. What the reading
+  // now says came from the model, and `proposedBy` already says so; this records
+  // only that a person reached for it.
+  d.reselected = true;
   // Only a settled reading can be saved; a category on its own does not settle
   // an entry that is still about nobody in particular.
   if (isSettled(d)) d.approve = true;
@@ -8195,6 +8233,7 @@ function onReviewChange(e) {
       d.defines = null;
       d.related = d.related.filter((r) => r !== other.value);
       d.proposedBy = 'manual';
+      d.editedContent = true;
       d.approve = true;
     }
     renderReview();
@@ -8203,7 +8242,11 @@ function onReviewChange(e) {
   const relate = e.target.closest('[data-relate]');
   if (relate) {
     const d = review.entries.get(relate.dataset.relate);
-    if (relate.value && !d.related.includes(relate.value)) { d.related = [...d.related, relate.value]; d.proposedBy = 'manual'; }
+    if (relate.value && !d.related.includes(relate.value)) {
+      d.related = [...d.related, relate.value];
+      d.proposedBy = 'manual';
+      d.editedContent = true;
+    }
     renderReview();
     return;
   }
@@ -8212,19 +8255,29 @@ function onReviewChange(e) {
     const d = review.entries.get(cat.dataset.category);
     d.category = cat.value;
     d.proposedBy = 'manual';
+    d.editedContent = true;
     return;
   }
   const type = e.target.closest('[data-entity-type]');
-  if (type) { review.entities.get(type.dataset.entityType).type = type.value; renderReview(); return; }
+  if (type) {
+    const state = review.entities.get(type.dataset.entityType);
+    state.type = type.value;
+    state.proposedBy = 'manual';
+    renderReview();
+    return;
+  }
   const name = e.target.closest('[data-entity-name]');
   if (name) {
     const state = review.entities.get(name.dataset.entityName);
-    state.name = name.value.trim() || state.name;
+    const typed = name.value.trim();
+    if (typed && typed !== state.name) state.proposedBy = 'manual';
+    state.name = typed || state.name;
     renderReview();
     return;
   }
   if (e.target.id === 'rv-role') {
     review.role.role = e.target.value;
+    review.role.proposedBy = 'manual';
     if (review.role.role === 'entity-material') {
       // Choosing it again asks the question again, rather than reviving whoever
       // was named before.
@@ -8237,7 +8290,11 @@ function onReviewChange(e) {
     renderReview();
     return;
   }
-  if (e.target.id === 'rv-role-subject') { review.role.subject = e.target.value || null; renderReview(); }
+  if (e.target.id === 'rv-role-subject') {
+    review.role.subject = e.target.value || null;
+    review.role.proposedBy = 'manual';
+    renderReview();
+  }
 }
 
 /** What "Save 61 decisions" actually means, before it happens. */
@@ -8269,11 +8326,18 @@ async function saveReview() {
   review.saving = true;
   const decisions = {
     role: review.role.role === 'entity-material' && !review.role.subject ? null : review.role,
-    entities: [...review.entities.values()].map((x) => ({ ref: x.ref, type: x.type, name: x.name, aliases: x.aliases, decision: x.decision, entityId: x.entityId })),
+    entities: [...review.entities.values()].map((x) => ({
+      ref: x.ref, type: x.type, name: x.name, aliases: x.aliases, decision: x.decision, entityId: x.entityId,
+      proposedBy: x.proposedBy,
+    })),
     entries: [...review.entries.values()].filter((d) => d.approve).map((d) => ({
       ref: d.ref, entryId: d.entryId, hash: d.hash, approve: true, confidence: d.confidence,
       scope: d.scope, category: d.category, defines: d.defines, subject: d.subject, related: d.related, displayPath: d.displayPath,
       proposedBy: d.proposedBy, ...(d.proposedBy === 'model-assist' && d.model ? { model: d.model } : {}),
+      // What the person did, from what they actually did — never from how the
+      // tick ended up. An entry nobody touched arrived ticked, or it would not
+      // be in this list at all.
+      reviewAction: d.editedContent ? 'edited' : d.reselected ? 'selected' : 'preselected',
     })),
     // A match against a source nobody has organised yet has nothing to point at.
     matches: [...review.matches.values()].filter((m) => m.decision !== 'later' && m.candidate.entityId)

@@ -19,11 +19,12 @@
 // ── What Review sends ────────────────────────────────────────────────────
 //
 // {
-//   role: { role, subject: entityRef|null } | null,
-//   entities: [{ ref, type, name, aliases[], decision: 'new'|'existing'|'skip', entityId? }],
+//   role: { role, subject: entityRef|null, proposedBy } | null,
+//   entities: [{ ref, type, name, aliases[], decision: 'new'|'existing'|'skip', entityId?, proposedBy }],
 //   entries:  [{ ref, entryId, hash, approve: true|false,
 //                scope, category, defines: ref|null, subject: ref|null, related: [ref], displayPath,
-//                proposedBy: 'deterministic-conversion'|'model-assist'|'manual', model? }],
+//                proposedBy: 'deterministic-conversion'|'model-assist'|'manual', model?,
+//                reviewAction: 'preselected'|'selected'|'edited' }],
 //   matches:  [{ entity: ref, entityId, decision: 'same'|'separate'|'later' }],
 //   evidence: { entryRef: […], entityRef: […] }        // from the preview, stored as the reason
 // }
@@ -51,6 +52,27 @@ const CATEGORIES = new Set([...PERSON_CATEGORIES, ...WORLD_CATEGORIES, 'profile'
  */
 const PROPOSED_BY = new Set(['deterministic-conversion', 'model-assist', 'manual']);
 const proposedBy = (v) => (PROPOSED_BY.has(v) ? v : 'deterministic-conversion');
+
+/**
+ * What the person did with the reading, which is a different question.
+ *
+ * `proposedBy` says who produced what was approved; this says how it came to be
+ * approved. The two are independent: a reading the deterministic pass produced
+ * can be one somebody sought out and ticked themselves, and a model's suggestion
+ * can be one they took without changing a word.
+ *
+ *   preselected — it arrived ticked and was saved as it stood
+ *   selected    — a person ticked it, or ticked it again, and changed nothing
+ *   edited      — a person changed what it says before approving it
+ *
+ * Review reports this, because only Review knows it: a tick that ends up on
+ * cannot say whether it was ever off. Anything that does not report it leaves
+ * the field out entirely rather than having one guessed — an absent
+ * `reviewAction` means nobody recorded what happened, which is a fact worth
+ * keeping and not one worth replacing with a plausible value.
+ */
+const REVIEW_ACTIONS = new Set(['preselected', 'selected', 'edited']);
+const reviewAction = (v) => (REVIEW_ACTIONS.has(v) ? v : null);
 
 export class ReviewError extends Error {
   constructor(message, { status = 400, problems = [], stale = [] } = {}) {
@@ -195,6 +217,7 @@ export function applyReview(db, lorebookId, decisions = {}) {
         evidence: {
           proposedBy: proposedBy(e.proposedBy),
           ...(e.model && proposedBy(e.proposedBy) === 'model-assist' ? { model: String(e.model).slice(0, 120) } : {}),
+          ...(reviewAction(e.reviewAction) ? { reviewAction: reviewAction(e.reviewAction) } : {}),
           decidedIn: 'review',
           why: evidence[e.ref] || e.evidence || [],
         },

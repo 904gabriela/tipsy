@@ -455,5 +455,141 @@ console.log('\n   and the screen clears it when the role changes');
   ok('the save payload sends whatever the draft now holds', /role: review\.role\.role === 'entity-material' && !review\.role\.subject \? null : review\.role,/.test(app));
 }
 
+// ---------------------------------------------------------------- M
+// Provenance has two halves and they are independent: who produced the reading,
+// and what the person did with it. Both are stored; neither is inferred from the
+// other, and neither is inferred from how the tick ended up.
+console.log('\nM  who produced it, and what the person did');
+{
+  const { db: dm, id: im } = library();
+  const draft = analyzeSource(dm, im);
+  const titleOf = (ref) => draft.entries.find((x) => x.ref === ref)?.title;
+  const ev = () => Object.fromEntries(dm.raw.prepare(
+    `SELECT e.title, s.evidence FROM entry_semantics s JOIN lore_entries e ON e.id=s.entry_id WHERE e.lorebook_id=?`)
+    .all(im).map((r) => [r.title, JSON.parse(r.evidence)]));
+  const roleEv = () => JSON.parse(dm.raw.prepare('SELECT evidence FROM source_semantics WHERE lorebook_id=?').get(im).evidence);
+  const entEv = (name) => JSON.parse(dm.raw.prepare(
+    'SELECT evidence FROM source_entities WHERE lorebook_id=? AND local_name=?').get(im, name).evidence);
+
+  const high = draft.entries.find((e) => e.confidence === 'high' && complete(e));
+  const medium = draft.entries.find((e) => e.confidence === 'medium' && complete(e));
+  ok('the fixture offers a sure reading and a likely one', !!high && !!medium, `${high?.title} / ${medium?.title}`);
+  const person = draft.entities.find((x) => x.type === 'person');
+  const other = draft.entities.find((x) => x.type !== 'person');
+
+  // ---- 1, 4, 7, 8, 9, 10, in one save, so the independence is visible at once.
+  const payload = reviewed(draft, { role: false });
+  payload.role = { role: 'mixed', subject: null, proposedBy: 'deterministic-conversion' };
+  payload.entities = draft.entities.map((x) => ({
+    ref: x.ref, type: x.type, name: x.name, aliases: x.aliases, decision: 'new',
+    proposedBy: 'deterministic-conversion',
+  }));
+  for (const e of payload.entries) { e.proposedBy = 'deterministic-conversion'; e.reviewAction = 'preselected'; }
+  const mediumRow = payload.entries.find((e) => e.ref === medium.ref);
+  mediumRow.reviewAction = 'selected';
+  const editedRow = payload.entries.find((e) => e.approve && ![high.ref, medium.ref].includes(e.ref));
+  editedRow.proposedBy = 'manual';
+  editedRow.reviewAction = 'edited';
+  const assistedRow = payload.entries.find((e) => e.approve && ![high.ref, medium.ref, editedRow.ref].includes(e.ref));
+  assistedRow.proposedBy = 'model-assist';
+  assistedRow.model = 'a/model';
+  assistedRow.reviewAction = 'selected';
+  applyReview(dm, im, payload);
+  const got = ev();
+
+  ok('1  an untouched deterministic source role says the deterministic pass',
+    roleEv().proposedBy === 'deterministic-conversion', roleEv().proposedBy);
+  ok('4  an untouched entity proposal says the deterministic pass',
+    entEv(person.name).proposedBy === 'deterministic-conversion', entEv(person.name).proposedBy);
+  ok('7  an untouched sure reading says so, and that it arrived ticked',
+    got[high.title].proposedBy === 'deterministic-conversion' && got[high.title].reviewAction === 'preselected',
+    JSON.stringify([got[high.title].proposedBy, got[high.title].reviewAction]));
+  ok('8  a likely reading a person ticked is still the deterministic pass\'s reading',
+    got[medium.title].proposedBy === 'deterministic-conversion' && got[medium.title].reviewAction === 'selected',
+    JSON.stringify([got[medium.title].proposedBy, got[medium.title].reviewAction]));
+  ok('9  a reading a person edited says both halves',
+    got[titleOf(editedRow.ref)].proposedBy === 'manual' && got[titleOf(editedRow.ref)].reviewAction === 'edited',
+    JSON.stringify([got[titleOf(editedRow.ref)].proposedBy, got[titleOf(editedRow.ref)].reviewAction]));
+  ok('10 a model\'s suggestion taken whole is the model\'s reading, chosen by a person',
+    got[titleOf(assistedRow.ref)].proposedBy === 'model-assist'
+    && got[titleOf(assistedRow.ref)].reviewAction === 'selected'
+    && got[titleOf(assistedRow.ref)].model === 'a/model',
+    JSON.stringify([got[titleOf(assistedRow.ref)].proposedBy, got[titleOf(assistedRow.ref)].reviewAction]));
+  ok('the two halves do not collapse into each other',
+    got[high.title].proposedBy === got[medium.title].proposedBy
+    && got[high.title].reviewAction !== got[medium.title].reviewAction);
+  ok('and every one of them is still a person\'s approval',
+    Object.values(got).every((x) => x.decidedIn === 'review'));
+
+  // ---- 2, 3, 5, 6: reviewed again, this time by hand.
+  const byHand = reviewed(draft, { role: false });
+  byHand.role = { role: 'entity-material', subject: person.ref, proposedBy: 'manual' };
+  byHand.entities = draft.entities.map((x) => ({
+    ref: x.ref,
+    type: x.ref === other.ref ? 'faction' : x.type,
+    name: x.ref === person.ref ? `${x.name} Renamed` : x.name,
+    aliases: x.aliases,
+    decision: 'new',
+    proposedBy: [person.ref, other.ref].includes(x.ref) ? 'manual' : 'deterministic-conversion',
+  }));
+  applyReview(dm, im, byHand);
+  ok('2  a source role a person changed says it was theirs', roleEv().proposedBy === 'manual', roleEv().proposedBy);
+  ok('3  and the subject they named is both stored and attributed to them',
+    roleEv().proposedBy === 'manual'
+    && dm.raw.prepare('SELECT subject_entity_id FROM source_semantics WHERE lorebook_id=?').get(im).subject_entity_id !== null);
+  ok('5  a renamed entity says a person named it',
+    entEv(`${person.name} Renamed`).proposedBy === 'manual', entEv(`${person.name} Renamed`).proposedBy);
+  ok('6  and so does one whose type a person changed',
+    entEv(other.name).proposedBy === 'manual', entEv(other.name).proposedBy);
+  ok('an entity nobody touched still says the deterministic pass',
+    draft.entities.filter((x) => ![person.ref, other.ref].includes(x.ref))
+      .every((x) => entEv(x.name).proposedBy === 'deterministic-conversion'));
+
+  // ---- What nobody recorded stays unknown, rather than being invented.
+  const silent = reviewed(draft, { role: false });
+  silent.role = { role: 'mixed', subject: null };
+  applyReview(dm, im, silent);
+  ok('a client that reports no interaction has none stored, rather than a plausible one',
+    Object.values(ev()).every((x) => x.reviewAction === undefined),
+    JSON.stringify(Object.values(ev())[0]));
+  const junk = reviewed(draft, { role: false });
+  junk.role = { role: 'mixed', subject: null };
+  for (const e of junk.entries) e.reviewAction = 'ticked-twice-perhaps';
+  applyReview(dm, im, junk);
+  ok('and an interaction nobody recognises is dropped the same way',
+    Object.values(ev()).every((x) => x.reviewAction === undefined));
+  dm.close();
+}
+
+console.log('\n   and the screen reports both halves');
+{
+  const app = readFileSync(join(here, '..', 'public', 'app.js'), 'utf8');
+  ok('the source role carries its own provenance',
+    /review\.role = \{[\s\S]{0,220}proposedBy: 'deterministic-conversion',/.test(app));
+  ok('and so does every entity the pass named',
+    /decision: 'new', proposedBy: 'deterministic-conversion' \}\]\)\)/.test(app));
+  ok('changing the role marks it a person\'s',
+    /review\.role\.role = e\.target\.value;\s*\r?\n\s*review\.role\.proposedBy = 'manual';/.test(app));
+  ok('so does naming its subject',
+    /review\.role\.subject = e\.target\.value \|\| null;\s*\r?\n\s*review\.role\.proposedBy = 'manual';/.test(app));
+  ok('renaming an entity marks it a person\'s',
+    /if \(typed && typed !== state\.name\) state\.proposedBy = 'manual';/.test(app));
+  ok('and changing its type does too',
+    /state\.type = type\.value;\s*\r?\n\s*state\.proposedBy = 'manual';/.test(app));
+  ok('the payload sends the role\'s provenance and each entity\'s',
+    /proposedBy: x\.proposedBy,/.test(app) && /\? null : review\.role,/.test(app));
+  // The interaction: two facts recorded as they happen, and nothing read back
+  // out of the tick, which cannot say whether it was ever off.
+  ok('touching a tick is recorded when it happens',
+    /d\.approve = !d\.approve;[\s\S]{0,300}d\.reselected = true;/.test(app));
+  ok('taking a model\'s suggestion counts as choosing it, not editing it',
+    /d\.proposedBy = 'model-assist';[\s\S]{0,420}d\.reselected = true;/.test(app));
+  ok('changing what a reading says is recorded separately',
+    (app.match(/d\.editedContent = true;/g) || []).length >= 5,
+    `${(app.match(/d\.editedContent = true;/g) || []).length} paths that change a reading`);
+  ok('and the payload derives the action from those two facts alone',
+    /reviewAction: d\.editedContent \? 'edited' : d\.reselected \? 'selected' : 'preselected',/.test(app));
+}
+
 console.log(`\n${pass}/${pass + fail} checks passed.`);
 process.exitCode = fail ? 1 : 0;
