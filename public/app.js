@@ -7296,6 +7296,7 @@ const ATTENTION = {
   'legacy-link-unsupported': 'An old link the text does not support',
   'kind-disagrees': 'Stored as one kind of thing, reads as another',
   'subject-unresolved': 'Who this is about is unsettled',
+  'subject-unknown-name': 'Names somebody this source does not describe',
 };
 
 function attentionItems() {
@@ -7385,6 +7386,10 @@ async function openSourceReview(bookId) {
     ...e.proposal,
     ref: e.ref, entryId: e.entryId, hash: e.hash, title: e.title, confidence: e.confidence,
     storedKind: e.storedKind, activation: e.activation, evidence: e.evidence, unresolved: e.unresolved,
+    // Somebody the entry names where its subject goes, whom this source never
+    // describes. Display only: it changes nothing about the proposal, and the
+    // candidate Nexus could name stays exactly where it was.
+    namedButUnknown: e.namedButUnknown || [],
     current: e.current, phase: e.phase, reclassified: reclassified.has(e.ref),
     // The people Nexus actually weighed for this entry, best first: those are the
     // choices that go in front of you. Everyone else is a deliberate search away.
@@ -7718,12 +7723,19 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
   // Inside "What this says about Patrick", every row saying "about Patrick" is
   // the same three words forty times. Only what the section does not already
   // say gets repeated here, which also leaves the meta column room to breathe.
+  // Somebody the entry names where its subject goes, whom this source never
+  // describes. Nexus has a candidate it can name, and saying "about them" would
+  // put a certainty on the screen that its own evidence does not have.
+  const unknown = d.namedButUnknown || [];
   const said = d.subject ? [hideCategory ? '' : kind, hideSubject ? '' : `about ${entityName(d.subject)}`].filter(Boolean).join(' · ') : '';
   const about = d.defines ? `Describes ${entityName(d.defines)}`
-    : d.subject ? said.charAt(0).toUpperCase() + said.slice(1)
-      : hideCategory ? '' : kind;
+    : unknown.length ? [hideCategory ? '' : kind, 'who it is about is unsettled'].filter(Boolean).join(' · ')
+      : d.subject ? said.charAt(0).toUpperCase() + said.slice(1)
+        : hideCategory ? '' : kind;
   const bucket = bucketOf(d);
-  const unsure = bucket === 'decision' || bucket === 'unsorted';
+  // An entry that names somebody this source does not describe is unsure
+  // however sure its category is.
+  const unsure = bucket === 'decision' || bucket === 'unsorted' || unknown.length > 0;
   // The people Nexus weighed, in its own order, then everyone else behind a choice.
   const likelyPeople = (d.candidates || []).map((ref) => review.entities.get(ref)).filter(Boolean);
   const others = [...review.entities.values()].filter((x) => x.type === 'person' && !likelyPeople.includes(x));
@@ -7751,7 +7763,10 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
         ${unsure ? `<div class="why"><b>Nexus isn't sure${d.unresolved.length ? ':' : '.'}</b> ${esc(d.unresolved.join('. '))}</div>` : ''}
         ${bucket === 'likely' && !d.approve ? `
           <div class="rv-suggest">
-            <div>Nexus suggests: <b>${esc(about || kind)}</b></div>
+            ${/* With an unresolved name in the entry, the offer is named as an
+                 offer: what it would file this as, and under whom. */''}
+            <div>Nexus suggests: <b>${esc(unknown.length ? kind : (about || kind))}</b>${unknown.length && d.subject
+    ? `, about ${esc(entityName(d.subject))} — unconfirmed` : ''}</div>
             <button class="btn" data-use="${esc(d.ref)}">Use this suggestion</button>
           </div>` : ''}
         ${closerLook(d, bucket)}
@@ -7789,7 +7804,10 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
             <option value="">+ Add connection…</option>
             ${connectable.map((x) => `<option value="${esc(x.ref)}">${esc(x.name)}</option>`).join('')}
           </select>` : ''}
-          <div class="why">${d.subject ? `This entry is mainly about ${esc(entityName(d.subject))}; anyone connected is involved but not the point of it.` : 'Anyone connected is involved in this, without it being about them.'}</div>
+          <div class="why">${unknown.length
+    ? `${esc(entityName(d.subject) || 'The person below')} is the closest Nexus can name here, and it is a suggestion only — the entry itself names ${esc(unknown.join(' or '))}.`
+    : d.subject ? `This entry is mainly about ${esc(entityName(d.subject))}; anyone connected is involved but not the point of it.`
+      : 'Anyone connected is involved in this, without it being about them.'}</div>
         </div>
         <details><summary>Why Nexus says this</summary>
           ${d.evidence.map((v) => `<div class="fired-row"><span class="t">${esc(v.detail)}</span></div>`).join('')}
