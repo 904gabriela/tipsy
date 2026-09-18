@@ -142,6 +142,7 @@ function analyzeOne(db, lorebookId) {
   flagIdentityDoubts(ctx);
   proposeEntries(ctx);
   holdBackIncoherent(ctx);
+  flagUnderSpecifiedNames(ctx);
   groupVariants(ctx);
   proposeRole(ctx);
   return ctx;
@@ -339,6 +340,55 @@ function dropFilingPrefixes(ctx) {
  * tick that means "Nexus is sure". It drops to the middle, where it is shown
  * and asked about. Certainty is the thing being withheld, not the proposal.
  */
+/**
+ * A reading can be well evidenced and still not be one to accept on somebody's
+ * behalf. "Gran Torino's Apartment" plainly describes a place, and the place is
+ * plainly a place — but the name kept for it is "Apartment", and this library
+ * holds three different apartments written that way. Ticking that by default
+ * would quietly put a thing called Apartment in a person's library.
+ *
+ * The entry, the reading and the type are all left exactly as they are. Only
+ * the tick is withheld, with the reason said out loud, because a name is
+ * something the person should look at once.
+ */
+/**
+ * Whether Nexus should tick this reading for you, which is a narrower question
+ * than whether it believes it.
+ *
+ * It ticks only an entry that introduces something: one whose own title or
+ * opening sentence presents a person, place or group, and whose words agree.
+ * That is what `defines` means, and it is the one shape where accepting on
+ * somebody's behalf is safe — the entry is the thing's own record, so there is
+ * little left to interpret.
+ *
+ * Everything else waits, including readings the evidence strongly supports. An
+ * entry that is *about* somebody is an interpretation: which of their many
+ * aspects it belongs to, and whether it is theirs at all, are judgements a
+ * person should make once. Missing a tick costs a click. A wrong tick costs
+ * a meaning nobody chose.
+ */
+export function safeToPreselect(e) {
+  const p = e.proposal;
+  if (!p || e.confidence !== 'high') return false;
+  if (p.scope === 'entity' && !p.subject && !p.defines) return false;   // nobody named yet
+  if (e.reviewRisk) return false;
+  if (!p.defines) return false;
+  return e.current !== 'approved';
+}
+
+function flagUnderSpecifiedNames(ctx) {
+  // Words this source uses as ordinary lowercase words: a name made only of
+  // those is a description of a kind of thing, not an identity.
+  const ordinary = new Set();
+  for (const e of ctx.entries) for (const w of String(e.content).match(/\b[a-z][a-z'’-]{2,}\b/g) || []) ordinary.add(w);
+  for (const e of ctx.entries) {
+    if (!e.possessor || !e.defines || e.defines.type === 'person') continue;
+    const words = String(e.defines.name).toLowerCase().match(/[a-z'’-]{2,}/g) || [];
+    if (!words.length || !words.every((w) => ordinary.has(w))) continue;
+    e.reviewRisk = `the title says "${e.title}", and what is kept as the name — "${e.defines.name}" — could be any of several`;
+  }
+}
+
 function holdBackIncoherent(ctx) {
   const personCategory = new Set(PERSON_CATEGORIES);
   // Kinds the legacy file gives things that are not people. Unreliable as an
@@ -1178,6 +1228,12 @@ function finalize(ctx) {
     // describes. Named so review can say who they are, or organise a source
     // that does; nobody is created from this.
     namedButUnknown: e.namedButUnknown || [],
+    // Why this reading, however well evidenced, is not one Nexus should tick
+    // on your behalf. Null when there is nothing to say.
+    reviewRisk: e.reviewRisk || null,
+    // Whether Nexus should tick this for you. Deliberately narrower than
+    // confidence: see safeToPreselect.
+    autoSelect: safeToPreselect(e),
   }));
   const counts = (k) => entries.reduce((m, e) => ({ ...m, [e[k]]: (m[e[k]] || 0) + 1 }), {});
   return {

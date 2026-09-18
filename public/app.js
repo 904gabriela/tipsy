@@ -7398,8 +7398,14 @@ async function openSourceReview(bookId) {
     // choices that go in front of you. Everyone else is a deliberate search away.
     candidates: (e.subjectCandidates || []).map((c) => c.entity),
     suggested: e.proposal.subject || null,
-    // Only what Nexus is sure of starts ticked. Everything else waits for you.
-    approve: e.confidence === 'high' && isSettled(e.proposal) && e.current !== 'approved',
+    // Why this reading is worth your eye even though the evidence is strong.
+    // Being sure of a reading and being willing to accept it for you are two
+    // different things, and this is the second one.
+    reviewRisk: e.reviewRisk || null,
+    // Only what Nexus is sure of — and willing to decide for you — starts
+    // ticked. Everything else waits, which is not the same as being wrong.
+    // The rule itself lives with the reading that produced it.
+    approve: !!e.autoSelect,
     // How this reading was arrived at. It changes when a person edits it, and
     // when they take a model's suggestion, and it is stored either way — the
     // approval is always theirs, but what they approved has a history.
@@ -7777,6 +7783,11 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
         ${/* A reading you saved is not replaced by anything on this screen —
              not by Nexus reading again, and not by a closer look. */''}
         ${d.current === 'recheck' ? '<div class="why"><b>You saved a reading for this before.</b> The entry has changed since, so Nexus is reading it again. What you saved stays exactly as it is until you save a replacement.</div>' : ''}
+        ${/* Strong evidence, and still left for you: said plainly, so an
+             unticked reading does not read as Nexus having failed. */''}
+        ${d.reviewRisk ? `<div class="why"><b>Nexus reads this clearly, but left it for you.</b> ${esc(d.reviewRisk)}. Tick it if you are happy with it, or change the name first.</div>`
+    : d.confidence === 'high' && !d.approve && d.current !== 'approved' && !d.defines
+      ? `<div class="why"><b>Nexus reads this clearly, but left it for you.</b> The entry does not introduce ${esc(entityName(d.subject) || 'anybody')}; it says something about them, and which part of them it belongs to is a judgement. Tick it if you agree.</div>` : ''}
         ${unsure ? `<div class="why"><b>Nexus isn't sure${d.unresolved.length ? ':' : '.'}</b> ${esc(d.unresolved.join('. '))}</div>` : ''}
         ${bucket === 'likely' && !d.approve ? `
           <div class="rv-suggest">
