@@ -35,7 +35,7 @@
 // points it contributed, so the product can show the reasoning without
 // depending on a score.
 
-import { entryHash } from '../semantics/authority.js';
+import { entryHash, PERSON_CATEGORIES } from '../semantics/authority.js';
 import { areDistinct } from '../semantics/store.js';
 import { refAllocator } from '../package/format.js';
 import {
@@ -141,6 +141,7 @@ function analyzeOne(db, lorebookId) {
   discoverEntities(ctx);
   flagIdentityDoubts(ctx);
   proposeEntries(ctx);
+  holdBackIncoherent(ctx);
   groupVariants(ctx);
   proposeRole(ctx);
   return ctx;
@@ -323,6 +324,40 @@ function dropFilingPrefixes(ctx) {
     e.name = rest.name;
     if (rest.phase && !e.phase) e.phase = rest.phase;
     for (const k of rest.markers) if (!e.markers.includes(k)) e.markers.push(k);
+  }
+}
+
+/**
+ * Being sure who a piece of text names is not being sure what it says.
+ *
+ * A timeline record that mentions a training camp can be certain the camp is
+ * the camp and still be wrong that the entry is the camp's *skill*: places do
+ * not have skills, and an entry whose own words open "PRECONDITION:" is an
+ * account of something that happened rather than part of anybody's character.
+ *
+ * Nothing here decides a reading is wrong — only that it has not earned the
+ * tick that means "Nexus is sure". It drops to the middle, where it is shown
+ * and asked about. Certainty is the thing being withheld, not the proposal.
+ */
+function holdBackIncoherent(ctx) {
+  const personCategory = new Set(PERSON_CATEGORIES);
+  // Kinds the legacy file gives things that are not people. Unreliable as an
+  // assertion, which is why it is only ever used here to take confidence away.
+  const notAPersonKind = new Set(['place', 'item', 'event', 'faction', 'rule', 'direction']);
+  for (const e of ctx.entries) {
+    const p = e.proposal;
+    if (!p || p.scope !== 'entity' || !personCategory.has(p.category)) continue;
+    if (e.confidence !== 'high') continue;
+    const about = ctx.entities.find((x) => x.ref === (p.defines || p.subject));
+    if (about && about.type !== 'person') {
+      e.confidence = 'medium';
+      e.unresolved.push(`this reads as ${about.name}'s ${p.category}, but ${about.name} is a ${about.type}`);
+      continue;
+    }
+    if (notAPersonKind.has(e.kind)) {
+      e.confidence = 'medium';
+      e.unresolved.push(`the file keeps this as a ${e.kind}, which is not one person's ${p.category}`);
+    }
   }
 }
 
