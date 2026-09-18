@@ -14,7 +14,9 @@ import { createHash } from 'node:crypto';
 import { open } from '../src/db/index.js';
 import { analyzeSource } from '../src/conversion/analyze.js';
 import { applyReview, correctionImpact } from '../src/conversion/apply.js';
-import { createEntity, sourceOrganization, semanticViews } from '../src/semantics/store.js';
+import { createEntity, sourceOrganization, semanticViews, setSourceRole } from '../src/semantics/store.js';
+import { exportSources } from '../src/package/export.js';
+import { readFileSync } from 'node:fs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 let pass = 0; let fail = 0;
@@ -22,6 +24,7 @@ const ok = (n, c, d = '') => {
   if (c) { pass++; console.log(`  PASS  ${n}${d ? `  — ${d}` : ''}`); }
   else { fail++; console.log(`  FAIL  ${n}${d ? `  — ${d}` : ''}`); }
 };
+const threw = (fn) => { try { fn(); return null; } catch (e) { return e; } };
 const tmp = () => join(mkdtempSync(join(tmpdir(), 'tipsy-review-')), 'r.db');
 
 const ENTRIES = [
@@ -390,6 +393,66 @@ console.log('\nK  activation is not part of meaning, and never changes with it')
   const sem = db.raw.prepare('SELECT scope, category, status FROM entry_semantics WHERE entry_id=?').get(off.id);
   ok('and it was still given a meaning', !!sem && sem.status === 'approved', JSON.stringify(sem));
   db.close();
+}
+
+// ---------------------------------------------------------------- L
+console.log('\nL  only material that travels with somebody names somebody');
+{
+  // 1. The role that does support a subject keeps working.
+  const { db, id } = library();
+  const draft = analyzeSource(db, id);
+  const nora = draft.entities.find((x) => x.name === 'Nora Vale');
+  const d = reviewed(draft, { role: false });
+  d.role = { role: 'entity-material', subject: nora.ref };
+  applyReview(db, id, d);
+  const roleRow = () => db.raw.prepare('SELECT package_role, subject_entity_id FROM source_semantics WHERE lorebook_id=?').get(id);
+  ok('entity-material keeps the person it is about', roleRow().package_role === 'entity-material' && !!roleRow().subject_entity_id);
+  const subjectId = roleRow().subject_entity_id;
+  ok('and that person is the one named', db.raw.prepare('SELECT canonical_name n FROM lore_entities WHERE id=?').get(subjectId).n === 'Nora Vale');
+
+  // 3. A stale subject on another role cannot be persisted through apply.
+  const stale = reviewed(draft, { role: false });
+  stale.role = { role: 'mixed', subject: nora.ref };
+  const e = threw(() => applyReview(db, id, stale));
+  ok('applying mixed with a stale person is refused', !!e && e.status === 400,
+    e?.problems?.map((p) => p.message).join(' | ') || e?.message);
+  ok('and refusing it wrote nothing', roleRow().package_role === 'entity-material');
+
+  // The store itself will not persist it either, whatever the caller asks.
+  setSourceRole(db, { lorebookId: id, role: 'mixed', origin: 'converted', status: 'approved', subjectEntityId: subjectId });
+  ok('the store drops a person a mixed source cannot have', roleRow().package_role === 'mixed' && roleRow().subject_entity_id === null,
+    JSON.stringify(roleRow()));
+
+  // 4. And the package carries no subject for it.
+  const pkg = exportSources(db, [id]).package;
+  const src = pkg.sources.find((s) => s.role === 'mixed');
+  ok('the exported source says mixed', !!src, JSON.stringify(pkg.sources.map((s) => s.role)));
+  ok('and names nobody as its subject', src && src.subject === undefined, JSON.stringify(src?.subject));
+
+  // 5. Choosing entity-material again needs a subject said out loud.
+  const back = reviewed(draft, { role: false });
+  back.role = { role: 'entity-material' };
+  const e2 = threw(() => applyReview(db, id, back));
+  ok('going back to entity-material with nobody named is refused', !!e2 && e2.status === 400,
+    e2?.problems?.map((p) => p.message).join(' | '));
+  ok('and the stale person was not revived', roleRow().subject_entity_id === null, JSON.stringify(roleRow()));
+  const back2 = reviewed(draft, { role: false });
+  back2.role = { role: 'entity-material', subject: nora.ref };
+  applyReview(db, id, back2);
+  ok('naming them again restores it', roleRow().package_role === 'entity-material' && roleRow().subject_entity_id === subjectId);
+  db.close();
+}
+
+console.log('\n   and the screen clears it when the role changes');
+{
+  // 2. The draft the screen holds, and what its own handler does to it. Read
+  // from the file rather than a browser: the rule is one branch, and a browser
+  // test of it would prove less, not more.
+  const app = readFileSync(join(here, '..', 'public', 'app.js'), 'utf8');
+  const handler = app.slice(app.indexOf("if (e.target.id === 'rv-role')"), app.indexOf("if (e.target.id === 'rv-role-subject')"));
+  ok('choosing another role clears the person', /else\s*\{[\s\S]*review\.role\.subject = null;/.test(handler), handler.split('\n').length + ' lines');
+  ok('and choosing entity-material asks again rather than reviving', /if \(!review\.role\.subject\)/.test(handler));
+  ok('the save payload sends whatever the draft now holds', /role: review\.role\.role === 'entity-material' && !review\.role\.subject \? null : review\.role,/.test(app));
 }
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);

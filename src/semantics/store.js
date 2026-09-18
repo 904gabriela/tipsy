@@ -91,8 +91,14 @@ export function entityUsage(db, entityId) {
  * and the package is a narrative framework. A native package's declared role
  * is stored as approved; an inferred one only ever as proposed.
  */
-export function setSourceRole(db, { lorebookId, role, origin, status, confidence = null, evidence = {}, domains = [], subjectEntityId = null, ownerStoryId = null }) {
+export function setSourceRole(db, { lorebookId, role, origin, status, confidence = null, evidence = {}, domains = [], subjectEntityId: askedSubject = null, ownerStoryId = null }) {
   if (!PACKAGE_ROLES.includes(role)) throw new SemanticError(`"${role}" is not a package role.`);
+  // Only material that travels with somebody has somebody to travel with. A
+  // subject on any other role is inert — nothing reads it, because everything
+  // that reads it asks for entity-material first — and inert data that names a
+  // person is worse than none: it says this source is theirs when it is not.
+  // So it does not persist, whatever a caller asks for.
+  const subjectEntityId = role === 'entity-material' ? askedSubject : null;
   if (subjectEntityId && !getEntity(db, subjectEntityId)) throw new SemanticError('No such entity for this source to be about.');
   if (ownerStoryId && !q(db).get(`SELECT 1 FROM stories WHERE id=?`, ownerStoryId)) throw new SemanticError('No such story to own this source.');
   if (subjectEntityId && ownerStoryId) throw new SemanticError("A source is either reusable material about someone, or one story's own material — not both.");

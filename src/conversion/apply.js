@@ -123,6 +123,12 @@ export function applyReview(db, lorebookId, decisions = {}) {
       used.add(role.subject);
     }
     if (role.role === 'entity-material' && !role.subject) fail('role', 'Material about someone needs to say who.');
+    // The other way round: a role that is not material about one person cannot
+    // carry one. Said rather than silently dropped, so a screen that sent a
+    // stale subject learns it did.
+    if (role.role !== 'entity-material' && role.subject) {
+      fail('role', `A ${role.role} source is not material about one person, so it cannot name one as its subject.`);
+    }
   }
   for (const ref of used) {
     const x = byRef.get(ref);

@@ -8225,8 +8225,14 @@ function onReviewChange(e) {
   }
   if (e.target.id === 'rv-role') {
     review.role.role = e.target.value;
-    if (review.role.role === 'entity-material' && !review.role.subject) {
-      review.role.subject = [...review.entities.values()].find((x) => x.type === 'person')?.ref || null;
+    if (review.role.role === 'entity-material') {
+      // Choosing it again asks the question again, rather than reviving whoever
+      // was named before.
+      if (!review.role.subject) review.role.subject = [...review.entities.values()].find((x) => x.type === 'person')?.ref || null;
+    } else {
+      // Only material that travels with somebody names somebody. Saying this
+      // source is something else takes that claim away with it.
+      review.role.subject = null;
     }
     renderReview();
     return;
