@@ -453,7 +453,7 @@ export function canonicalPackage(pkg) {
     stories: (pkg.stories || []).map((st) => {
       const lead = (st.cast || []).filter((c) => c.role === 'lead');
       const rest = (st.cast || []).filter((c) => c.role !== 'lead').sort((a, b) => (a.character < b.character ? -1 : a.character > b.character ? 1 : 0));
-      const pair = (a, b) => `${a.source} ${a.entry}` < `${b.source} ${b.entry}` ? -1 : 1;
+      const pair = (a, b) => `${a.source}\0${a.entry}` < `${b.source}\0${b.entry}` ? -1 : 1;
       return {
         ref: st.ref,
         title: st.title,

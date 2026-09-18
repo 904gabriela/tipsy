@@ -9,10 +9,3 @@
 
 # Pictures are bytes, never text.
 *.png binary
-
-# Two source files carry stray NUL bytes. Git's own content check already reads
-# them as binary and `text=auto` above keeps doing so, which is what stops them
-# being rewritten; naming them here says so out loud rather than leaving it to
-# a heuristic nobody can see.
-src/db/index.js binary
-src/package/format.js binary

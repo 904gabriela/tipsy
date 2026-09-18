@@ -879,12 +879,12 @@ function wrap(db) {
         const wanted = new Set(entryIds);
         const source = api.listEntries(fromId).filter((e) => wanted.has(e.id));
         const seen = new Set(api.listEntries(toId)
-          .map((e) => `${(e.title || '').trim()} ${(e.content || '').trim()}`));
+          .map((e) => `${(e.title || '').trim()}\0${(e.content || '').trim()}`));
 
         let copied = 0;
         let already = 0;
         for (const e of source) {
-          const fingerprint = `${(e.title || '').trim()} ${(e.content || '').trim()}`;
+          const fingerprint = `${(e.title || '').trim()}\0${(e.content || '').trim()}`;
           if (seen.has(fingerprint)) { already++; continue; }
           seen.add(fingerprint);
           // No id, so this inserts rather than overwrites the original.
@@ -1507,7 +1507,7 @@ function rowToEntry(r) {
  */
 function hashChain(parentHash, role, content) {
   let h = 0x811c9dc5;
-  const s = `${parentHash} ${role} ${content}`;
+  const s = `${parentHash}\0${role}\0${content}`;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
     h = Math.imul(h, 0x01000193) >>> 0;
