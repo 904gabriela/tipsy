@@ -206,6 +206,44 @@ console.log('\nwhat needs a person');
   ok('the choice offered is general material first', /General world material/.test(body));
   ok('leaving it alone is offered', /Leave for later/.test(body));
   ok('and nothing on the card states a confidence', !/\b(high|medium|low) confidence\b/i.test(body));
+  // An entry naming somebody the source never introduces needs a source with
+  // enough of a cast for the analyser to notice, which a fixture this size
+  // cannot make. Said out loud rather than passing quietly: the card for that
+  // case is exercised against a real source, not here.
+  const asks = await text('.rv-ask[data-ask] .rv-ask-head b');
+  if (!/names somebody/i.test(asks)) {
+    console.log('  NOTE  this fixture produces no unknown-name entry, so that card is not exercised here');
+  }
+}
+
+// What a card shows before anything is opened. Everything inside a <details>
+// is a tap away and does not count as primary.
+const PRIMARY = (find) => `(() => {
+  const c = ${find};
+  if (!c) return null;
+  const copy = c.cloneNode(true);
+  for (const d of copy.querySelectorAll('details')) d.remove();
+  return copy.textContent.replace(/\\s+/g, ' ').trim();
+})()`;
+const DETAILS = (find) => `(() => {
+  const c = ${find};
+  if (!c) return null;
+  return [...c.querySelectorAll('details')].map(d => d.textContent.replace(/\\s+/g,' ')).join(' ');
+})()`;
+const ASK_CARD = `[...document.querySelectorAll('.rv-ask[data-ask] .edit-card')].find(x => !x.querySelector('.edit-body').hidden)`;
+
+console.log("\nthe analyser's workings are not the decision");
+{
+  const primary = await ev(PRIMARY(ASK_CARD));
+  const details = await ev(DETAILS(ASK_CARD));
+  ok('no evidence score on the primary card', !/\d+\s*points?\b/i.test(primary), (primary || '').slice(0, 90));
+  ok('no "likeliest subject" wording on it either', !/likeliest|evidence is thin/i.test(primary));
+  ok('and nothing about how sure Nexus is', !/\b(high|medium|low)\b/i.test(primary));
+  ok('but the workings are still there, one tap down', /How sure Nexus is/.test(details || ''));
+  ok('asking a model is not a primary action', !/look closer/i.test(primary));
+  ok('though it is still offered underneath', /look closer/i.test(details || ''));
+  ok('and the semantic controls are still reachable',
+    /Type of information/.test(details || '') && /Also connected to/.test(details || ''));
 }
 
 console.log('\nleaving something for later costs nothing');
@@ -240,13 +278,27 @@ console.log('\nchoosing general world material');
   })()`);
   ok('and the reading it produced is shown back', /World information/.test(said), (said.match(/✓[^.]*\./) || [''])[0].slice(0, 90));
   ok('including the category it was recorded under', /World information · \w/.test(said));
+  // Once a person has answered, their answer is the card, and what Nexus was
+  // unsure of before it is history kept underneath.
+  const find = `document.querySelector('[data-entry-ref="${picked}"]')`;
+  const primary = await ev(PRIMARY(find));
+  ok('the decision is what the card now says', /✓ World information/.test(primary || ''));
+  ok('and it says whose decision it was', /Decided by you/.test(primary || ''));
+  ok("Nexus's earlier doubt is no longer on the primary card",
+    !/could not settle|isn't sure|likeliest/i.test(primary || ''), (primary || '').slice(0, 100));
+  ok('and the reading can still be changed', /Change this reading/.test(await ev(`${find}.textContent`)));
 }
 
 console.log('\nweaker suggestions are offered, never applied in bulk');
 {
   await click('#sheet-body .edit-card[data-section="optional"] .edit-head');
-  ok('they are grouped rather than listed', (await count('[data-section="optional"] .rv-ask[data-optional]')) >= 1,
-    await text('[data-section="optional"] .rv-ask[data-optional] .rv-ask-head b'));
+  const subs = await count('[data-section="optional"] [data-optional]');
+  ok('they are grouped rather than listed', subs >= 1, await text('[data-section="optional"] [data-optional] > .edit-head > b'));
+  ok('and each group is shut until it is asked for',
+    await count('[data-section="optional"] [data-optional] .edit-card') === 0, `${subs} groups, no cards rendered`);
+  await ev(`document.querySelector('[data-section="optional"] [data-optional] .edit-head').click()`);
+  await sleep(700);
+  ok('opening one shows its suggestions', await count('[data-section="optional"] [data-optional] .edit-card') > 0);
   ok('no control accepts a whole group', await count('[data-accept-section]') === 0);
   const labels = await text('[data-section="optional"] button');
   ok('and no button offers to accept them all', !/accept all|use the \d+|all \d+/i.test(labels));

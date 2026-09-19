@@ -1870,12 +1870,25 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .rv-excerpt .btn { margin-top: 7px; }
 
 /* A decision, said back the moment it is made, including the part of it that
-   was not asked for. */
+   was not asked for. Once it is there it is the top of the card: what Nexus
+   was unsure of beforehand is history, and history is one tap down. */
 .rv-said-back {
   margin: 9px 0; padding: 8px 11px; border-radius: 9px;
   background: var(--accent-soft); border: 1px solid var(--accent);
   font-size: 12.5px; color: var(--ink);
 }
+.rv-by { display: block; margin-top: 3px; font-size: 11.5px; color: var(--ink-soft); }
+.rv-by-line { margin: 7px 0; font-size: 11.5px; color: var(--ink-faint); }
+
+/* The question itself, which is the point of the card and the only thing on it
+   set in the reading size. */
+.rv-question { margin: 9px 0 8px; font-size: 14px; color: var(--ink); }
+.rv-choices { margin-bottom: 2px; }
+
+/* One disclosure inside a card is a detail; three stacked with borders is a
+   form. They stay quiet until opened. */
+.edit-body > details { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 8px; }
+.edit-body > details > summary { font-size: 12.5px; color: var(--ink-soft); padding: 3px 0; }
 .rv-hint { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-faint); margin: 8px 0 4px; }
 .rv-flag {
   display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-style: normal;

@@ -168,8 +168,13 @@ console.log('\nF  the screen uses the same rule, and says why');
 {
   const app = readFileSync(join(here, '..', 'public', 'app.js'), 'utf8');
   ok('the tick follows the policy rather than repeating it', /approve: !!e\.autoSelect,/.test(app));
-  ok('and a held-back reading explains itself rather than looking like a failure',
-    /Nexus reads this clearly and still left it for you/.test(app));
+  // It is asked as a question about the entry, not confessed as something the
+  // analyser failed at: a strong reading left unticked must not read as a
+  // failure, and the reason it waits is said where it waits.
+  ok('and a held-back reading asks rather than apologises',
+    /rather than introducing them\. Save it as being about them\?/.test(app));
+  ok('and its group says why such readings wait',
+    /Read clearly, and still not accepted on your behalf\./.test(app));
 }
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);

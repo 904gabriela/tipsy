@@ -7337,15 +7337,15 @@ const bucketOf = (d) => {
 const GROUP = {
   sorted: {
     title: 'Sorted',
-    why: 'Nexus was sure enough to decide these for you, and they will be saved. Open any one to look at it, or take it out.',
+    why: 'Nexus decided these, and they will be saved. Open any one to look at it, or take it out.',
   },
   needs: {
     title: 'Needs you',
-    why: 'A real decision each — the kind Nexus will not make on your behalf. You can leave any of them for later.',
+    why: 'Nexus will not decide these for you. Leaving any of them for later is a real answer.',
   },
   optional: {
     title: 'Optional',
-    why: 'Suggestions on weaker evidence. Use the ones you like. Skipping them is fine, and nothing is lost by leaving them alone.',
+    why: 'Weaker suggestions. Use the ones you like; skipping them is fine.',
   },
 };
 
@@ -7354,8 +7354,12 @@ const groupOf = (d) => {
   if (d.current === 'approved' || d.approve) return 'sorted';
   const b = bucketOf(d);
   if (b === 'decision' || b === 'unsorted') return 'needs';
-  // Strong evidence that Nexus deliberately would not act on by itself.
-  if (d.confidence === 'high') return 'needs';
+  // Strong evidence about somebody that Nexus deliberately would not act on by
+  // itself: it says something about a person rather than introducing them, and
+  // which part of them it belongs to is a judgement. A strong reading of
+  // material that is nobody's asks no such question — it is simply a suggestion
+  // nothing can accept on your behalf, so it waits with the others.
+  if (d.confidence === 'high' && d.scope === 'entity') return 'needs';
   // An entry naming somebody this source never describes is a real question
   // however sure the rest of the reading is — and the answer is not always the
   // same one, so it is never answered here.
@@ -7377,15 +7381,15 @@ const askOf = (d) => {
 const ASK = {
   about: {
     title: 'About a person, or general material?',
-    why: 'Nexus could not settle who these are about. Often the answer is that they are not about anybody in particular.',
+    why: 'Often the answer is that they are not about anybody in particular.',
   },
   named: {
     title: 'Names somebody this source never describes',
-    why: 'Each of these names a person the rest of the source never introduces. What that means differs from one to the next, so Nexus does not guess.',
+    why: 'Each names somebody the source never introduces, and what that means differs each time.',
   },
   confirm: {
     title: 'Confirm one reading',
-    why: 'Nexus reads these clearly but will not accept them for you, because they say something about somebody rather than introducing them.',
+    why: 'Read clearly, and still not accepted on your behalf.',
   },
 };
 
@@ -7702,11 +7706,18 @@ function renderReview() {
       // Deliberately no action that accepts a whole group. Sharing a category
       // is not evidence that a hundred readings are right, and a button that
       // said otherwise would undo the care taken over what arrives ticked.
-      rows: [...groups.entries()].map(([key, rows]) => `
-        <div class="rv-ask" data-optional="${esc(key)}">
-          <div class="rv-ask-head"><b>${esc(OPTIONAL_GROUP[key])}</b><span class="n">${num(rows.length)}</span></div>
-          ${rows.map((x) => entryCard(x, { compact: true })).join('')}
-        </div>`),
+      // Each shut until it is asked for. Opening Optional should show you what
+      // is in it, not a hundred and nine cards.
+      rows: [...groups.entries()].map(([key, rows]) => {
+        const id = `opt-${key}`;
+        return `
+        <div class="edit-card" data-section="${esc(id)}" data-optional="${esc(key)}">
+          <div class="edit-head"><b>${esc(OPTIONAL_GROUP[key])}</b><span class="n">${num(rows.length)}</span>
+            <button class="fold" aria-expanded="${review.open.has(id)}">▾</button></div>
+          <div class="edit-body"${review.open.has(id) ? '' : ' hidden'}>${review.open.has(id)
+    ? rows.map((x) => entryCard(x, { compact: true })).join('') : ''}</div>
+        </div>`;
+      }),
     });
   }
 
@@ -7925,9 +7936,14 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
     : d.subject && !unknown.length ? said.charAt(0).toUpperCase() + said.slice(1)
       : hideCategory ? '' : kind;
   const bucket = bucketOf(d);
-  // An entry that names somebody this source does not describe is unsure
-  // however sure its category is.
-  const unsure = bucket === 'decision' || bucket === 'unsorted' || unknown.length > 0;
+  // Whose reading this now is. Once somebody has answered, their answer is the
+  // state of the card and what Nexus thought before it is history — kept, and
+  // kept underneath. The provenance this reads was already recorded; it is only
+  // being shown.
+  const decided = isSettled(d) && (d.proposedBy === 'manual' || d.proposedBy === 'model-assist');
+  // Choosing general material can move a person-shaped category to background.
+  // Only say so when it actually happened.
+  const movedCategory = !!d.categoryWas && d.categoryWas !== d.category;
   // The people Nexus weighed, in its own order, then everyone else behind a choice.
   const likelyPeople = (d.candidates || []).map((ref) => review.entities.get(ref)).filter(Boolean);
   const others = [...review.entities.values()].filter((x) => x.type === 'person' && !likelyPeople.includes(x));
@@ -7964,87 +7980,100 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
         ${excerpt ? `<div class="rv-excerpt">${esc(excerpt)}…
           <button class="btn quiet" data-entry-open="${esc(d.entryId)}">Open the entry</button>
         </div>` : ''}
+        ${/* Once a person has decided, their decision is the state of the card.
+             What Nexus was unsure of before is history, and history belongs
+             under the disclosure, not above the answer. */''}
+        ${decided ? `<div class="rv-said-back">✓ ${esc(readingLabel(d))}${movedCategory
+    ? ` — Nexus had read it as ${esc((CATEGORY_LABEL[d.categoryWas] || d.categoryWas).toLowerCase())}, and recorded it as ${esc((CATEGORY_LABEL[d.category] || d.category).toLowerCase())}` : ''}.<span class="rv-by">${d.proposedBy === 'manual' ? 'Decided by you' : 'You used a closer look'}</span></div>` : ''}
+        ${!decided && d.approve && d.current !== 'approved' ? '<div class="rv-by-line">Decided by Nexus</div>' : ''}
         ${/* The question, in the words of the decision rather than of the thing
-             the analyser could not do. */''}
-        ${ask === 'named' ? `<div class="why"><b>This entry names ${esc(unknown.join(' and '))}, and nothing in this source introduces ${unknown.length === 1 ? 'them' : 'any of them'}.</b>
-          If this entry is their own entry, Nexus cannot record that yet — saying so is not something this screen can do, and a closer look is the only route to it today.
-          If it is not, you can still say what it is about below.</div>` : ''}
-        ${ask === 'confirm' ? `<div class="why"><b>Nexus reads this clearly and still left it for you.</b> ${d.reviewRisk ? `${esc(d.reviewRisk)}.`
-    : `The entry does not introduce ${esc(entityName(d.subject) || 'anybody')}; it says something about them, and which part of them it belongs to is a judgement.`} Tick it if you agree.</div>` : ''}
-        ${ask === 'about' ? `<div class="why">Nexus could not settle who this is about.${d.unresolved.length ? ` ${esc(d.unresolved.join('. '))}` : ''} If it is not about anybody in particular, say so below.</div>` : ''}
-        ${!ask && unsure ? `<div class="why"><b>Nexus isn't sure${d.unresolved.length ? ':' : '.'}</b> ${esc(d.unresolved.join('. '))}</div>` : ''}
-        ${/* A choice already made, said back including the part of it that was
-             not asked for: choosing general world material can move the entry
-             to a different category, and that is not hidden. */''}
-        ${d.proposedBy === 'manual' && isSettled(d) ? `<div class="rv-said-back">✓ ${esc(readingLabel(d))}${d.scope !== 'entity' && PERSON_CATEGORY.includes(d.category) === false && d.category === 'background'
-    ? ' — Nexus recorded it as general background' : ''}. This is ticked to be saved.</div>` : ''}
-        ${bucket === 'likely' && !d.approve ? `
+             the analyser could not do. No evidence, no scores: those are real
+             and they are one tap away. */''}
+        ${!decided && ask === 'named' ? `<div class="rv-question">Nexus thinks this may be ${esc(unknown.join(' and '))}’s own entry, but it cannot record that yet.</div>` : ''}
+        ${!decided && ask === 'confirm' ? `<div class="rv-question">${d.reviewRisk ? `${esc(d.reviewRisk)}. Tick it if you are happy with it.`
+    : `This says something about ${esc(entityName(d.subject) || 'somebody')} rather than introducing them. Save it as being about them?`}</div>` : ''}
+        ${!decided && ask === 'about' ? '<div class="rv-question">What is this about?</div>' : ''}
+        ${bucket === 'likely' && !d.approve && !ask ? `
           <div class="rv-suggest">
-            ${/* With an unresolved name in the entry, the offer is named as an
-                 offer: what it would file this as, and under whom. */''}
             <div>Nexus suggests: <b>${esc(unknown.length ? kind : (about || kind))}</b>${unknown.length && d.subject
     ? `, about ${esc(entityName(d.subject))} — unconfirmed` : ''}</div>
             <button class="btn" data-use="${esc(d.ref)}">Use this suggestion</button>
           </div>` : ''}
-        ${closerLook(d, bucket)}
-        ${d.reclassified ? `<div class="why">The original file called this “${esc(d.storedKind)}”. Nexus reads it as ${esc(d.defines ? `a ${TYPE_LABEL[review.entities.get(d.defines)?.type]?.toLowerCase() || 'thing'}` : kind.toLowerCase())}. The original file is not changed.</div>` : ''}
         ${d.correcting ? correctionNote(d) : ''}
-        ${choose || d.pick || d.correcting || !isSettled(d) ? `
-          <div class="field">
-            <label>${ask === 'confirm' ? 'Is this about somebody else?' : 'What is this about?'}</label>
-            ${/* General material first, because for most of what lands here that
-                 is the true answer, and it used to be offered last after two or
-                 three people the entry never mentions. */''}
-            <div class="chips">
-              ${choiceChip(d.ref, '', 'General world material', !d.subject && !d.defines && isSettled(d))}
-              ${likelyPeople.map((p) => choiceChip(d.ref, p.ref, p.name, d.subject === p.ref)).join('')}
-            </div>
-            ${others.length ? `
-              <div class="rv-hint" style="margin-top:8px">Someone else</div>
-              <select data-subject-other="${esc(d.ref)}">
-                <option value="">Choose someone else…</option>
-                ${others.map((p) => `<option value="${esc(p.ref)}"${d.subject === p.ref ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}
-              </select>` : ''}
+        ${/* The choices, and only the ones worth putting in front of somebody.
+             Where the entry names a person this source never introduces, the
+             people the analyser guessed at are not offered here: they are
+             usually wrong, and one of them being right is not worth the other
+             two looking like answers. They are still under "other readings". */''}
+        ${!decided && (choose || d.pick || d.correcting || !isSettled(d)) ? `
+          <div class="chips rv-choices">
+            ${choiceChip(d.ref, '', 'General world material', !d.subject && !d.defines && isSettled(d))}
+            ${ask === 'named' ? '' : likelyPeople.map((p) => choiceChip(d.ref, p.ref, p.name, d.subject === p.ref)).join('')}
           </div>` : ''}
-        ${hideCategory && isSettled(d) ? '' : `
-          <div class="field">
-            <label>Type of information</label>
-            <select data-category="${esc(d.ref)}">
-              ${Object.entries(CATEGORY_LABEL).map(([k, label]) => `<option value="${k}"${d.category === k ? ' selected' : ''}>${esc(label)}</option>`).join('')}
-            </select>
-          </div>`}
-        <div class="field">
-          <label>Also connected to</label>
-          ${d.related.length ? `<div class="chips">
-            ${d.related.map((r) => `<button class="chip-tag" data-unrelate="${esc(d.ref)}" data-entity="${esc(r)}" aria-pressed="true">${esc(entityName(r))} ✕</button>`).join('')}
-          </div>` : '<div class="why">Nobody else.</div>'}
-          ${connectable.length ? `<select data-relate="${esc(d.ref)}">
-            <option value="">+ Add connection…</option>
-            ${connectable.map((x) => `<option value="${esc(x.ref)}">${esc(x.name)}</option>`).join('')}
-          </select>` : ''}
-          <div class="why">${unknown.length
-    ? `${esc(entityName(d.subject) || 'The person below')} is the closest Nexus can name here, and it is a suggestion only — the entry itself names ${esc(unknown.join(' or '))}.`
-    : d.subject ? `This entry is mainly about ${esc(entityName(d.subject))}; anyone connected is involved but not the point of it.`
-      : 'Anyone connected is involved in this, without it being about them.'}</div>
-        </div>
         ${/* Leaving it is a real answer and must cost nothing: it ticks
-             nothing, writes nothing, and changes no count. */''}
-        ${ask ? `<div class="row-actions" style="margin-top:10px">
+             nothing, writes nothing, and changes no count. Asking a model is
+             offered beside it only where no manual way to answer exists. */''}
+        ${ask && !decided ? `<div class="row-actions" style="margin-top:9px">
           <button class="btn quiet" data-later="${esc(d.ref)}">Leave for later</button>
+          ${ask === 'named' && !review.suggestions.has(d.ref) && !review.looking.has(d.ref)
+    ? `<button class="btn quiet" data-look="${esc(d.ref)}">Ask Nexus to look closer</button>` : ''}
         </div>` : ''}
+        ${/* Only what a closer look came back with. The offer itself is the
+             quiet button above, not a second one with a paragraph beside it. */''}
+        ${ask === 'named' && (review.suggestions.has(d.ref) || review.looking.has(d.ref)) ? closerLook(d, bucket) : ''}
         ${/* Everything the analyser knows, one level down. None of it is
              deleted; it is simply not the first thing between you and a
              decision. The warnings that used to have a feed of their own are
-             here, on the entry each was about. */''}
-        <details><summary>${ask ? 'Why Nexus is asking' : 'Why Nexus says this'}</summary>
+             here, on the entry each was about, and so are the scores. */''}
+        <details><summary>${ask && !decided ? 'Why Nexus is asking' : 'Why Nexus said this'}</summary>
           ${attentionFor(d.ref).map((a) => `<div class="fired-row"><span class="t"><b>${esc(a.title)}</b> — ${esc(a.message)}</span></div>`).join('')}
+          ${d.unresolved.length ? `<div class="fired-row"><span class="t">${esc(d.unresolved.join('. '))}</span></div>` : ''}
           ${d.evidence.map((v) => `<div class="fired-row"><span class="t">${esc(v.detail)}</span></div>`).join('')}
           <div class="fired-row"><span class="t">How sure Nexus is</span><span class="w">${esc(d.confidence)}</span></div>
           <div class="fired-row"><span class="t">Read as</span><span class="w">${esc(d.scope)} · ${esc(kind)}</span></div>
           ${d.defines ? `<div class="fired-row"><span class="t">Introduces</span><span class="w">${esc(entityName(d.defines))}</span></div>` : ''}
           ${d.subject ? `<div class="fired-row"><span class="t">About</span><span class="w">${esc(entityName(d.subject))}</span></div>` : ''}
           ${d.related.length ? `<div class="fired-row"><span class="t">Also connected to</span><span class="w">${esc(d.related.map(entityName).join(', '))}</span></div>` : ''}
-          ${d.reclassified ? `<div class="fired-row"><span class="t">Stored as one kind, reads as another</span><span class="w">${esc(d.storedKind)}</span></div>` : ''}
+          ${d.reclassified ? `<div class="fired-row"><span class="t">Stored as one kind, reads as another</span><span class="w">${esc(d.storedKind)}</span></div>` : `${''}`}
+          ${d.reclassified ? `<div class="why">The original file called this “${esc(d.storedKind)}”. The original file is not changed.</div>` : ''}
+          ${ask !== 'named' ? closerLook(d, bucket) : ''}
+        </details>
+        ${/* Every semantic control there has ever been, still here and still
+             yours, one tap down rather than all open at once. */''}
+        <details><summary>${decided ? 'Change this reading' : 'Other readings, and the fine detail'}</summary>
+          ${decided || ask === 'named' ? `
+            <div class="field">
+              <label>What is this about?</label>
+              <div class="chips">
+                ${choiceChip(d.ref, '', 'General world material', !d.subject && !d.defines && isSettled(d))}
+                ${likelyPeople.map((p) => choiceChip(d.ref, p.ref, p.name, d.subject === p.ref)).join('')}
+              </div>
+            </div>` : ''}
+          ${others.length ? `
+            <div class="field">
+              <label>Somebody else</label>
+              <select data-subject-other="${esc(d.ref)}">
+                <option value="">Choose somebody else…</option>
+                ${others.map((p) => `<option value="${esc(p.ref)}"${d.subject === p.ref ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}
+              </select>
+            </div>` : ''}
+          ${hideCategory && isSettled(d) ? '' : `
+            <div class="field">
+              <label>Type of information</label>
+              <select data-category="${esc(d.ref)}">
+                ${Object.entries(CATEGORY_LABEL).map(([k, label]) => `<option value="${k}"${d.category === k ? ' selected' : ''}>${esc(label)}</option>`).join('')}
+              </select>
+            </div>`}
+          <div class="field">
+            <label>Also connected to</label>
+            ${d.related.length ? `<div class="chips">
+              ${d.related.map((r) => `<button class="chip-tag" data-unrelate="${esc(d.ref)}" data-entity="${esc(r)}" aria-pressed="true">${esc(entityName(r))} ✕</button>`).join('')}
+            </div>` : ''}
+            ${connectable.length ? `<select data-relate="${esc(d.ref)}">
+              <option value="">+ Add connection…</option>
+              ${connectable.map((x) => `<option value="${esc(x.ref)}">${esc(x.name)}</option>`).join('')}
+            </select>` : ''}
+          </div>
         </details>
         <details><summary>The entry as it is stored</summary>
           <div class="fired-row"><span class="t">Stored in the original file as</span><span class="w">${esc(d.storedKind)}</span></div>
@@ -8185,7 +8214,11 @@ function onReviewClick(e) {
     } else {
       d.scope = 'world';
       d.subject = null;
-      if (PERSON_CATEGORY.includes(d.category)) d.category = 'background';
+      // Unchanged: a category that only means anything about a person cannot
+      // survive the entry becoming nobody's. What is new is that the card can
+      // now say it happened, rather than the category quietly reading
+      // differently the next time it is looked at.
+      if (PERSON_CATEGORY.includes(d.category)) { d.categoryWas = d.category; d.category = 'background'; }
     }
     d.proposedBy = 'manual';
     d.editedContent = true;
