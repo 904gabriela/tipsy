@@ -7385,7 +7385,7 @@ const ASK = {
   },
   named: {
     title: 'Names somebody this source never describes',
-    why: 'Each names somebody the source never introduces, and what that means differs each time.',
+    why: 'Each mentions a name this source never establishes. What that means differs every time, so Nexus does not suggest an answer.',
   },
   confirm: {
     title: 'Confirm one reading',
@@ -7989,7 +7989,14 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
         ${/* The question, in the words of the decision rather than of the thing
              the analyser could not do. No evidence, no scores: those are real
              and they are one tap away. */''}
-        ${!decided && ask === 'named' ? `<div class="rv-question">Nexus thinks this may be ${esc(unknown.join(' and '))}’s own entry, but it cannot record that yet.</div>` : ''}
+        ${/* Only what the flag actually means: a name is here, and this source
+             has not established who that is. It does NOT mean the entry
+             introduces them, describes them, is about them, or that they
+             should be made. Two real entries prove why saying more would be
+             wrong — one is the named person's own profile, the other is
+             guidance about somebody else entirely, and nothing on this screen
+             can tell them apart. */''}
+        ${!decided && ask === 'named' ? `<div class="rv-question">This entry mentions ${esc(unknown.join(' and '))}, ${unknown.length === 1 ? 'a name' : 'names'} Nexus hasn’t established in this source yet.</div>` : ''}
         ${!decided && ask === 'confirm' ? `<div class="rv-question">${d.reviewRisk ? `${esc(d.reviewRisk)}. Tick it if you are happy with it.`
     : `This says something about ${esc(entityName(d.subject) || 'somebody')} rather than introducing them. Save it as being about them?`}</div>` : ''}
         ${!decided && ask === 'about' ? '<div class="rv-question">What is this about?</div>' : ''}
@@ -8005,10 +8012,16 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
              people the analyser guessed at are not offered here: they are
              usually wrong, and one of them being right is not worth the other
              two looking like answers. They are still under "other readings". */''}
-        ${!decided && (choose || d.pick || d.correcting || !isSettled(d)) ? `
+        ${/* An unknown name offers no reading up front at all. Every answer
+             available here is a fallback — the operation that would actually
+             settle such an entry does not exist yet — and a fallback put where
+             the recommended answer goes reads as the recommended answer. They
+             are all still there, one tap down, for somebody who has decided
+             they want one. */''}
+        ${!decided && ask !== 'named' && (choose || d.pick || d.correcting || !isSettled(d)) ? `
           <div class="chips rv-choices">
             ${choiceChip(d.ref, '', 'General world material', !d.subject && !d.defines && isSettled(d))}
-            ${ask === 'named' ? '' : likelyPeople.map((p) => choiceChip(d.ref, p.ref, p.name, d.subject === p.ref)).join('')}
+            ${likelyPeople.map((p) => choiceChip(d.ref, p.ref, p.name, d.subject === p.ref)).join('')}
           </div>` : ''}
         ${/* Leaving it is a real answer and must cost nothing: it ticks
              nothing, writes nothing, and changes no count. Asking a model is

@@ -66,11 +66,14 @@ for (const [t, c] of [
   ['03 WORLD — Tides, charts, and the harbour law', 'The harbour is governed by tide tables and an older set of customs. Cargo is weighed at the north gate and again at the counting house. Nothing moves after the evening bell without a written pass.'],
   ['03 WORLD — The counting house and its rooms', 'The counting house holds the ledgers, a strong room, and the long gallery where disputes are heard. The gallery is cold in winter and nobody stays in it longer than they must.'],
 ]) add({ kind: 'rule', title: t, keys: ['harbour', 'law', 'counting house'], content: c });
-// Names somebody the source never introduces.
+// A name standing where a subject goes that this source never establishes.
+// Nothing here is engineered towards one reading or another: the analyser
+// decides what it decides, and the point of the entry is that what it MEANS
+// cannot be told from the flag alone.
 add({
-  kind: 'character', title: 'Ferry nights', keys: ['Ilario Bencivenni', 'Ilario'],
-  content: 'Ilario Bencivenni runs the night ferry and asks no questions. He is watchful, superstitious, '
-    + 'and loyal to whoever paid him last. Nobody at the counting house will say who that is.',
+  kind: 'note', title: 'Ottavia Ferri', keys: ['north gate'],
+  content: 'Aurelio Fontana wants the north gate contract and Renata Salk means to stop him. '
+    + 'The counting house has not ruled, and the tide tables say it must by the evening bell.',
 });
 // Says something about somebody without introducing them.
 add({
@@ -88,6 +91,28 @@ for (let i = 0; i < 26; i++) {
       + 'Do not summarise what a scene can show, and never explain a character to the reader.',
   });
 }
+// A second, smaller source, because the state the next section is about — a
+// name standing where a subject goes that the source never establishes — is
+// one the analyser only reaches on some shapes of material, and the large
+// fixture above is not one of them. Nothing is bent to produce it: this is
+// six ordinary people and one entry whose title is a seventh name.
+const fragmentId = db.createLorebook('HARBOUR FRAGMENT — the north gate', '');
+const addTo = (book, e) => db.saveEntry(book, {
+  order: 100, enabled: true, constant: false, probability: 100,
+  keys: e.keys, kind: e.kind, title: e.title, content: e.content,
+});
+for (const name of [...PEOPLE, 'Giulia Prato', 'Tomas Reali']) {
+  addTo(fragmentId, {
+    kind: 'character', title: name, keys: [name, name.split(' ')[1]],
+    content: `${name} has worked the harbour since before the new law. ${name} is careful, quiet, and owed `
+      + `favours by everyone in the district. People bring ${name} their disputes before the counting house.`,
+  });
+}
+addTo(fragmentId, {
+  kind: 'note', title: 'Ottavia Ferri', keys: ['north gate'],
+  content: 'Aurelio Fontana wants the north gate contract and Renata Salk means to stop him. '
+    + 'The counting house has not ruled, and the tide tables say it must by the evening bell.',
+});
 db.close();
 
 const port = 9000 + Math.floor(Math.random() * 900);
@@ -152,6 +177,22 @@ await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, devic
 await cdp('Page.navigate', { url: `http://localhost:${port}/` });
 await sleep(2200);
 
+// What a card shows before anything is opened. Everything inside a <details>
+// is a tap away and does not count as primary.
+const PRIMARY = (find) => `(() => {
+  const c = ${find};
+  if (!c) return null;
+  const copy = c.cloneNode(true);
+  for (const d of copy.querySelectorAll('details')) d.remove();
+  return copy.textContent.replace(/\\s+/g, ' ').trim();
+})()`;
+const DETAILS = (find) => `(() => {
+  const c = ${find};
+  if (!c) return null;
+  return [...c.querySelectorAll('details')].map(d => d.textContent.replace(/\\s+/g,' ')).join(' ');
+})()`;
+const ASK_CARD = `[...document.querySelectorAll('.rv-ask[data-ask] .edit-card')].find(x => !x.querySelector('.edit-body').hidden)`;
+
 console.log('the source screen');
 {
   await click('[data-tab="characters"]');
@@ -206,32 +247,7 @@ console.log('\nwhat needs a person');
   ok('the choice offered is general material first', /General world material/.test(body));
   ok('leaving it alone is offered', /Leave for later/.test(body));
   ok('and nothing on the card states a confidence', !/\b(high|medium|low) confidence\b/i.test(body));
-  // An entry naming somebody the source never introduces needs a source with
-  // enough of a cast for the analyser to notice, which a fixture this size
-  // cannot make. Said out loud rather than passing quietly: the card for that
-  // case is exercised against a real source, not here.
-  const asks = await text('.rv-ask[data-ask] .rv-ask-head b');
-  if (!/names somebody/i.test(asks)) {
-    console.log('  NOTE  this fixture produces no unknown-name entry, so that card is not exercised here');
-  }
 }
-
-// What a card shows before anything is opened. Everything inside a <details>
-// is a tap away and does not count as primary.
-const PRIMARY = (find) => `(() => {
-  const c = ${find};
-  if (!c) return null;
-  const copy = c.cloneNode(true);
-  for (const d of copy.querySelectorAll('details')) d.remove();
-  return copy.textContent.replace(/\\s+/g, ' ').trim();
-})()`;
-const DETAILS = (find) => `(() => {
-  const c = ${find};
-  if (!c) return null;
-  return [...c.querySelectorAll('details')].map(d => d.textContent.replace(/\\s+/g,' ')).join(' ');
-})()`;
-const ASK_CARD = `[...document.querySelectorAll('.rv-ask[data-ask] .edit-card')].find(x => !x.querySelector('.edit-body').hidden)`;
-
 console.log("\nthe analyser's workings are not the decision");
 {
   const primary = await ev(PRIMARY(ASK_CARD));
@@ -314,6 +330,47 @@ console.log('\nsaving says what it will do');
   ok('it does not say things are added to the library', !/added to your library/i.test(body));
   ok('and it says the rest is not lost', /left for later/.test(body) && /lost or changed/i.test(body));
 }
+
+
+// A name the source never establishes means exactly that, and nothing more.
+// It does not mean the entry introduces that person, describes them, is about
+// them, or that they should be made. Two real entries carry this same flag and
+// need opposite answers — one is the named person's own profile, the other is
+// guidance about somebody else — so the card must claim neither.
+console.log('\na name the source never establishes claims nothing');
+{
+  await cdp('Page.navigate', { url: `http://localhost:${port}/` });
+  await sleep(2200);
+  await click('[data-tab="characters"]');
+  await click('[data-shelf="sources"]');
+  await click(`[data-lorebook="${fragmentId}"]`);
+  await sleep(800);
+  await click(`[data-organize="${fragmentId}"]`);
+  await waitFor('#sheet-body .edit-card', 90000);
+  await sleep(1800);
+  const named = `[...document.querySelectorAll('.rv-ask[data-ask="named"] .edit-card')][0]`;
+  const found = await ev(`(() => { const c = ${named}; if (!c) return false; if (c.querySelector('.edit-body').hidden) c.querySelector('.edit-head').click(); return true; })()`);
+  ok('the fixture produces one to look at', found === true);
+  if (found) {
+    await sleep(700);
+    const primary = await ev(PRIMARY(named));
+    const details = await ev(DETAILS(named));
+    ok('it does not call the entry that person’s own', !/own entry|own profile/i.test(primary), primary.slice(0, 120));
+    ok('it does not say the entry introduces or defines them', !/\b(introduces?|defines?)\b/i.test(primary));
+    ok('it does not say the entry is about them', !/\bis about\b/i.test(primary));
+    ok('it says only that the name is not established', /mentions .*(a name|names) Nexus hasn’t established/i.test(primary));
+    // Every answer available for such an entry is a fallback, and a fallback in
+    // the place the recommended answer goes reads as the recommended answer.
+    ok('no reading is offered as the primary answer', !/General world material/.test(primary));
+    ok('leaving it is offered', /Leave for later/.test(primary));
+    ok('and asking a model is offered', /Ask Nexus to look closer/.test(primary));
+    ok('the readings are still all there, one tap down', /General world material/.test(details || ''));
+    ok('including the semantic controls', /Type of information/.test(details || '') && /Also connected to/.test(details || ''));
+    ok('and rendering the card selected nothing',
+      await ev(`${named}.querySelector('[data-tick]').getAttribute('aria-pressed')`) === 'false');
+  }
+}
+
 
 ok('the screen threw no errors while being driven', thrown.length === 0, thrown.join(' / ').slice(0, 200));
 
