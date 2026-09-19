@@ -5376,6 +5376,10 @@ const lore = { book: null, filter: 'all', choosing: false, chosen: new Set() };
 async function openLorebook(id, { keepPlace = false } = {}) {
   const where = keepPlace ? $('#lore-scroll').scrollTop : 0;
   lore.book = await get(`/api/lorebooks/${id}/cards`);
+  // How organised this source is, computed from what is stored every time. It
+  // decides what the action at the top of the screen says, so a source that has
+  // been organised does not keep inviting you to organise it.
+  try { lore.org = await get(`/api/lorebooks/${id}/organization`); } catch { lore.org = null; }
   if (!keepPlace) { lore.filter = 'all'; lore.choosing = false; lore.chosen.clear(); }
   // Anything that has since been deleted should not stay selected.
   const alive = new Set(Object.values(lore.book.groups).flat().map((c) => c.id));
@@ -5388,6 +5392,47 @@ async function openLorebook(id, { keepPlace = false } = {}) {
   requestAnimationFrame(() => { $('#lore-scroll').scrollTop = where; });
 }
 
+/**
+ * Understanding a source is the main thing you can do with one, so it belongs
+ * at the top of the screen rather than under its entries. A source of 158
+ * entries used to hide this below all of them.
+ *
+ * What it says follows the stored state and nothing else: how much is organised
+ * is counted from what is saved every time it is asked, so there is no flag
+ * here to go stale.
+ */
+function organiseBanner(b) {
+  const o = lore.org;
+  if (!o) return '';
+  const state = o.display;
+  const said = {
+    unorganized: {
+      line: 'Nexus has not been told what anything in this source means yet.',
+      action: 'Understand this source',
+    },
+    partial: {
+      line: `${plural(o.approved, 'entry', 'entries')} of ${num(o.total)} organised. ${plural(o.unresolved, 'entry', 'entries')} still left.`,
+      action: 'Carry on organising',
+    },
+    organized: {
+      line: 'All of it is organised. Nexus knows what this source means.',
+      action: 'Look at it again',
+    },
+    needs_recheck: {
+      line: `${plural(o.recheck, 'entry', 'entries')} changed after being organised, so what was saved for ${o.recheck === 1 ? 'it' : 'them'} may no longer fit the words. Nothing saved has been altered.`,
+      action: 'Read the changed entries again',
+    },
+  }[state] || null;
+  if (!said) return '';
+  const bar = state === 'unorganized' ? '' : `<div class="meter-bar"><i style="width:${Math.round((o.approved / Math.max(1, o.total)) * 100)}%"></i></div>`;
+  return `
+    <div class="organise-strip${state === 'needs_recheck' ? ' warn' : ''}">
+      <div class="organise-said">${esc(said.line)}</div>
+      ${bar}
+      <button class="btn${state === 'unorganized' || state === 'needs_recheck' ? ' primary' : ''}" data-organize="${esc(b.id)}">${esc(said.action)}</button>
+    </div>`;
+}
+
 function renderLore() {
   const b = lore.book;
   const K = b.kinds;
@@ -5395,7 +5440,7 @@ function renderLore() {
   // Always-on entries are the expensive ones, so the count is never hidden.
   const over = b.pinned.count > b.pinned.limit;
   const pct = Math.min(100, Math.round(b.pinned.count / b.pinned.limit * 100));
-  $('#lore-pinned').innerHTML = b.pinned.count ? `
+  $('#lore-pinned').innerHTML = organiseBanner(b) + (b.pinned.count ? `
     <div class="pin-meter${over ? ' over' : ''}">
       <div class="pin-meter-top">
         <span><b>${num(b.pinned.count)} always on</b> of ${b.pinned.limit} suggested</span>
@@ -5403,7 +5448,7 @@ function renderLore() {
       </div>
       <div class="meter-bar${over ? ' full' : ''}"><i style="width:${pct}%"></i></div>
       ${over ? `<div class="why" style="margin-top:8px">Every one of these is sent with every single message, before anything the scene is about. Entries that only matter sometimes should use trigger words instead.</div>` : ''}
-    </div>` : '';
+    </div>` : '');
 
   const order = ['character', 'place', 'faction', 'premise', 'item', 'event', 'rule', 'direction', 'note'];
   const kinds = order.filter((k) => b.counts[k]);
@@ -5425,9 +5470,9 @@ function renderLore() {
     <div class="cards${lore.choosing ? ' choosing' : ''}">
       ${(b.groups[k] || []).map(cardHtml).join('')}
     </div>`).join('') || `<div class="empty">Nothing here yet.</div>`)
-    + `<div style="margin-top:40px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
-         <button class="btn" data-organize="${esc(b.id)}">Understand this source</button>
-       </div>`
+    + `${/* Understanding this source is offered at the top of the screen, not
+            here: it is the main thing you can do with a source, and after 158
+            entries nobody finds it. */''}`
     + `${/* Sorting by type REWRITES each entry's stored kind. That is not what
             understanding a source does — understanding it leaves every entry
             exactly as it is — so it does not stand next to it looking like the
@@ -5504,6 +5549,13 @@ $('#lore-filters').addEventListener('click', (e) => {
   lore.filter = f.dataset.filter;
   renderLore();
   $('#lore-scroll').scrollTop = 0;
+});
+
+// Understanding a source is offered at the top of the screen now, above the
+// filters and the entries, which is outside the list's own delegated clicks.
+$('#lore-pinned').addEventListener('click', (e) => {
+  const organize = e.target.closest('[data-organize]');
+  if (organize) openSourceReview(organize.dataset.organize);
 });
 
 $('#lore-groups').addEventListener('click', async (e) => {
@@ -7261,19 +7313,105 @@ const ROLE_LABEL = {
   mixed: 'A mixture of different material',
 };
 
-/** The four things a proposal can be, from a reader's point of view. */
-const BUCKET = {
-  clear: { title: 'Understood', pip: 'understood', why: 'Nexus is sure about these. Any left unticked are ones it would not decide for you; each says why.' },
-  likely: { title: 'Likely', pip: 'likely', why: 'Nexus has a suggestion, on weaker evidence.' },
-  decision: { title: 'Need your decision', pip: 'need your decision', why: 'Nexus has more than one reading and cannot choose between them.' },
-  unsorted: { title: 'Not understood yet', pip: 'not understood yet', why: 'Not enough in the text to suggest anything useful.' },
-};
+/**
+ * How strong a reading is, in four steps. These are the analyser's own terms
+ * and no longer appear on the screen: what a reader sees is what is left for
+ * them to do. This still decides that, and nothing about it has changed.
+ */
 const bucketOf = (d) => {
   if (!isSettled(d)) return d.candidates?.length >= 2 ? 'decision' : 'unsorted';
   if (d.confidence === 'high') return 'clear';
   if (d.confidence === 'medium') return 'likely';
   return d.candidates?.length >= 2 ? 'decision' : 'unsorted';
 };
+/**
+ * The screen is organised by what is left for you to do, not by how sure the
+ * analyser is. Those are different questions, and only the first one is yours.
+ *
+ * Nothing here decides anything. Every entry lands in one of three places by
+ * reading what the analyser already said about it — its confidence, whether it
+ * settled on a subject, whether it names somebody this source never describes.
+ * The confidence system underneath is untouched; it is the input to this, and
+ * HIGH/MEDIUM/LOW are not words a reader should need.
+ */
+const GROUP = {
+  sorted: {
+    title: 'Sorted',
+    why: 'Nexus was sure enough to decide these for you, and they will be saved. Open any one to look at it, or take it out.',
+  },
+  needs: {
+    title: 'Needs you',
+    why: 'A real decision each — the kind Nexus will not make on your behalf. You can leave any of them for later.',
+  },
+  optional: {
+    title: 'Optional',
+    why: 'Suggestions on weaker evidence. Use the ones you like. Skipping them is fine, and nothing is lost by leaving them alone.',
+  },
+};
+
+/** Which of the three an entry belongs to. */
+const groupOf = (d) => {
+  if (d.current === 'approved' || d.approve) return 'sorted';
+  const b = bucketOf(d);
+  if (b === 'decision' || b === 'unsorted') return 'needs';
+  // Strong evidence that Nexus deliberately would not act on by itself.
+  if (d.confidence === 'high') return 'needs';
+  // An entry naming somebody this source never describes is a real question
+  // however sure the rest of the reading is — and the answer is not always the
+  // same one, so it is never answered here.
+  if ((d.namedButUnknown || []).length) return 'needs';
+  return 'optional';
+};
+
+/**
+ * What a "needs you" entry is actually asking, which is the thing to put on the
+ * card. Three questions cover every one of them, and each maps to an operation
+ * the semantic model already has — except the third, which is honest about not
+ * being expressible yet rather than offering a near-miss in its place.
+ */
+const askOf = (d) => {
+  if ((d.namedButUnknown || []).length) return 'named';
+  if (d.confidence === 'high') return 'confirm';
+  return 'about';
+};
+const ASK = {
+  about: {
+    title: 'About a person, or general material?',
+    why: 'Nexus could not settle who these are about. Often the answer is that they are not about anybody in particular.',
+  },
+  named: {
+    title: 'Names somebody this source never describes',
+    why: 'Each of these names a person the rest of the source never introduces. What that means differs from one to the next, so Nexus does not guess.',
+  },
+  confirm: {
+    title: 'Confirm one reading',
+    why: 'Nexus reads these clearly but will not accept them for you, because they say something about somebody rather than introducing them.',
+  },
+};
+
+/** Where an optional suggestion goes, so 109 of them are three groups and not one list. */
+const optionalGroupOf = (d) => (d.category === 'direction' ? 'told' : d.subject ? 'people' : 'world');
+const OPTIONAL_GROUP = {
+  told: 'How the story is told',
+  people: 'About named people',
+  world: 'The world and events',
+};
+
+/**
+ * The reading itself, in a reader's words, as it stands right now.
+ *
+ * This is what makes a decision visible the moment it is made: choose general
+ * world material and the line says so, including the category it was recorded
+ * under, because that choice can change it.
+ */
+const readingLabel = (d) => {
+  if (!isSettled(d)) return '';
+  const cat = CATEGORY_LABEL[d.category] || d.category;
+  if (d.defines) return `Describes ${entityName(d.defines)}`;
+  if (d.scope !== 'entity') return `World information · ${cat}`;
+  return `About ${entityName(d.subject)} · ${cat}`;
+};
+
 const TYPE_LABEL = { person: 'Person', place: 'Place', faction: 'Group', item: 'Thing', event: 'Event', concept: 'Idea' };
 const TYPE_SECTION = { person: 'People', place: 'Places', faction: 'Groups', item: 'Things', event: 'Events', concept: 'Ideas' };
 
@@ -7328,16 +7466,15 @@ const plural = (n, one, many = `${one}s`) => `${num(n)} ${n === 1 ? one : many}`
  */
 const choiceChip = (entryRef, entityRef, label, selected) => `<button class="chip-tag rv-choice" data-subject="${esc(entryRef)}" data-entity="${esc(entityRef)}" aria-pressed="${!!selected}">${selected ? '<span class="rv-check" aria-hidden="true">✓</span>' : ''}${esc(label)}</button>`;
 
-/** The likely suggestions still waiting in one section, so it can offer them together. */
-const likelyIn = (entries) => entries.filter((x) => bucketOf(x) === 'likely' && !x.approve && x.current !== 'approved').map((x) => x.ref);
 /**
- * A section may offer its own likely suggestions once you have opened it and can
- * see them. There is deliberately no button that accepts every weaker suggestion
- * in the source at once.
+ * There is no action anywhere that accepts a group of suggestions at once.
+ *
+ * What Nexus is willing to decide is already ticked when the screen opens, so
+ * any such button could only ever sweep up readings it deliberately withheld —
+ * and sharing a category is not evidence that a hundred of them are right. A
+ * weaker suggestion is used one at a time, on its own card, by somebody who
+ * looked at it.
  */
-const sectionLikely = (s) => (s.likely?.length
-  ? `<div class="row-actions" style="margin-top:10px"><button class="btn quiet" data-accept-section="${esc(s.id)}">Use the ${plural(s.likely.length, 'likely suggestion')} here</button></div>`
-  : '');
 
 /** How many entries one press of "Help with these" may ask about. */
 const HELP_AT_ONCE = 12;
@@ -7366,8 +7503,15 @@ async function openSourceReview(bookId) {
     return;
   }
   review.draft = draft;
+  // The entries' own words, so a decision can be made by reading the thing
+  // rather than by reading what Nexus thinks of it. The source screen already
+  // has them; if the review was reached some other way, they are fetched once.
+  // Without them the cards simply show no excerpt.
+  let cards = lore.book?.id === bookId ? lore.book : null;
+  if (!cards) { try { cards = await get(`/api/lorebooks/${bookId}/cards`); } catch { cards = null; } }
+  review.excerpt = new Map(Object.values(cards?.groups || {}).flat().map((c) => [c.id, c.summary || '']));
   // What needs deciding is the one thing open when the screen arrives.
-  review.open = new Set(['attention', 'decision']);
+  review.open = new Set(['needs']);
   review.changingRole = false;
   // The deterministic pass named these people. Retyping a name, changing a type,
   // or saying somebody is one Nexus already knows makes the declaration a
@@ -7437,17 +7581,36 @@ async function openSourceReview(bookId) {
 }
 
 function reviewCounts() {
-  const list = [...review.entries.values()].filter((d) => d.current !== 'approved');
-  const of = (name) => list.filter((d) => bucketOf(d) === name);
+  const list = [...review.entries.values()];
+  const of = (name) => list.filter((d) => groupOf(d) === name).length;
   return {
     total: review.draft.entries.length,
-    clear: of('clear').length,
-    likely: of('likely').length,
-    decision: of('decision').length,
-    unsorted: of('unsorted').length,
-    ready: [...review.entries.values()].filter((d) => d.approve).length,
-    already: [...review.entries.values()].filter((d) => d.current === 'approved').length,
+    sorted: of('sorted'),
+    needs: of('needs'),
+    optional: of('optional'),
+    // What Save would write, which is not the same as what Nexus sorted: an
+    // entry already saved is not written again.
+    ready: list.filter((d) => d.approve && d.current !== 'approved').length,
+    already: list.filter((d) => d.current === 'approved').length,
   };
+}
+
+/**
+ * The people and places Save would record, counted from what is actually
+ * ticked. Only entities a ticked entry leans on are ever created.
+ */
+function reviewEntityCount() {
+  const used = new Set();
+  for (const d of review.entries.values()) {
+    if (!d.approve || d.current === 'approved') continue;
+    for (const ref of [d.defines, d.subject, ...(d.related || [])].filter(Boolean)) used.add(ref);
+  }
+  const byType = new Map();
+  for (const ref of used) {
+    const t = review.entities.get(ref)?.type;
+    if (t) byType.set(t, (byType.get(t) || 0) + 1);
+  }
+  return { total: used.size, byType };
 }
 
 /**
@@ -7481,93 +7644,92 @@ function renderReview() {
   const d = review.draft;
   const c = reviewCounts();
   const role = review.role;
-  const people = d.entities.filter((x) => review.entities.get(x.ref).type === 'person');
-  const waiting = [...review.entries.values()].filter((x) => x.current !== 'approved');
-  const decision = waiting.filter((x) => bucketOf(x) === 'decision');
-  const unsorted = waiting.filter((x) => bucketOf(x) === 'unsorted');
-  const unplaced = new Set([...decision, ...unsorted].map((x) => x.ref));
-  // Each entry belongs in exactly one place, so nothing is decided twice.
-  const placed = (x) => !unplaced.has(x.ref);
-
-  // Where an entry appears follows what the source is FOR, not only its scope:
-  // a framework's entries are directives, never world building.
   const sections = [];
   // What a closer look could still be asked about here.
   const unasked = (rows) => rows.filter((x) => !review.suggestions.has(x.ref) && !review.looking.has(x.ref)).map((x) => x.ref);
 
-  // What Nexus noticed and could not settle. First, because it is the reason to
-  // read the rest slowly — and each one names the entry it is about, so it can
-  // be dealt with where it sits rather than hunted for.
-  const attention = attentionItems();
-  if (attention.length) {
+  // Three groups, by what is left for you to do. What the analyser could not
+  // settle is no longer a feed of its own: each warning is said on the card of
+  // the entry it is about, under "Why Nexus is asking", where it can be acted
+  // on instead of read twice.
+  const all = [...review.entries.values()];
+  const inGroup = (name) => all.filter((x) => groupOf(x) === name);
+  const sorted = inGroup('sorted');
+  const needs = inGroup('needs');
+  const optional = inGroup('optional');
+
+  if (sorted.length) {
+    const already = sorted.filter((x) => x.current === 'approved').length;
     sections.push({
-      id: 'attention',
-      title: 'Needs your attention',
-      n: attention.length,
-      why: 'Nexus found something it could not settle on its own. Nothing here is wrong yet; it is what to look at first.',
-      rows: attention.map((a) => {
-        const named = a.entries.map((ref) => review.entries.get(ref)).filter(Boolean);
-        return `<div class="rv-attend">
-          <div class="rv-attend-head"><b>${esc(a.title)}</b>${named.length
-    ? `<span class="n">${esc(named.map((x) => x.title).slice(0, 2).join(', '))}${named.length > 2 ? ` +${named.length - 2}` : ''}</span>` : ''}</div>
-          <div class="why">${esc(a.message)}</div>
-          ${named.length === 1 ? entryCard(named[0], { choose: true }) : ''}
-        </div>`;
-      }),
-    });
-  }
-  if (decision.length) {
-    sections.push({
-      id: 'decision',
-      title: BUCKET.decision.title,
-      n: decision.length,
-      why: BUCKET.decision.why,
-      help: unasked(decision),
-      rows: decision.map((x) => entryCard(x, { choose: true })),
-    });
-  }
-  if (unsorted.length) {
-    sections.push({
-      id: 'unsorted',
-      title: BUCKET.unsorted.title,
-      n: unsorted.length,
-      why: BUCKET.unsorted.why,
-      help: unasked(unsorted),
-      rows: unsorted.map((x) => entryCard(x, { choose: true })),
+      id: 'sorted',
+      title: GROUP.sorted.title,
+      n: sorted.length,
+      why: already === sorted.length ? 'Already saved. Nothing here is waiting on you.'
+        : already ? `${plural(already, 'of these was', 'of these were')} already saved; the rest will be saved when you do.`
+          : GROUP.sorted.why,
+      // One line each, collapsed. Twenty full cards is not a summary of
+      // twenty things Nexus got right.
+      rows: sorted.map((x) => entryCard(x, { compact: true })),
     });
   }
 
+  if (needs.length) {
+    const asks = new Map();
+    for (const x of needs) asks.set(askOf(x), [...(asks.get(askOf(x)) || []), x]);
+    sections.push({
+      id: 'needs',
+      title: GROUP.needs.title,
+      n: needs.length,
+      why: GROUP.needs.why,
+      rows: [...asks.entries()].map(([ask, rows]) => `
+        <div class="rv-ask" data-ask="${esc(ask)}">
+          <div class="rv-ask-head"><b>${esc(ASK[ask].title)}</b><span class="n">${num(rows.length)}</span></div>
+          <div class="why">${esc(ASK[ask].why)}</div>
+          ${sectionHelp({ id: `ask-${ask}`, help: unasked(rows) })}
+          ${rows.map((x) => entryCard(x, { choose: true, ask })).join('')}
+        </div>`),
+    });
+  }
+
+  if (optional.length) {
+    const groups = new Map();
+    for (const x of optional) groups.set(optionalGroupOf(x), [...(groups.get(optionalGroupOf(x)) || []), x]);
+    sections.push({
+      id: 'optional',
+      title: GROUP.optional.title,
+      n: optional.length,
+      why: GROUP.optional.why,
+      // Deliberately no action that accepts a whole group. Sharing a category
+      // is not evidence that a hundred readings are right, and a button that
+      // said otherwise would undo the care taken over what arrives ticked.
+      rows: [...groups.entries()].map(([key, rows]) => `
+        <div class="rv-ask" data-optional="${esc(key)}">
+          <div class="rv-ask-head"><b>${esc(OPTIONAL_GROUP[key])}</b><span class="n">${num(rows.length)}</span></div>
+          ${rows.map((x) => entryCard(x, { compact: true })).join('')}
+        </div>`),
+    });
+  }
+
+  // Everything else Nexus worked out, kept but out of the way: who it found,
+  // what it thinks may be two copies of one thing, and what may already exist
+  // elsewhere. None of it is a decision waiting on you.
+  const extra = [];
   for (const type of ['person', 'place', 'faction', 'item', 'event', 'concept']) {
     const found = d.entities.filter((x) => review.entities.get(x.ref).type === type);
-    if (found.length) sections.push({ id: `ent-${type}`, title: TYPE_SECTION[type], n: found.length, rows: found.map(entityCard) });
+    if (found.length) extra.push(`<div class="sec-head">${esc(TYPE_SECTION[type])} · ${num(found.length)}</div>${found.map(entityCard).join('')}`);
   }
-  for (const person of people) {
-    const about = [...review.entries.values()].filter((x) => x.subject === person.ref && isSettled(x) && placed(x));
-    if (!about.length) continue;
-    const groups = new Map();
-    for (const x of about) {
-      const label = (x.displayPath && x.displayPath[0]) || CATEGORY_LABEL[x.category] || 'Other';
-      groups.set(label, [...(groups.get(label) || []), x]);
-    }
+  if (d.variantGroups.length) extra.push(`<div class="sec-head">Versions of the same thing · ${num(d.variantGroups.length)}</div>${d.variantGroups.map(variantCard).join('')}`);
+  const matches = [...review.matches.entries()];
+  if (matches.length) extra.push(`<div class="sec-head">Possibly the same elsewhere · ${num(matches.length)}</div>${matches.map(([key, m]) => matchCard(key, m)).join('')}`);
+  if (extra.length) {
     sections.push({
-      id: `know-${person.ref}`,
-      title: `What this says about ${review.entities.get(person.ref).name}`,
-      n: about.length,
-      likely: likelyIn(about),
-      rows: [...groups.entries()].map(([label, rows]) => `<div class="sec-head">${esc(label)}</div>${rows.map((x) => entryCard(x, { hideCategory: CATEGORY_LABEL[x.category] === label, hideSubject: true })).join('')}`),
+      id: 'found',
+      title: 'People and places in this source',
+      n: d.entities.length,
+      why: 'Who and what Nexus recognised while reading. Change a name or what something is here, or say it is somebody you already have.',
+      rows: extra,
     });
   }
-  const rest = [...review.entries.values()].filter((x) => isSettled(x) && !x.subject && !x.defines && placed(x));
-  const directives = rest.filter((x) => x.category === 'direction');
-  const refs = rest.filter((x) => x.category === 'reference');
-  const world = rest.filter((x) => !['direction', 'reference'].includes(x.category));
-  if (directives.length) sections.push({ id: 'directives', title: 'Directives — how to tell it', n: directives.length, likely: likelyIn(directives), rows: directives.map((x) => entryCard(x, { hideCategory: true })) });
-  if (refs.length) sections.push({ id: 'reference', title: 'Reference — knowledge for when it comes up', n: refs.length, likely: likelyIn(refs), rows: refs.map((x) => entryCard(x, { hideCategory: true })) });
-  if (world.length) sections.push({ id: 'world', title: 'The world and everything else', n: world.length, likely: likelyIn(world), rows: world.map((x) => entryCard(x, {})) });
-
-  if (d.variantGroups.length) sections.push({ id: 'variants', title: 'Versions of the same thing', n: d.variantGroups.length, rows: d.variantGroups.map(variantCard) });
-  const matches = [...review.matches.entries()];
-  if (matches.length) sections.push({ id: 'matches', title: 'Possibly the same elsewhere', n: matches.length, rows: matches.map(([key, m]) => matchCard(key, m)) });
 
   const html = `
     ${backRow()}
@@ -7596,11 +7758,13 @@ function renderReview() {
               ${d.entities.map((x) => `<option value="${esc(x.ref)}"${role.subject === x.ref ? ' selected' : ''}>${esc(review.entities.get(x.ref).name)}</option>`).join('')}
             </select>
           </div>` : ''}` : ''}
+      ${/* Three numbers, and each is a kind of work rather than a degree of
+           certainty. Nobody should need to know what "medium" means. */''}
       <div class="rv-tally">
-        ${[['clear', c.clear], ['likely', c.likely], ['decision', c.decision], ['unsorted', c.unsorted]]
-    .filter(([, n]) => n).map(([k, n]) => `<span class="rv-pip rv-${k}">${num(n)} ${esc(BUCKET[k].pip)}</span>`).join('')}
-        ${c.already ? `<span class="rv-pip">${num(c.already)} already saved</span>` : ''}
+        ${[['sorted', c.sorted], ['needs', c.needs], ['optional', c.optional]]
+    .filter(([, n]) => n).map(([k, n]) => `<span class="rv-pip rv-${k}">${num(n)} ${esc(GROUP[k].title.toLowerCase())}</span>`).join('')}
       </div>
+      <div class="why">You can save what is ready and come back to the rest. Nothing you leave is lost or changed.</div>
     </div>
     ${/* There is no "accept everything Nexus is sure of" button. What Nexus is
          sure of, and willing to decide for you, is already ticked when this
@@ -7612,13 +7776,13 @@ function renderReview() {
         <div class="edit-head"><b>${esc(s.title)}</b><span class="n">${num(s.n)}</span>
           <button class="fold" aria-expanded="${review.open.has(s.id)}">▾</button></div>
         <div class="edit-body"${review.open.has(s.id) ? '' : ' hidden'}>${review.open.has(s.id)
-    ? `${s.why ? `<div class="why">${esc(s.why)}</div>` : ''}${sectionHelp(s)}${s.rows.join('')}${sectionLikely(s)}` : ''}</div>
+    ? `${s.why ? `<div class="why">${esc(s.why)}</div>` : ''}${s.rows.join('')}` : ''}</div>
       </div>`).join('')}
     <div class="sheet-actions">
       <button class="btn quiet" data-back>Not now</button>
       ${/* What the button does, with how much it covers beside it: the exact
            breakdown belongs on the confirmation, not on a pinned bar. */''}
-      <button class="btn primary" id="rv-save"${c.ready ? '' : ' disabled'}>Save organisation${c.ready ? ` · ${num(c.ready)}` : ''}</button>
+      <button class="btn primary" id="rv-save"${c.ready ? '' : ' disabled'}>${c.ready ? `Save ${num(c.ready)}` : 'Nothing to save yet'}</button>
     </div>`;
 
   sheet('Understanding this source', html, (root) => {
@@ -7744,7 +7908,7 @@ function correctionNote(d) {
   </div>`;
 }
 
-function entryCard(d, { choose = false, hideCategory = false, hideSubject = false, compact = false }) {
+function entryCard(d, { choose = false, hideCategory = false, hideSubject = false, compact = false, ask = null }) {
   const kind = CATEGORY_LABEL[d.category] || d.category;
   // Inside "What this says about Patrick", every row saying "about Patrick" is
   // the same three words forty times. Only what the section does not already
@@ -7754,10 +7918,12 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
   // put a certainty on the screen that its own evidence does not have.
   const unknown = d.namedButUnknown || [];
   const said = d.subject ? [hideCategory ? '' : kind, hideSubject ? '' : `about ${entityName(d.subject)}`].filter(Boolean).join(' · ') : '';
+  // What the head says is the reading, never what the analyser could not do:
+  // "who it is about is unsettled" is a note to itself, and the question on the
+  // card already says what is being asked.
   const about = d.defines ? `Describes ${entityName(d.defines)}`
-    : unknown.length ? [hideCategory ? '' : kind, 'who it is about is unsettled'].filter(Boolean).join(' · ')
-      : d.subject ? said.charAt(0).toUpperCase() + said.slice(1)
-        : hideCategory ? '' : kind;
+    : d.subject && !unknown.length ? said.charAt(0).toUpperCase() + said.slice(1)
+      : hideCategory ? '' : kind;
   const bucket = bucketOf(d);
   // An entry that names somebody this source does not describe is unsure
   // however sure its category is.
@@ -7766,8 +7932,14 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
   const likelyPeople = (d.candidates || []).map((ref) => review.entities.get(ref)).filter(Boolean);
   const others = [...review.entities.values()].filter((x) => x.type === 'person' && !likelyPeople.includes(x));
   const connectable = [...review.entities.values()].filter((x) => x.ref !== d.subject && x.ref !== d.defines && !d.related.includes(x.ref));
+  // A settled reading says what it is; a card in a group of twenty says it in
+  // one line and nothing else, because twenty full cards is not a summary.
+  const line = compact ? readingLabel(d) : about;
+  // The entry's own words. Deciding what something means while looking only at
+  // what Nexus thinks it means is the one thing this screen used to ask for.
+  const excerpt = review.excerpt?.get(d.entryId) || '';
   return `
-    <div class="edit-card" data-entry-ref="${esc(d.ref)}">
+    <div class="edit-card${compact ? ' compact' : ''}" data-entry-ref="${esc(d.ref)}">
       <div class="edit-head">
         ${d.current === 'approved' && !d.correcting ? `<button class="card-badge as-btn" data-correct="${esc(d.ref)}" title="Change this">saved</button>`
     : d.current === 'approved' ? `<button class="rv-tick" data-tick="${esc(d.ref)}" aria-pressed="${d.approve}" aria-label="${d.approve ? 'Correction ready to save' : 'Save this correction'}"></button>`
@@ -7777,7 +7949,7 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
         <b>${esc(d.title || 'Untitled')}</b>
         ${/* With nothing left to say, the column goes too, instead of holding a
              blank line open beside the title. */''}
-        ${about || d.reclassified ? `<span class="n">${esc(about)}${d.reclassified ? ` <i class="rv-flag">changed from ${esc(d.storedKind)}</i>` : ''}</span>` : ''}
+        ${line || d.reclassified ? `<span class="n">${esc(line)}${d.reclassified && !compact ? ` <i class="rv-flag">changed from ${esc(d.storedKind)}</i>` : ''}</span>` : ''}
         ${/* So a closer look asked for by the section is not lost inside a closed card. */''}
         ${review.suggestions.has(d.ref) && !review.suggestions.get(d.ref).accepted ? '<span class="card-badge look">a closer look</span>' : ''}
         <button class="fold" aria-expanded="${review.opened.has(d.ref)}">▾</button>
@@ -7786,12 +7958,26 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
         ${/* A reading you saved is not replaced by anything on this screen —
              not by Nexus reading again, and not by a closer look. */''}
         ${d.current === 'recheck' ? '<div class="why"><b>You saved a reading for this before.</b> The entry has changed since, so Nexus is reading it again. What you saved stays exactly as it is until you save a replacement.</div>' : ''}
-        ${/* Strong evidence, and still left for you: said plainly, so an
-             unticked reading does not read as Nexus having failed. */''}
-        ${d.reviewRisk ? `<div class="why"><b>Nexus reads this clearly, but left it for you.</b> ${esc(d.reviewRisk)}. Tick it if you are happy with it, or change the name first.</div>`
-    : d.confidence === 'high' && !d.approve && d.current !== 'approved' && !d.defines
-      ? `<div class="why"><b>Nexus reads this clearly, but left it for you.</b> The entry does not introduce ${esc(entityName(d.subject) || 'anybody')}; it says something about them, and which part of them it belongs to is a judgement. Tick it if you agree.</div>` : ''}
-        ${unsure ? `<div class="why"><b>Nexus isn't sure${d.unresolved.length ? ':' : '.'}</b> ${esc(d.unresolved.join('. '))}</div>` : ''}
+        ${/* The entry's own words, first, before anything Nexus thinks of them.
+             Deciding what something means from a summary of what it might mean
+             is what this screen used to ask of you. */''}
+        ${excerpt ? `<div class="rv-excerpt">${esc(excerpt)}…
+          <button class="btn quiet" data-entry-open="${esc(d.entryId)}">Open the entry</button>
+        </div>` : ''}
+        ${/* The question, in the words of the decision rather than of the thing
+             the analyser could not do. */''}
+        ${ask === 'named' ? `<div class="why"><b>This entry names ${esc(unknown.join(' and '))}, and nothing in this source introduces ${unknown.length === 1 ? 'them' : 'any of them'}.</b>
+          If this entry is their own entry, Nexus cannot record that yet — saying so is not something this screen can do, and a closer look is the only route to it today.
+          If it is not, you can still say what it is about below.</div>` : ''}
+        ${ask === 'confirm' ? `<div class="why"><b>Nexus reads this clearly and still left it for you.</b> ${d.reviewRisk ? `${esc(d.reviewRisk)}.`
+    : `The entry does not introduce ${esc(entityName(d.subject) || 'anybody')}; it says something about them, and which part of them it belongs to is a judgement.`} Tick it if you agree.</div>` : ''}
+        ${ask === 'about' ? `<div class="why">Nexus could not settle who this is about.${d.unresolved.length ? ` ${esc(d.unresolved.join('. '))}` : ''} If it is not about anybody in particular, say so below.</div>` : ''}
+        ${!ask && unsure ? `<div class="why"><b>Nexus isn't sure${d.unresolved.length ? ':' : '.'}</b> ${esc(d.unresolved.join('. '))}</div>` : ''}
+        ${/* A choice already made, said back including the part of it that was
+             not asked for: choosing general world material can move the entry
+             to a different category, and that is not hidden. */''}
+        ${d.proposedBy === 'manual' && isSettled(d) ? `<div class="rv-said-back">✓ ${esc(readingLabel(d))}${d.scope !== 'entity' && PERSON_CATEGORY.includes(d.category) === false && d.category === 'background'
+    ? ' — Nexus recorded it as general background' : ''}. This is ticked to be saved.</div>` : ''}
         ${bucket === 'likely' && !d.approve ? `
           <div class="rv-suggest">
             ${/* With an unresolved name in the entry, the offer is named as an
@@ -7805,12 +7991,13 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
         ${d.correcting ? correctionNote(d) : ''}
         ${choose || d.pick || d.correcting || !isSettled(d) ? `
           <div class="field">
-            <label>Who is this about?</label>
-            ${likelyPeople.length ? `<div class="rv-hint">Likely</div>` : ''}
+            <label>${ask === 'confirm' ? 'Is this about somebody else?' : 'What is this about?'}</label>
+            ${/* General material first, because for most of what lands here that
+                 is the true answer, and it used to be offered last after two or
+                 three people the entry never mentions. */''}
             <div class="chips">
+              ${choiceChip(d.ref, '', 'General world material', !d.subject && !d.defines && isSettled(d))}
               ${likelyPeople.map((p) => choiceChip(d.ref, p.ref, p.name, d.subject === p.ref)).join('')}
-              ${/* Accent means chosen. Until the entry has a reading, nothing is accented. */''}
-              ${choiceChip(d.ref, '', 'Nobody in particular', !d.subject && !d.defines && isSettled(d))}
             </div>
             ${others.length ? `
               <div class="rv-hint" style="margin-top:8px">Someone else</div>
@@ -7840,8 +8027,24 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
     : d.subject ? `This entry is mainly about ${esc(entityName(d.subject))}; anyone connected is involved but not the point of it.`
       : 'Anyone connected is involved in this, without it being about them.'}</div>
         </div>
-        <details><summary>Why Nexus says this</summary>
+        ${/* Leaving it is a real answer and must cost nothing: it ticks
+             nothing, writes nothing, and changes no count. */''}
+        ${ask ? `<div class="row-actions" style="margin-top:10px">
+          <button class="btn quiet" data-later="${esc(d.ref)}">Leave for later</button>
+        </div>` : ''}
+        ${/* Everything the analyser knows, one level down. None of it is
+             deleted; it is simply not the first thing between you and a
+             decision. The warnings that used to have a feed of their own are
+             here, on the entry each was about. */''}
+        <details><summary>${ask ? 'Why Nexus is asking' : 'Why Nexus says this'}</summary>
+          ${attentionFor(d.ref).map((a) => `<div class="fired-row"><span class="t"><b>${esc(a.title)}</b> — ${esc(a.message)}</span></div>`).join('')}
           ${d.evidence.map((v) => `<div class="fired-row"><span class="t">${esc(v.detail)}</span></div>`).join('')}
+          <div class="fired-row"><span class="t">How sure Nexus is</span><span class="w">${esc(d.confidence)}</span></div>
+          <div class="fired-row"><span class="t">Read as</span><span class="w">${esc(d.scope)} · ${esc(kind)}</span></div>
+          ${d.defines ? `<div class="fired-row"><span class="t">Introduces</span><span class="w">${esc(entityName(d.defines))}</span></div>` : ''}
+          ${d.subject ? `<div class="fired-row"><span class="t">About</span><span class="w">${esc(entityName(d.subject))}</span></div>` : ''}
+          ${d.related.length ? `<div class="fired-row"><span class="t">Also connected to</span><span class="w">${esc(d.related.map(entityName).join(', '))}</span></div>` : ''}
+          ${d.reclassified ? `<div class="fired-row"><span class="t">Stored as one kind, reads as another</span><span class="w">${esc(d.storedKind)}</span></div>` : ''}
         </details>
         <details><summary>The entry as it is stored</summary>
           <div class="fired-row"><span class="t">Stored in the original file as</span><span class="w">${esc(d.storedKind)}</span></div>
@@ -8091,17 +8294,11 @@ function onReviewClick(e) {
   const drop = e.target.closest('[data-drop]');
   if (drop) { review.suggestions.delete(drop.dataset.drop); renderReview(); return; }
 
-  const acceptSection = e.target.closest('[data-accept-section]');
-  if (acceptSection) {
-    // Only the likely suggestions in the section you are looking at, never all of them at once.
-    const id = acceptSection.dataset.acceptSection;
-    review.open.add(id);
-    for (const d of review.entries.values()) {
-      if (bucketOf(d) === 'likely' && d.current !== 'approved' && sectionOfEntry(d) === id) { d.approve = true; d.reselected = true; }
-    }
-    renderReview();
-    return;
-  }
+  // Leaving something for later is a real answer, and it must cost nothing:
+  // no tick, no reading changed, no entity made, and no effect on what Save
+  // would write. It closes the card and that is all.
+  const later = e.target.closest('[data-later]');
+  if (later) { review.opened.delete(later.dataset.later); renderReview(); return; }
 
   if (e.target.closest('#rv-change-role')) { review.changingRole = !review.changingRole; renderReview(); return; }
 
@@ -8218,16 +8415,6 @@ function takeSuggestion(ref) {
   if (isSettled(d)) d.approve = true;
 }
 
-/** Which section an entry is drawn in, so a section can accept its own suggestions. */
-function sectionOfEntry(d) {
-  if (!isSettled(d)) return null;
-  if (d.subject) return `know-${d.subject}`;
-  if (d.defines) return `ent-${review.entities.get(d.defines)?.type}`;
-  if (d.category === 'direction') return 'directives';
-  if (d.category === 'reference') return 'reference';
-  return 'world';
-}
-
 function onReviewChange(e) {
   const other = e.target.closest('[data-subject-other]');
   if (other) {
@@ -8304,22 +8491,30 @@ function onReviewChange(e) {
 
 /** What "Save 61 decisions" actually means, before it happens. */
 function confirmSave() {
-  const ticked = [...review.entries.values()].filter((d) => d.approve);
-  const by = (name) => ticked.filter((d) => bucketOf(d) === name).length;
-  const decided = ticked.filter((d) => ['decision', 'unsorted'].includes(bucketOf(d))).length;
+  const ticked = [...review.entries.values()].filter((d) => d.approve && d.current !== 'approved');
+  const yours = ticked.filter((d) => d.proposedBy === 'manual' || d.reselected).length;
   const left = [...review.entries.values()].filter((d) => !d.approve && d.current !== 'approved').length;
+  const ents = reviewEntityCount();
+  // What "recognised" means, exactly: a person Nexus can match across sources
+  // and stories. Not a character card, not anything on the People shelf — Apply
+  // writes neither, and wording that suggested otherwise would be a lie about
+  // what is about to happen.
+  const said = [...ents.byType.entries()]
+    .map(([type, n]) => `${num(n)} ${(n === 1 ? TYPE_LABEL[type] || type : TYPE_SECTION[type] || `${type}s`).toLowerCase()}`)
+    .join(', ');
   subSheet('Save these decisions', `
-    <div class="why" style="margin-bottom:12px">Saving records what this material means. It never changes the entries themselves.</div>
     <div class="fired">
-      <div class="fired-row"><span class="t">Clear suggestions</span><span class="w">${num(by('clear'))}</span></div>
-      <div class="fired-row"><span class="t">Likely suggestions you accepted</span><span class="w">${num(by('likely'))}</span></div>
-      <div class="fired-row"><span class="t">Ones you decided yourself</span><span class="w">${num(decided)}</span></div>
+      <div class="fired-row"><span class="t">Readings Nexus decided</span><span class="w">${num(ticked.length - yours)}</span></div>
+      ${yours ? `<div class="fired-row"><span class="t">Readings you decided</span><span class="w">${num(yours)}</span></div>` : ''}
       <div class="fired-row"><span class="t"><b>Saved in total</b></span><span class="w"><b>${num(ticked.length)}</b></span></div>
+      ${ents.total ? `<div class="fired-row"><span class="t">People and places recognised in this source</span><span class="w">${num(ents.total)}</span></div>` : ''}
     </div>
-    ${left ? `<div class="why" style="margin-top:10px">${plural(left, 'entry', 'entries')} you did not decide will stay unorganised. You can come back to them.</div>` : ''}
+    ${ents.total ? `<div class="why" style="margin-top:10px">${esc(said.charAt(0).toUpperCase() + said.slice(1))} become people and places Nexus can recognise in this source and match to others. <b>No character cards are made</b>, and nothing is added to your People shelf.</div>` : ''}
+    <div class="why" style="margin-top:10px">The entries themselves are not touched: their words, their trigger words and when they fire all stay exactly as they are.</div>
+    ${left ? `<div class="why" style="margin-top:10px"><b>${plural(left, 'entry', 'entries')} left for later.</b> Nothing about ${left === 1 ? 'it' : 'them'} is lost or changed, and you can come back whenever you like.</div>` : ''}
     <div class="sheet-actions">
       <button class="btn quiet" data-back>Back</button>
-      <button class="btn primary" id="rv-confirm">Save ${plural(ticked.length, 'decision')}</button>
+      <button class="btn primary" id="rv-confirm">Save ${num(ticked.length)}</button>
     </div>`, (root) => {
     $('#rv-confirm', root).addEventListener('click', saveReview);
   }, renderReview);

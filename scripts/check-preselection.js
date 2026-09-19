@@ -150,11 +150,18 @@ console.log('\nI  nothing sweeps up what Nexus would not decide');
   // deliberately withheld. There is no such button, and no handler behind one.
   ok('no bulk action accepts every strong reading at once', !/rv-accept-clear/.test(app));
   ok('and nothing counts them as waiting to be swept up', !/clearWaiting/.test(app));
-  // The one bulk action that remains is the per-section weaker-suggestion one,
-  // which only ever touches readings that were never eligible to be ticked.
-  const handler = app.slice(app.indexOf("const acceptSection = e.target.closest('[data-accept-section]')"), app.indexOf("const acceptSection = e.target.closest('[data-accept-section]')") + 600);
-  ok('the section action still touches only the weaker suggestions', /bucketOf\(d\) === 'likely'/.test(handler), handler.split('\n')[4]?.trim().slice(0, 90));
-  ok('and never a reading held back by the safety policy', !/autoSelect|reviewRisk/.test(handler));
+  // Nor is there one for the weaker suggestions any more. Sharing a category is
+  // not evidence that a hundred readings are right, so a suggestion is used one
+  // at a time, on its own card, by somebody who looked at it.
+  ok('no action accepts a whole group of weaker suggestions', !/data-accept-section/.test(app));
+  ok('and no handler behind one', !/acceptSection/.test(app));
+  // Every place that ticks a reading ticks exactly one, reached by its own ref.
+  // A tick applied while walking the whole set is what a bulk action is, so the
+  // shape is what is checked rather than the count.
+  ok('nothing ticks readings by walking over all of them',
+    !/for \([^)]*review\.entries\.values\(\)[\s\S]{0,300}?\.approve = true/.test(app));
+  const ticks = [...app.matchAll(/\.approve = true/g)].length;
+  ok('and every place that ticks one is reached from a single entry', ticks > 0, `${ticks} per-entry actions`);
 }
 
 console.log('\nF  the screen uses the same rule, and says why');
@@ -162,7 +169,7 @@ console.log('\nF  the screen uses the same rule, and says why');
   const app = readFileSync(join(here, '..', 'public', 'app.js'), 'utf8');
   ok('the tick follows the policy rather than repeating it', /approve: !!e\.autoSelect,/.test(app));
   ok('and a held-back reading explains itself rather than looking like a failure',
-    /Nexus reads this clearly, but left it for you/.test(app));
+    /Nexus reads this clearly and still left it for you/.test(app));
 }
 
 console.log(`\n${pass}/${pass + fail} checks passed.`);
