@@ -7402,6 +7402,54 @@ const OPTIONAL_GROUP = {
 };
 
 /**
+ * Saying that an entry is what introduces something.
+ *
+ * Only ever a person's own decision. Nothing proposes it, nothing derives it
+ * from a name the source failed to establish, and nothing about the entry's
+ * shape brings it about — two real entries carry the same unresolved name and
+ * need opposite answers, so the only safe author of this is somebody who read
+ * the entry.
+ *
+ * Defining something IS its profile, so the category follows rather than being
+ * left to drift: an entry cannot both introduce somebody and be a note about
+ * their personality. Apply refuses an entry that both defines something and is
+ * about something, so the subject goes with it.
+ */
+function setDefines(d, ref) {
+  if (d.category !== 'profile') d.categoryWas = d.category;
+  d.scope = 'entity';
+  d.defines = ref;
+  d.subject = null;
+  d.category = 'profile';
+  d.related = d.related.filter((r) => r !== ref);
+  d.proposedBy = 'manual';
+  d.editedContent = true;
+  d.approve = true;
+}
+
+/** The same name, written the same way. Nothing fuzzier: two spellings are two things. */
+const sameEntityName = (a, b) => String(a || '').trim().toLowerCase().replace(/\s+/g, ' ')
+  === String(b || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+/**
+ * A ref for something made here, in the form the rest of Nexus uses, unique
+ * against everything this review can see — what the analyser proposed and what
+ * the source declared before. A ref is how Apply recognises something it has
+ * already made, so two of them colliding would quietly become one thing.
+ */
+const refFor = (name) => {
+  const base = String(name || '').normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'thing';
+  let ref = base;
+  for (let n = 2; review.entities.has(ref); n++) ref = `${base}-${n}`;
+  return ref;
+};
+
+/** Something of this name and kind this review already has, if there is one. */
+const entityLike = (name, type) => [...review.entities.values()]
+  .find((x) => x.type === type && sameEntityName(x.name, name)) || null;
+
+/**
  * The reading itself, in a reader's words, as it stands right now.
  *
  * This is what makes a decision visible the moment it is made: choose general
@@ -7519,6 +7567,13 @@ async function openSourceReview(bookId) {
   let cards = lore.book?.id === bookId ? lore.book : null;
   if (!cards) { try { cards = await get(`/api/lorebooks/${bookId}/cards`); } catch { cards = null; } }
   review.excerpt = new Map(Object.values(cards?.groups || {}).flat().map((c) => [c.id, c.summary || '']));
+  // Read-only, and nothing to do with the analysis: who this source has said
+  // it is about before. Without it a person made here could only ever be used
+  // once, because reading the source again will not rediscover them.
+  let declarations = [];
+  try { declarations = await get(`/api/lorebooks/${bookId}/declarations`); } catch { declarations = []; }
+  // Nothing about a new entity is being drafted when the screen opens.
+  review.definingNew = new Set();
   // What needs deciding is the one thing open when the screen arrives.
   review.open = new Set(['needs']);
   review.changingRole = false;
@@ -7526,6 +7581,20 @@ async function openSourceReview(bookId) {
   // or saying somebody is one Nexus already knows makes the declaration a
   // person's, and it is stored as one.
   review.entities = new Map(draft.entities.map((x) => [x.ref, { ...x, decision: 'new', proposedBy: 'deterministic-conversion' }]));
+  // What this source has already declared, whether or not reading it again
+  // would suggest the same. Somebody said so once; that is a fact of its own,
+  // and it must not have to be said twice. These are not readings, so they are
+  // never shown as something Nexus thinks — they are simply available.
+  for (const dec of declarations) {
+    if (review.entities.has(dec.ref)) continue;
+    if (entityLike(dec.name, dec.type)) continue;
+    review.entities.set(dec.ref, {
+      ref: dec.ref, type: dec.type, name: dec.name, aliases: dec.aliases || [],
+      decision: 'existing', entityId: dec.entityId, declared: true,
+      proposedBy: 'manual', evidence: [], profileEntries: [], mentionedIn: 0, subjectOf: 0,
+      confidence: null, nameSharedWith: [], mayBeSeveral: false,
+    });
+  }
   // Which entries the original file called one kind of thing and Nexus reads as
   // another. Only a real disagreement counts: a "character" entry that turns out
   // to be a faction, or a note that is really a place. A "character" entry that
@@ -7958,6 +8027,10 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
   const likelyPeople = (d.candidates || []).map((ref) => review.entities.get(ref)).filter(Boolean);
   const others = [...review.entities.values()].filter((x) => x.type === 'person' && !likelyPeople.includes(x));
   const connectable = [...review.entities.values()].filter((x) => x.ref !== d.subject && x.ref !== d.defines && !d.related.includes(x.ref));
+  // Everything this review can point at: what the analyser proposed, and what
+  // the source declared before. A declaration is not a reading and is not
+  // labelled as one; it is simply there to be used again.
+  const definable = [...review.entities.values()].filter((x) => x.decision !== 'skip');
   // A settled reading says what it is; a card in a group of twenty says it in
   // one line and nothing else, because twenty full cards is not a summary.
   const line = compact ? readingLabel(d) : about;
@@ -8080,6 +8153,37 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
                 ${others.map((p) => `<option value="${esc(p.ref)}"${d.subject === p.ref ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}
               </select>
             </div>` : ''}
+          ${/* Saying an entry is what introduces something. Offered here and
+               only here, never suggested, and never filled in from a name the
+               source did not establish — the flag says a name is present, not
+               what the entry is. */''}
+          <div class="field">
+            <label>This entry defines something</label>
+            <div class="rv-hint">What does this entry define?</div>
+            <select data-defines="${esc(d.ref)}">
+              <option value="">Choose existing…</option>
+              ${definable.map((x) => `<option value="${esc(x.ref)}"${d.defines === x.ref ? ' selected' : ''}>${esc(x.name)} — ${esc(TYPE_LABEL[x.type] || x.type)}</option>`).join('')}
+            </select>
+            ${review.definingNew.has(d.ref) ? `
+              <div class="rv-newent">
+                <div class="field"><label>Name</label>
+                  <input type="text" data-new-name="${esc(d.ref)}" value="" autocomplete="off" spellcheck="false"></div>
+                <div class="field"><label>Type</label>
+                  <select data-new-type="${esc(d.ref)}">
+                    <option value="">Choose type…</option>
+                    ${Object.entries(TYPE_LABEL).map(([k, label]) => `<option value="${esc(k)}">${esc(label)}</option>`).join('')}
+                  </select>
+                </div>
+                <div class="row-actions">
+                  <button class="btn" data-define-create="${esc(d.ref)}">Use this</button>
+                  <button class="btn quiet" data-define-cancel="${esc(d.ref)}">Cancel</button>
+                </div>
+                <div class="why" data-new-trouble="${esc(d.ref)}"></div>
+              </div>`
+    : `<div class="row-actions" style="margin-top:6px">
+                <button class="btn quiet" data-define-new="${esc(d.ref)}">+ Add something not listed</button>
+              </div>`}
+          </div>
           ${hideCategory && isSettled(d) ? '' : `
             <div class="field">
               <label>Type of information</label>
@@ -8237,6 +8341,9 @@ function onReviewClick(e) {
     } else {
       d.scope = 'world';
       d.subject = null;
+      // World material introduces nothing, and Apply refuses an entry that is
+      // not about an entity yet claims to define one.
+      d.defines = null;
       // Unchanged: a category that only means anything about a person cannot
       // survive the entry becoming nobody's. What is new is that the card can
       // now say it happened, rather than the category quietly reading
@@ -8349,6 +8456,46 @@ function onReviewClick(e) {
   }
   const drop = e.target.closest('[data-drop]');
   if (drop) { review.suggestions.delete(drop.dataset.drop); renderReview(); return; }
+
+  // ---- saying an entry is what introduces something
+  const defineNew = e.target.closest('[data-define-new]');
+  if (defineNew) {
+    // Opening the form decides nothing: no entity, no tick, no change to what
+    // Save would write. It is a form, and it is empty.
+    review.definingNew.add(defineNew.dataset.defineNew);
+    renderReview();
+    return;
+  }
+  const defineCancel = e.target.closest('[data-define-cancel]');
+  if (defineCancel) { review.definingNew.delete(defineCancel.dataset.defineCancel); renderReview(); return; }
+
+  const defineCreate = e.target.closest('[data-define-create]');
+  if (defineCreate) {
+    const ref = defineCreate.dataset.defineCreate;
+    const d = review.entries.get(ref);
+    const name = ($(`[data-new-name="${ref}"]`)?.value || '').trim();
+    const type = $(`[data-new-type="${ref}"]`)?.value || '';
+    const trouble = $(`[data-new-trouble="${ref}"]`);
+    // Said in place rather than by redrawing, so what has been typed survives
+    // being told it is not enough yet.
+    if (!name) { if (trouble) trouble.textContent = 'Give it a name first.'; return; }
+    if (!type) { if (trouble) trouble.textContent = 'Say what kind of thing it is.'; return; }
+    // Something of this name and kind already here is that thing, not a second
+    // one. Only a name nothing answers to is made.
+    const already = entityLike(name, type);
+    const target = already ? already.ref : refFor(name);
+    if (!already) {
+      review.entities.set(target, {
+        ref: target, type, name, aliases: [], decision: 'new', proposedBy: 'manual',
+        madeHere: true, evidence: [], profileEntries: [], mentionedIn: 0, subjectOf: 0,
+        confidence: null, nameSharedWith: [], mayBeSeveral: false,
+      });
+    }
+    setDefines(d, target);
+    review.definingNew.delete(ref);
+    renderReview();
+    return;
+  }
 
   // Leaving something for later is a real answer, and it must cost nothing:
   // no tick, no reading changed, no entity made, and no effect on what Save
@@ -8495,6 +8642,14 @@ function onReviewChange(e) {
       d.proposedBy = 'manual';
       d.editedContent = true;
     }
+    renderReview();
+    return;
+  }
+  const defines = e.target.closest('[data-defines]');
+  if (defines) {
+    const d = review.entries.get(defines.dataset.defines);
+    if (defines.value) setDefines(d, defines.value);
+    else { d.defines = null; d.proposedBy = 'manual'; d.editedContent = true; }
     renderReview();
     return;
   }

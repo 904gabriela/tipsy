@@ -354,6 +354,96 @@ console.log('\nweaker suggestions are offered, never applied in bulk');
   ok('and no button offers to accept them all', !/accept all|use the \d+|all \d+/i.test(labels));
 }
 
+// Saying what an entry introduces, and making the thing it introduces. Both
+// live under the fine detail, both are a person's own act, and neither is ever
+// begun by Nexus.
+console.log('\nsaying what an entry defines');
+{
+  // A review of its own, so what this does to one entry cannot depend on, or
+  // disturb, what the sections before it decided.
+  await cdp('Page.navigate', { url: `http://localhost:${port}/` });
+  await sleep(2200);
+  await click('[data-tab="characters"]');
+  await click('[data-shelf="sources"]');
+  await click(`[data-lorebook="${bookId}"]`);
+  await sleep(800);
+  await click(`[data-organize="${bookId}"]`);
+  await waitFor('#sheet-body .edit-card', 90000);
+  await sleep(1800);
+  const ref = await ev(`(() => {
+    const c = document.querySelector('.rv-ask[data-ask] .edit-card[data-entry-ref]');
+    if (!c) return null;
+    if (c.querySelector('.edit-body').hidden) c.querySelector('.edit-head').click();
+    return c.getAttribute('data-entry-ref');
+  })()`);
+  ok('there is a card to decide about', !!ref);
+  await sleep(600);
+  const at = (sel) => `document.querySelector('[data-entry-ref="${ref}"] ${sel}')`;
+  ok('it is offered, and only under the fine detail', await ev(`(() => {
+    const c = document.querySelector('[data-entry-ref="${ref}"]');
+    const sel = c.querySelector('[data-defines]');
+    return !!sel && !!sel.closest('details');
+  })()`));
+  ok('nothing is chosen for it', await ev(`${at('[data-defines]')}.value`) === '');
+  ok('and the words are about things, not people', /defines something/i.test(await ev(`${at('[data-defines]')}.closest('.field').textContent`)));
+  ok('no form is open yet', await ev(`!${at('[data-new-name]')}`));
+
+  const saveBefore = await ev(`(document.getElementById('rv-save')||{}).textContent`);
+  const tickBefore = await ev(`${at('[data-tick]')}.getAttribute('aria-pressed')`);
+  await ev(`${at('[data-define-new]')}.click()`);
+  await sleep(700);
+  ok('opening the form decides nothing', await ev(`(document.getElementById('rv-save')||{}).textContent`) === saveBefore, saveBefore);
+  ok('and ticks nothing', await ev(`${at('[data-tick]')}.getAttribute('aria-pressed')`) === tickBefore);
+  ok('the name starts empty', await ev(`${at('[data-new-name]')}.value`) === '');
+  ok('no kind is chosen for it', await ev(`${at('[data-new-type]')}.value`) === '');
+  const types = await ev(`[...${at('[data-new-type]')}.options].map(o => o.value).filter(Boolean)`);
+  ok('every kind of thing is offered', types.length === 6
+    && ['person', 'place', 'faction', 'item', 'event', 'concept'].every((t) => types.includes(t)), types.join(', '));
+
+  await ev(`${at('[data-define-create]')}.click()`);
+  await sleep(500);
+  ok('it will not make something with no name', /name/i.test(await ev(`${at('[data-new-trouble]')}.textContent`))
+    && await ev(`${at('[data-defines]')}.value`) === '');
+  await ev(`${at('[data-new-name]')}.value = 'The Harbour Board'`);
+  await ev(`${at('[data-define-create]')}.click()`);
+  await sleep(500);
+  ok('nor without being told what kind of thing it is', /kind/i.test(await ev(`${at('[data-new-trouble]')}.textContent`))
+    && await ev(`${at('[data-defines]')}.value`) === '');
+  ok('and it still has not ticked anything', await ev(`${at('[data-tick]')}.getAttribute('aria-pressed')`) === tickBefore);
+
+  await ev(`(() => { const s = ${at('[data-new-type]')}; s.value = 'faction'; return true; })()`);
+  await ev(`${at('[data-define-create]')}.click()`);
+  await sleep(900);
+  // Deciding moves the entry into Sorted, which is shut until asked for.
+  await ev(`(() => { const s = document.querySelector('[data-section="sorted"]'); if (s && s.querySelector('.edit-body').hidden) s.querySelector('.edit-head').click(); return true; })()`);
+  await sleep(700);
+  await ev(`(() => { const c = document.querySelector('[data-entry-ref="${ref}"]'); if (c && c.querySelector('.edit-body').hidden) c.querySelector('.edit-head').click(); return true; })()`);
+  await sleep(600);
+  ok('with a name and a kind, it is used', await ev(`${at('[data-defines]')}.value`) === 'the-harbour-board',
+    await ev(`${at('[data-defines]')}.value`));
+  ok('the entry now introduces it', /Describes The Harbour Board/.test(await ev(`document.querySelector('[data-entry-ref="${ref}"]').textContent`)));
+  ok('as a profile', await ev(`${at('[data-category]')}.value`) === 'profile');
+  ok('and about nobody', await ev(`(() => { const s = ${at('[data-subject-other]')}; return s ? s.value : ''; })()`) === '');
+  ok('it is ticked to be saved', await ev(`${at('[data-tick]')}.getAttribute('aria-pressed')`) === 'true');
+  ok('the save count moved', await ev(`(document.getElementById('rv-save')||{}).textContent`) !== saveBefore,
+    `${saveBefore} → ${await ev(`(document.getElementById('rv-save')||{}).textContent`)}`);
+  ok('and it says whose decision it was', /Decided by you/.test(await ev(`${at('.rv-said-back')}.textContent`)));
+
+  // Choosing an "about" reading instead must take the defines away: Apply
+  // refuses an entry that claims both, so the screen must never hold both.
+  await ev(`(() => {
+    const c = document.querySelector('[data-entry-ref="${ref}"]');
+    for (const d of c.querySelectorAll('details')) d.open = true;
+    const chip = [...c.querySelectorAll('.rv-choice')].find(b => /General world material/.test(b.textContent));
+    chip.click(); return true;
+  })()`);
+  await sleep(900);
+  ok('changing to an ordinary reading clears what it defined', await ev(`(() => {
+    const s = document.querySelector('[data-entry-ref="${ref}"] [data-defines]');
+    return s ? s.value : 'card gone';
+  })()`) !== 'the-harbour-board');
+}
+
 console.log('\nsaving says what it will do');
 {
   await click('#rv-save');

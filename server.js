@@ -21,7 +21,7 @@ import { fromComposition, checkDraft, HARD as BUILDER_HARD, MODES as BUILDER_MOD
 import { buildDraft, regenerate } from './src/builder/index.js';
 import { planGenerated, writeGenerated, createLeadCard, storyPackage } from './src/builder/apply.js';
 import { isDirection, semanticSection } from './src/semantics/authority.js';
-import { semanticViews, sourceOrganization, areDistinct, resolveNpcEntity, SemanticError } from './src/semantics/store.js';
+import { semanticViews, sourceOrganization, areDistinct, resolveNpcEntity, declarationsOf, currentEntity, SemanticError } from './src/semantics/store.js';
 import { inspectPackage, importPackage } from './src/package/import.js';
 import { exportStory, exportSources } from './src/package/export.js';
 import { analyzeSource } from './src/conversion/analyze.js';
@@ -813,6 +813,35 @@ route('DELETE', '/api/entries/:id', async (req, res, { id }) => { db.deleteEntry
 route('GET', '/api/lorebooks/:id/organization', async (req, res, { id }) => {
   if (!db.getLorebook(id)) throw new HttpError(404, 'No such lorebook.');
   return sourceOrganization(db, id);
+});
+
+/**
+ * Who this source has already said it is about.
+ *
+ * Read-only, and deliberately not part of the analysis. A person or place this
+ * source declared in an earlier review exists whether or not reading the text
+ * again would suggest it — somebody said so, and that is a different kind of
+ * fact from a reading. Review needs them so a declaration made once can be used
+ * again rather than made a second time.
+ */
+route('GET', '/api/lorebooks/:id/declarations', async (req, res, { id }) => {
+  if (!db.getLorebook(id)) throw new HttpError(404, 'No such lorebook.');
+  return declarationsOf(db, id)
+    .filter((d) => d.status === 'approved')
+    .map((d) => {
+      const entity = currentEntity(db, d.entity_id);
+      if (!entity) return null;
+      let aliases = [];
+      try { aliases = JSON.parse(d.local_aliases || '[]'); } catch { aliases = []; }
+      return {
+        ref: d.local_ref,
+        entityId: entity.id,
+        type: entity.type,
+        name: d.local_name || entity.canonical_name,
+        aliases,
+      };
+    })
+    .filter(Boolean);
 });
 
 /**
