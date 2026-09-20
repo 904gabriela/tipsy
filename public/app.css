@@ -1883,6 +1883,15 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 /* The question itself, which is the point of the card and the only thing on it
    set in the reading size. */
 .rv-question { margin: 9px 0 8px; font-size: 14px; color: var(--ink); }
+
+/* What Nexus read, shown as that and not as an answer. No accent and no tick:
+   both of those mean "this will be saved", and this will not. */
+.rv-choice.rv-suggested { border-style: dashed; }
+.rv-sug {
+  margin-left: 6px; padding: 0 5px; border-radius: 3px;
+  font-size: 10px; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--ink-faint); background: var(--surface-2);
+}
 .rv-choices { margin-bottom: 2px; }
 
 /* One disclosure inside a card is a detail; three stacked with borders is a

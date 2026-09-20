@@ -262,6 +262,32 @@ console.log("\nthe analyser's workings are not the decision");
     /Type of information/.test(details || '') && /Also connected to/.test(details || ''));
 }
 
+// A tick means one thing: this reading will be saved. What the analyser
+// proposed is a different fact and is shown as that, because a proposal
+// wearing a tick is a proposal claiming to be somebody's decision — and on a
+// card that says nothing will be saved, both cannot be true.
+console.log('\na proposal is not a decision');
+{
+  const mismatched = await ev(`(() => {
+    const bad = [];
+    for (const c of document.querySelectorAll('#sheet-body .edit-card[data-entry-ref]')) {
+      const tick = c.querySelector('[data-tick]');
+      if (!tick || tick.getAttribute('aria-pressed') === 'true') continue;
+      if (c.querySelector('[data-correct]')) continue;
+      const pressed = [...c.querySelectorAll('.rv-choice[aria-pressed="true"]')].map(b => b.textContent.trim());
+      if (pressed.length) bad.push(((c.querySelector('.edit-head b')||{}).textContent||'?').trim() + ' → ' + pressed.join(', '));
+    }
+    return bad;
+  })()`);
+  ok('nothing that will not be saved shows as chosen', mismatched.length === 0, mismatched.slice(0, 3).join(' | '));
+  const suggested = await ev(`document.querySelectorAll('#sheet-body .rv-choice.rv-suggested').length`);
+  ok("and what Nexus read is still shown, as its reading", suggested > 0, `${suggested} marked as Nexus’s reading`);
+  ok('marked in words, not only by styling',
+    /Nexus’s reading/.test(await text('#sheet-body .rv-choice.rv-suggested')));
+  ok('and a suggested chip is not pressed',
+    await ev(`[...document.querySelectorAll('#sheet-body .rv-choice.rv-suggested')].every(b => b.getAttribute('aria-pressed') === 'false')`));
+}
+
 console.log('\nleaving something for later costs nothing');
 {
   const before = await ev(`(document.getElementById('rv-save')||{}).textContent`);
@@ -303,6 +329,14 @@ console.log('\nchoosing general world material');
   ok("Nexus's earlier doubt is no longer on the primary card",
     !/could not settle|isn't sure|likeliest/i.test(primary || ''), (primary || '').slice(0, 100));
   ok('and the reading can still be changed', /Change this reading/.test(await ev(`${find}.textContent`)));
+  // Now, and only now, does the choice show as chosen.
+  ok('the chosen reading shows as chosen', await ev(`(() => {
+    const c = ${find};
+    const chip = [...c.querySelectorAll('.rv-choice')].find(b => /General world material/.test(b.textContent));
+    return chip ? chip.getAttribute('aria-pressed') === 'true' && !chip.classList.contains('rv-suggested') : false;
+  })()`));
+  ok('and its entry is ticked to be saved',
+    await ev(`${find}.querySelector('[data-tick]').getAttribute('aria-pressed')`) === 'true');
 }
 
 console.log('\nweaker suggestions are offered, never applied in bulk');

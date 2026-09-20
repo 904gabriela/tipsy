@@ -7464,11 +7464,16 @@ const isSettled = (d) => d.scope !== 'entity' || !!d.subject || !!d.defines;
 const plural = (n, one, many = `${one}s`) => `${num(n)} ${n === 1 ? one : many}`;
 
 /**
- * One candidate you can choose. Accent means chosen, everywhere and only there:
- * an entry Nexus has not resolved shows no accented choice at all, so the colour
- * never stands for "this is where the list starts".
+ * One candidate you can choose.
+ *
+ * A tick means this reading will be saved, and it means that nowhere else and
+ * nothing else. What the analyser proposed is a different fact: it is shown,
+ * because hiding it would be worse, but it is shown as a reading Nexus arrived
+ * at and not as an answer somebody gave. A proposal wearing a tick is a
+ * proposal claiming to be a decision, and on a card that says "nothing to save
+ * yet" the two cannot both be true.
  */
-const choiceChip = (entryRef, entityRef, label, selected) => `<button class="chip-tag rv-choice" data-subject="${esc(entryRef)}" data-entity="${esc(entityRef)}" aria-pressed="${!!selected}">${selected ? '<span class="rv-check" aria-hidden="true">✓</span>' : ''}${esc(label)}</button>`;
+const choiceChip = (entryRef, entityRef, label, selected, suggested = false) => `<button class="chip-tag rv-choice${suggested && !selected ? ' rv-suggested' : ''}" data-subject="${esc(entryRef)}" data-entity="${esc(entityRef)}" aria-pressed="${!!selected}">${selected ? '<span class="rv-check" aria-hidden="true">✓</span>' : ''}${esc(label)}${suggested && !selected ? ' <span class="rv-sug">Nexus’s reading</span>' : ''}</button>`;
 
 /**
  * There is no action anywhere that accepts a group of suggestions at once.
@@ -7941,6 +7946,11 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
   // kept underneath. The provenance this reads was already recorded; it is only
   // being shown.
   const decided = isSettled(d) && (d.proposedBy === 'manual' || d.proposedBy === 'model-assist');
+  // Whether this reading is actually going to be written. Only then does a
+  // choice show as chosen; until then what Nexus read is labelled as its
+  // reading, so nothing on an unticked card looks like somebody's answer.
+  const accepted = d.approve || d.current === 'approved';
+  const isWorld = !d.subject && !d.defines && isSettled(d);
   // Choosing general material can move a person-shaped category to background.
   // Only say so when it actually happened.
   const movedCategory = !!d.categoryWas && d.categoryWas !== d.category;
@@ -8020,8 +8030,8 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
              they want one. */''}
         ${!decided && ask !== 'named' && (choose || d.pick || d.correcting || !isSettled(d)) ? `
           <div class="chips rv-choices">
-            ${choiceChip(d.ref, '', 'General world material', !d.subject && !d.defines && isSettled(d))}
-            ${likelyPeople.map((p) => choiceChip(d.ref, p.ref, p.name, d.subject === p.ref)).join('')}
+            ${choiceChip(d.ref, '', 'General world material', accepted && isWorld, !accepted && isWorld)}
+            ${likelyPeople.map((p) => choiceChip(d.ref, p.ref, p.name, accepted && d.subject === p.ref, !accepted && d.subject === p.ref)).join('')}
           </div>` : ''}
         ${/* Leaving it is a real answer and must cost nothing: it ticks
              nothing, writes nothing, and changes no count. Asking a model is
@@ -8058,8 +8068,8 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
             <div class="field">
               <label>What is this about?</label>
               <div class="chips">
-                ${choiceChip(d.ref, '', 'General world material', !d.subject && !d.defines && isSettled(d))}
-                ${likelyPeople.map((p) => choiceChip(d.ref, p.ref, p.name, d.subject === p.ref)).join('')}
+                ${choiceChip(d.ref, '', 'General world material', accepted && isWorld, !accepted && isWorld)}
+                ${likelyPeople.map((p) => choiceChip(d.ref, p.ref, p.name, accepted && d.subject === p.ref, !accepted && d.subject === p.ref)).join('')}
               </div>
             </div>` : ''}
           ${others.length ? `
