@@ -160,12 +160,53 @@ export function applyReview(db, lorebookId, decisions = {}) {
     if (x.decision === 'skip') fail(`entities.${ref}`, `"${x.name}" is used by an entry but was left out of the review.`);
     if (x.decision === 'existing' && !x.entityId) fail(`entities.${ref}`, 'No existing person or place was chosen.');
   }
+  // What this source has already said it is about. Read before anything is
+  // written, because whether "the same one" can be honoured is a question
+  // about what is already stored, not about what is ticked today.
+  const declaredNow = new Map(db.raw.prepare(`SELECT local_ref, entity_id FROM source_entities WHERE lorebook_id=?`)
+    .all(lorebookId).map((r) => [r.local_ref, r.entity_id]));
   for (const m of matches) {
     if (!['same', 'separate', 'later'].includes(m.decision)) fail(`matches.${m.entity}`, 'A match is the same, separate, or decided later.');
     if (m.decision !== 'later' && !m.entityId) fail(`matches.${m.entity}`, 'That decision needs an existing person or place to point at.');
-    if (m.decision === 'same') {
-      const x = byRef.get(m.entity);
-      if (x && x.decision === 'existing' && x.entityId && x.entityId !== m.entityId) fail(`matches.${m.entity}`, 'This says it is two different existing people at once.');
+    const x = byRef.get(m.entity);
+    if (m.decision === 'separate') {
+      // Keeping two apart is as much a decision as joining them, and it is
+      // recorded about entities that exist. One this source has already
+      // declared will do; otherwise a reading being saved must name them, or
+      // there is nothing for the decision to be about.
+      const mineNow = declaredNow.get(m.entity);
+      const otherNow = currentEntity(db, m.entityId)?.id;
+      if (mineNow && otherNow && mineNow === otherNow) {
+        fail(`matches.${m.entity}`, `This source already says "${x?.name || m.entity}" is that same one. Keeping them apart would contradict it.`);
+      } else if (!mineNow && !used.has(m.entity)) {
+        fail(`matches.${m.entity}`, `Nothing being saved says anything about "${x?.name || m.entity}", so there is nothing to keep apart yet. Accept a reading about them as well.`);
+      }
+      continue;
+    }
+    if (m.decision !== 'same') continue;
+    if (x && x.decision === 'existing' && x.entityId && x.entityId !== m.entityId) fail(`matches.${m.entity}`, 'This says it is two different existing people at once.');
+    const target = currentEntity(db, m.entityId)?.id;
+    if (!target) { fail(`matches.${m.entity}`, 'The person or place chosen no longer exists.'); continue; }
+    const mine = declaredNow.get(m.entity);
+    // Already the same one. Nothing to join, and nothing to refuse.
+    if (mine && mine === target) continue;
+    if (mine) {
+      // Both identities are established: this source has its own, and the
+      // candidate is somebody else's. Joining them would mean rewriting
+      // approved readings, relations, story bindings and more, in one
+      // migration. Nexus cannot do that yet, and it will not do half of it.
+      if (areDistinct(db, mine, target)) {
+        fail(`matches.${m.entity}`, `"${x?.name || m.entity}" and the one chosen were kept as separate identities before. Changing that back is not something this screen can do yet.`);
+      } else {
+        fail(`matches.${m.entity}`, `This source already has its own "${x?.name || m.entity}". Joining two identities that each already exist is not something Nexus can do safely yet, so it has not been done.`);
+      }
+      continue;
+    }
+    // Nothing of this source's own stands in the way, so the decision is the
+    // first-organisation one — but it is only ever carried out for somebody an
+    // approved reading actually names. Said, rather than quietly dropped.
+    if (!used.has(m.entity)) {
+      fail(`matches.${m.entity}`, `Nothing being saved says anything about "${x?.name || m.entity}", so there is nothing for this decision to attach to. Accept a reading about them as well.`);
     }
   }
   if (problems.length) throw new ReviewError('Some of these decisions cannot be saved as they are.', { problems });
@@ -244,7 +285,10 @@ export function applyReview(db, lorebookId, decisions = {}) {
     let distinctions = 0;
     for (const m of matches) {
       if (m.decision !== 'separate') continue;
-      const mine = resolved.get(m.entity);
+      // Either the one this review just settled, or the one this source
+      // already declared: a decision to keep two apart must not depend on
+      // whether anything happened to be ticked alongside it.
+      const mine = resolved.get(m.entity) || declared.get(m.entity);
       const other = currentEntity(db, m.entityId)?.id;
       if (!mine || !other || mine === other) continue;
       if (!areDistinct(db, mine, other)) { distinguish(db, mine, other); distinctions++; }

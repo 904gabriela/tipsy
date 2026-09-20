@@ -8317,7 +8317,10 @@ function entityChoice(x, state) {
     <div class="rv-hint">Who is this?</div>
     <div class="row-actions" style="margin-bottom:8px">
       <button class="btn${!same && state.decision !== 'skip' ? ' primary' : ''}" data-ent-new="${esc(x.ref)}">New to Nexus</button>
-      ${mine.map(([key, m]) => `<button class="btn${m.decision === 'same' ? ' primary' : ''}" data-ent-same="${esc(key)}">Already have them</button>`).join('')}
+      ${/* Only where it could actually be carried out: this source has not
+           settled on anybody of its own for them yet. */''}
+      ${mine.filter(([, m]) => canJoin(x.ref, m.candidate.entityId))
+    .map(([key, m]) => `<button class="btn${m.decision === 'same' ? ' primary' : ''}" data-ent-same="${esc(key)}">Already have them</button>`).join('')}
       ${!usedByTicked ? `<button class="btn${state.decision === 'skip' ? ' primary' : ''}" data-ent-skip="${esc(x.ref)}">Leave out</button>` : ''}
     </div>
     ${same ? `<div class="why">The ${esc(TYPE_LABEL[state.type].toLowerCase())} already in your library will be used; this source will say it is about them too.</div>` : ''}
@@ -8376,6 +8379,23 @@ function variantCard(g) {
     </div>`;
 }
 
+/**
+ * Whether saying "the same one" is something Nexus could actually carry out.
+ *
+ * It can when this source has not yet settled on anybody of its own for that
+ * ref: the declaration and the readings are then written together, and there
+ * is one person rather than two. It cannot once both sides already exist —
+ * joining two established identities means rewriting approved readings,
+ * relations, story bindings and more, in one migration, and that is a
+ * deliberate piece of work nobody has built yet. The screen does not offer it,
+ * because an offer that can only fail is worse than no offer.
+ */
+const alreadyOurs = (entityRef) => review.entities.get(entityRef)?.declaredEntityId || null;
+const canJoin = (entityRef, candidateEntityId) => {
+  const mine = alreadyOurs(entityRef);
+  return !mine || mine === candidateEntityId;
+};
+
 function matchCard(key, m) {
   return `
     <div class="edit-card">
@@ -8385,8 +8405,11 @@ function matchCard(key, m) {
         <div class="why">Nexus thinks this may be the same ${esc(TYPE_LABEL[m.candidate.type] || 'thing')} as “${esc(m.candidate.name)}”. A shared name can also belong to another version of a world, so nothing is joined unless you say so.</div>
         ${m.evidence.map((v) => `<div class="fired-row"><span class="t">${esc(v.detail)}</span></div>`).join('')}
         ${m.candidate.entityId ? `
+          ${canJoin(m.entity, m.candidate.entityId) ? '' : `<div class="why"><b>This source already has its own ${esc(entityName(m.entity))}.</b>
+            Joining two that each already exist would mean rewriting everything already saved about both, and Nexus cannot do that safely yet. You can still keep them apart, or leave it.</div>`}
           <div class="row-actions" style="margin-top:10px">
-            <button class="btn${m.decision === 'same' ? ' primary' : ' quiet'}" data-match="${esc(key)}" data-decision="same">Same one</button>
+            ${canJoin(m.entity, m.candidate.entityId)
+    ? `<button class="btn${m.decision === 'same' ? ' primary' : ' quiet'}" data-match="${esc(key)}" data-decision="same">Same one</button>` : ''}
             <button class="btn${m.decision === 'separate' ? ' primary' : ' quiet'}" data-match="${esc(key)}" data-decision="separate">Keep separate</button>
             <button class="btn${m.decision === 'later' ? ' primary' : ' quiet'}" data-match="${esc(key)}" data-decision="later">Decide later</button>
           </div>`
