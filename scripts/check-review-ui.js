@@ -437,12 +437,21 @@ console.log('\nsaying what an entry defines');
   ok('and nothing is drawn twice', await ev(`document.querySelectorAll('[data-entry-ref="${ref}"]').length`) === 0);
 
   console.log('  changing it back');
+  const saveDecided = await ev(`(document.getElementById('rv-save')||{}).textContent`);
   await ev(`${pinned}.querySelector('[data-reopen]').click()`);
   await sleep(900);
   ok('the controls come back in the same place', await ev(`(() => {
     const c = document.querySelector('[data-entry-ref="${ref}"]');
     return !!c && !!c.closest('.rv-ask[data-ask]') && !!c.querySelector('[data-defines]');
   })()`));
+  // Asking to change it is one tap, not two: the controls are not behind a
+  // second disclosure wearing the same words as the button just pressed.
+  ok('and they are open, not behind the same words again', await ev(`(() => {
+    const s = document.querySelector('[data-entry-ref="${ref}"] [data-defines]');
+    return !!s && !!s.closest('details') && s.closest('details').open === true;
+  })()`));
+  ok('opening them decided nothing further',
+    await ev(`(document.getElementById('rv-save')||{}).textContent`) === saveDecided, saveDecided);
   ok('still holding the decision', await ev(`${at('[data-defines]')}.value`) === 'the-harbour-board');
   ok('as a profile', await ev(`${at('[data-category]')}.value`) === 'profile');
   ok('about nobody', await ev(`(() => { const s = ${at('[data-subject-other]')}; return s ? s.value : ''; })()`) === '');
@@ -467,6 +476,15 @@ console.log('\nsaying what an entry defines');
   })()`) !== 'the-harbour-board');
 
   console.log('  and moving on');
+  // Done while changing it goes back to the short version; Done on that puts
+  // the entry away. One representation at a time, either way.
+  await ev(`(() => { const b = document.querySelector('[data-done="${ref}"]'); if (b) b.click(); return true; })()`);
+  await sleep(800);
+  ok('Done stops the changing and shows the short version again', await ev(`(() => {
+    const p = document.querySelector('[data-decided="${ref}"]');
+    return !!p && !p.querySelector('[data-defines]') && !!p.querySelector('[data-reopen]');
+  })()`));
+  ok('and there is still only one of it', await ev(`document.querySelectorAll('[data-entry-ref="${ref}"]').length`) === 0);
   await ev(`(() => { const b = document.querySelector('[data-done="${ref}"]'); if (b) b.click(); return true; })()`);
   await sleep(900);
   ok('the confirmation goes when it is dismissed', await ev(`!document.querySelector('[data-decided="${ref}"]')`));

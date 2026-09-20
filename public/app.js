@@ -7458,6 +7458,13 @@ const refFor = (name) => {
  * Taken before the reading changes, because afterwards it belongs elsewhere.
  */
 function pinDecision(d) {
+  // Changing the reading of the entry already being shown keeps its place:
+  // it was decided here, it is being decided here again, and the short
+  // version of the new decision belongs where the old one was.
+  if (review.justDecided && review.justDecided.ref === d.ref) {
+    review.justDecided.editing = false;
+    return;
+  }
   const group = groupOf(d);
   if (group !== 'needs' && group !== 'optional') { review.justDecided = null; return; }
   review.justDecided = {
@@ -8047,7 +8054,7 @@ function decidedCard() {
   // every control it had. Nothing is undecided by looking, and there is still
   // a way to say you are finished.
   if (pin.editing) {
-    return `${entryCard(d, { choose: true })}
+    return `${entryCard(d, { choose: true, openFine: true })}
       <div class="row-actions rv-decided-out"><button class="btn" data-done="${esc(d.ref)}">Done</button></div>`;
   }
   const type = d.defines ? review.entities.get(d.defines)?.type : null;
@@ -8062,7 +8069,7 @@ function decidedCard() {
     </div>`;
 }
 
-function entryCard(d, { choose = false, hideCategory = false, hideSubject = false, compact = false, ask = null }) {
+function entryCard(d, { choose = false, hideCategory = false, hideSubject = false, compact = false, ask = null, openFine = false }) {
   const kind = CATEGORY_LABEL[d.category] || d.category;
   // Inside "What this says about Patrick", every row saying "about Patrick" is
   // the same three words forty times. Only what the section does not already
@@ -8205,7 +8212,10 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
         </details>
         ${/* Every semantic control there has ever been, still here and still
              yours, one tap down rather than all open at once. */''}
-        <details><summary>${decided ? 'Change this reading' : 'Other readings, and the fine detail'}</summary>
+        ${/* Already open when somebody asked to change the reading: they have
+             said what they want, and saying it twice under the same words is
+             not a second question. */''}
+        <details${openFine ? ' open' : ''}><summary>${decided ? 'Change this reading' : 'Other readings, and the fine detail'}</summary>
           ${decided || ask === 'named' ? `
             <div class="field">
               <label>What is this about?</label>
@@ -8532,7 +8542,14 @@ function onReviewClick(e) {
   const reopen = e.target.closest('[data-reopen]');
   if (reopen) { review.justDecided.editing = true; review.opened.add(reopen.dataset.reopen); renderReview(); return; }
   const done = e.target.closest('[data-done]');
-  if (done) { review.justDecided = null; renderReview(); return; }
+  if (done) {
+    // Finished changing it: back to the short version of what was decided.
+    // Finished with it altogether: it takes its ordinary place in Sorted.
+    if (review.justDecided?.editing) review.justDecided.editing = false;
+    else review.justDecided = null;
+    renderReview();
+    return;
+  }
 
   // ---- saying an entry is what introduces something
   const defineNew = e.target.closest('[data-define-new]');
