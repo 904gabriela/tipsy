@@ -315,20 +315,22 @@ console.log('\nchoosing general world material');
   ok('it is a decision that counts towards Save', await ev(`(document.getElementById('rv-save')||{}).textContent`) !== before,
     `${before} -> ${await ev(`(document.getElementById('rv-save')||{}).textContent`)}`);
   const said = await ev(`(() => {
-    const c = document.querySelector('[data-entry-ref="${picked}"]');
-    return c ? c.textContent.replace(/\\s+/g,' ') : '';
+    const p = document.querySelector('[data-decided="${picked}"]');
+    return p ? p.textContent.replace(/\\s+/g,' ').trim() : '';
   })()`);
-  ok('and the reading it produced is shown back', /World information/.test(said), (said.match(/✓[^.]*\./) || [''])[0].slice(0, 90));
+  ok('and the reading it produced is shown back', /World information/.test(said), said.slice(0, 90));
   ok('including the category it was recorded under', /World information · \w/.test(said));
-  // Once a person has answered, their answer is the card, and what Nexus was
-  // unsure of before it is history kept underneath.
+  ok('it says whose decision it was', /Decided by you/.test(said));
+  ok('and the reading can still be changed', /Change this reading/.test(said));
+
+  // Reopened, it is the same decision with every control back.
+  await ev(`document.querySelector('[data-decided="${picked}"] [data-reopen]').click()`);
+  await sleep(800);
   const find = `document.querySelector('[data-entry-ref="${picked}"]')`;
   const primary = await ev(PRIMARY(find));
-  ok('the decision is what the card now says', /✓ World information/.test(primary || ''));
-  ok('and it says whose decision it was', /Decided by you/.test(primary || ''));
+  ok('the decision is what the card says', /✓ World information/.test(primary || ''));
   ok("Nexus's earlier doubt is no longer on the primary card",
     !/could not settle|isn't sure|likeliest/i.test(primary || ''), (primary || '').slice(0, 100));
-  ok('and the reading can still be changed', /Change this reading/.test(await ev(`${find}.textContent`)));
   // Now, and only now, does the choice show as chosen.
   ok('the chosen reading shows as chosen', await ev(`(() => {
     const c = ${find};
@@ -337,6 +339,8 @@ console.log('\nchoosing general world material');
   })()`));
   ok('and its entry is ticked to be saved',
     await ev(`${find}.querySelector('[data-tick]').getAttribute('aria-pressed')`) === 'true');
+  await ev(`document.querySelector('[data-done="${picked}"]').click()`);
+  await sleep(700);
 }
 
 console.log('\nweaker suggestions are offered, never applied in bulk');
@@ -419,18 +423,35 @@ console.log('\nsaying what an entry defines');
   await sleep(700);
   await ev(`(() => { const c = document.querySelector('[data-entry-ref="${ref}"]'); if (c && c.querySelector('.edit-body').hidden) c.querySelector('.edit-head').click(); return true; })()`);
   await sleep(600);
-  ok('with a name and a kind, it is used', await ev(`${at('[data-defines]')}.value`) === 'the-harbour-board',
-    await ev(`${at('[data-defines]')}.value`));
-  ok('the entry now introduces it', /Describes The Harbour Board/.test(await ev(`document.querySelector('[data-entry-ref="${ref}"]').textContent`)));
-  ok('as a profile', await ev(`${at('[data-category]')}.value`) === 'profile');
-  ok('and about nobody', await ev(`(() => { const s = ${at('[data-subject-other]')}; return s ? s.value : ''; })()`) === '');
-  ok('it is ticked to be saved', await ev(`${at('[data-tick]')}.getAttribute('aria-pressed')`) === 'true');
+  // Deciding must not take the card away from under the finger that decided.
+  const pinned = `document.querySelector('[data-decided="${ref}"]')`;
+  ok('the entry is still on screen', await ev(`!!${pinned}`));
+  ok('in the group it was decided in', await ev(`${pinned}.closest('.rv-ask[data-ask]') !== null`));
+  const says = await ev(`${pinned}.textContent.replace(/\\s+/g,' ').trim()`);
+  ok('saying what it now introduces', /Describes The Harbour Board/.test(says), says.slice(0, 80));
+  ok('what kind of thing that is, and how it is filed', /Group · Profile/.test(says));
+  ok('and whose decision it was', /Decided by you/.test(says));
+  ok('it does not claim to have been saved', !/\bsaved\b/i.test(says));
   ok('the save count moved', await ev(`(document.getElementById('rv-save')||{}).textContent`) !== saveBefore,
     `${saveBefore} → ${await ev(`(document.getElementById('rv-save')||{}).textContent`)}`);
-  ok('and it says whose decision it was', /Decided by you/.test(await ev(`${at('.rv-said-back')}.textContent`)));
+  ok('and nothing is drawn twice', await ev(`document.querySelectorAll('[data-entry-ref="${ref}"]').length`) === 0);
 
-  // Choosing an "about" reading instead must take the defines away: Apply
-  // refuses an entry that claims both, so the screen must never hold both.
+  console.log('  changing it back');
+  await ev(`${pinned}.querySelector('[data-reopen]').click()`);
+  await sleep(900);
+  ok('the controls come back in the same place', await ev(`(() => {
+    const c = document.querySelector('[data-entry-ref="${ref}"]');
+    return !!c && !!c.closest('.rv-ask[data-ask]') && !!c.querySelector('[data-defines]');
+  })()`));
+  ok('still holding the decision', await ev(`${at('[data-defines]')}.value`) === 'the-harbour-board');
+  ok('as a profile', await ev(`${at('[data-category]')}.value`) === 'profile');
+  ok('about nobody', await ev(`(() => { const s = ${at('[data-subject-other]')}; return s ? s.value : ''; })()`) === '');
+  ok('ticked to be saved', await ev(`${at('[data-tick]')}.getAttribute('aria-pressed')`) === 'true');
+  ok('and nothing was made a second time',
+    await ev(`[...${at('[data-defines]')}.options].filter(o => /Harbour Board/.test(o.textContent)).length`) === 1);
+
+  // Apply refuses an entry that both introduces something and is about
+  // something, so the screen must never hold both.
   await ev(`(() => {
     const c = document.querySelector('[data-entry-ref="${ref}"]');
     for (const d of c.querySelectorAll('details')) d.open = true;
@@ -438,10 +459,61 @@ console.log('\nsaying what an entry defines');
     chip.click(); return true;
   })()`);
   await sleep(900);
+  await ev(`(() => { const p = document.querySelector('[data-decided="${ref}"] [data-reopen]'); if (p) p.click(); return true; })()`);
+  await sleep(800);
   ok('changing to an ordinary reading clears what it defined', await ev(`(() => {
     const s = document.querySelector('[data-entry-ref="${ref}"] [data-defines]');
     return s ? s.value : 'card gone';
   })()`) !== 'the-harbour-board');
+
+  console.log('  and moving on');
+  await ev(`(() => { const b = document.querySelector('[data-done="${ref}"]'); if (b) b.click(); return true; })()`);
+  await sleep(900);
+  ok('the confirmation goes when it is dismissed', await ev(`!document.querySelector('[data-decided="${ref}"]')`));
+  await ev(`(() => { const s = document.querySelector('[data-section="sorted"]'); if (s && s.querySelector('.edit-body').hidden) s.querySelector('.edit-head').click(); return true; })()`);
+  await sleep(800);
+  ok('and the entry is simply in Sorted, one line, once', await ev(`(() => {
+    const all = document.querySelectorAll('[data-entry-ref="${ref}"]');
+    return all.length === 1 && all[0].classList.contains('compact') && !!all[0].closest('[data-section="sorted"]');
+  })()`), `${await ev(`document.querySelectorAll('[data-entry-ref="${ref}"]').length`)} in the page`);
+}
+
+// The same transition, for a decision that has nothing to do with defining:
+// the behaviour belongs to deciding, not to one control.
+console.log('\nan ordinary decision is acknowledged the same way');
+{
+  await cdp('Page.navigate', { url: `http://localhost:${port}/` });
+  await sleep(2200);
+  await click('[data-tab="characters"]');
+  await click('[data-shelf="sources"]');
+  await click(`[data-lorebook="${bookId}"]`);
+  await sleep(800);
+  await click(`[data-organize="${bookId}"]`);
+  await waitFor('#sheet-body .edit-card', 90000);
+  await sleep(1800);
+  ok('a review opened afresh has nothing pinned', await ev(`document.querySelectorAll('[data-decided]').length`) === 0);
+  const ref = await ev(`(() => {
+    const c = [...document.querySelectorAll('.rv-ask[data-ask] .edit-card[data-entry-ref]')]
+      .find(x => x.querySelector('.rv-choice'));
+    if (!c) return null;
+    if (c.querySelector('.edit-body').hidden) c.querySelector('.edit-head').click();
+    return c.getAttribute('data-entry-ref');
+  })()`);
+  await sleep(600);
+  await ev(`(() => {
+    const c = document.querySelector('[data-entry-ref="${ref}"]');
+    [...c.querySelectorAll('.rv-choice')].find(b => /General world material/.test(b.textContent)).click();
+    return true;
+  })()`);
+  await sleep(900);
+  const says = await ev(`(() => { const p = document.querySelector('[data-decided="${ref}"]'); return p ? p.textContent.replace(/\\s+/g,' ').trim() : null; })()`);
+  ok('it stays where it was decided', !!says);
+  ok('saying what was understood', /World information/.test(says || ''), (says || '').slice(0, 70));
+  ok('and whose decision it was', /Decided by you/.test(says || ''));
+  ok('without claiming to be saved', !/\bsaved\b/i.test(says || ''));
+  await ev(`document.querySelector('[data-done="${ref}"]').click()`);
+  await sleep(800);
+  ok('Done puts it away', await ev(`!document.querySelector('[data-decided="${ref}"]')`));
 }
 
 console.log('\nsaving says what it will do');

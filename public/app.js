@@ -7445,6 +7445,29 @@ const refFor = (name) => {
   return ref;
 };
 
+/**
+ * Where a decision was made, so the card does not simply vanish from under the
+ * finger that made it.
+ *
+ * Deciding moves an entry into Sorted, and Sorted is shut, so the thing being
+ * worked on disappeared with no word about what had been understood. Nothing
+ * about the decision changes here: this remembers only which entry it was and
+ * which group it was standing in, so the same decision can be drawn for a
+ * moment where it was made. One decision, one entry, two views of it.
+ *
+ * Taken before the reading changes, because afterwards it belongs elsewhere.
+ */
+function pinDecision(d) {
+  const group = groupOf(d);
+  if (group !== 'needs' && group !== 'optional') { review.justDecided = null; return; }
+  review.justDecided = {
+    ref: d.ref,
+    group,
+    key: group === 'needs' ? askOf(d) : optionalGroupOf(d),
+    editing: false,
+  };
+}
+
 /** Something of this name and kind this review already has, if there is one. */
 const entityLike = (name, type) => [...review.entities.values()]
   .find((x) => x.type === type && sameEntityName(x.name, name)) || null;
@@ -7572,8 +7595,10 @@ async function openSourceReview(bookId) {
   // once, because reading the source again will not rediscover them.
   let declarations = [];
   try { declarations = await get(`/api/lorebooks/${bookId}/declarations`); } catch { declarations = []; }
-  // Nothing about a new entity is being drafted when the screen opens.
+  // Nothing about a new entity is being drafted when the screen opens, and no
+  // decision is waiting to be acknowledged from a previous visit.
   review.definingNew = new Set();
+  review.justDecided = null;
   // What needs deciding is the one thing open when the screen arrives.
   review.open = new Set(['needs']);
   review.changingRole = false;
@@ -7732,7 +7757,10 @@ function renderReview() {
   // on instead of read twice.
   const all = [...review.entries.values()];
   const inGroup = (name) => all.filter((x) => groupOf(x) === name);
-  const sorted = inGroup('sorted');
+  const pin = review.justDecided;
+  // While a decision is being shown where it was made, it is not also drawn as
+  // a row in Sorted. One entry, one place on the screen.
+  const sorted = inGroup('sorted').filter((x) => !pin || x.ref !== pin.ref);
   const needs = inGroup('needs');
   const optional = inGroup('optional');
 
@@ -7751,9 +7779,13 @@ function renderReview() {
     });
   }
 
-  if (needs.length) {
+  const pinnedIn = (group, key) => (pin && pin.group === group && pin.key === key ? decidedCard() : '');
+  if (needs.length || (pin && pin.group === 'needs')) {
     const asks = new Map();
     for (const x of needs) asks.set(askOf(x), [...(asks.get(askOf(x)) || []), x]);
+    // The question a decision was made under stays on screen for it, even when
+    // it was the last one left there.
+    if (pin && pin.group === 'needs' && !asks.has(pin.key)) asks.set(pin.key, []);
     sections.push({
       id: 'needs',
       title: GROUP.needs.title,
@@ -7765,13 +7797,15 @@ function renderReview() {
           <div class="why">${esc(ASK[ask].why)}</div>
           ${sectionHelp({ id: `ask-${ask}`, help: unasked(rows) })}
           ${rows.map((x) => entryCard(x, { choose: true, ask })).join('')}
+          ${pinnedIn('needs', ask)}
         </div>`),
     });
   }
 
-  if (optional.length) {
+  if (optional.length || (pin && pin.group === 'optional')) {
     const groups = new Map();
     for (const x of optional) groups.set(optionalGroupOf(x), [...(groups.get(optionalGroupOf(x)) || []), x]);
+    if (pin && pin.group === 'optional' && !groups.has(pin.key)) groups.set(pin.key, []);
     sections.push({
       id: 'optional',
       title: GROUP.optional.title,
@@ -7784,12 +7818,15 @@ function renderReview() {
       // is in it, not a hundred and nine cards.
       rows: [...groups.entries()].map(([key, rows]) => {
         const id = `opt-${key}`;
+        // A group holding a decision waiting to be acknowledged stays open for
+        // it, however it was left.
+        const open = review.open.has(id) || !!(pin && pin.group === 'optional' && pin.key === key);
         return `
         <div class="edit-card" data-section="${esc(id)}" data-optional="${esc(key)}">
           <div class="edit-head"><b>${esc(OPTIONAL_GROUP[key])}</b><span class="n">${num(rows.length)}</span>
-            <button class="fold" aria-expanded="${review.open.has(id)}">▾</button></div>
-          <div class="edit-body"${review.open.has(id) ? '' : ' hidden'}>${review.open.has(id)
-    ? rows.map((x) => entryCard(x, { compact: true })).join('') : ''}</div>
+            <button class="fold" aria-expanded="${open}">▾</button></div>
+          <div class="edit-body"${open ? '' : ' hidden'}>${open
+    ? rows.map((x) => entryCard(x, { compact: true })).join('') : ''}${pinnedIn('optional', key)}</div>
         </div>`;
       }),
     });
@@ -7991,6 +8028,38 @@ function correctionNote(d) {
     <b>Changing a saved reading</b>
     <span>The entry keeps its words, its keywords and when it fires. Only what it means changes.${say.length ? ` ${esc(say.join(' '))}` : ''}</span>
   </div>`;
+}
+
+/**
+ * What was just decided, said back where it was decided, and small.
+ *
+ * Only what somebody needs to check that Nexus understood them: the reading,
+ * what kind of thing it is about where that is worth saying, and whose decision
+ * it was. No evidence, no scores, no alternatives — those belong to deciding,
+ * and this is after. It says "decided", never "saved", because nothing has been
+ * written yet.
+ */
+function decidedCard() {
+  const pin = review.justDecided;
+  const d = pin && review.entries.get(pin.ref);
+  if (!d) return '';
+  // Asked to change it: the whole card comes back, in the same place, with
+  // every control it had. Nothing is undecided by looking, and there is still
+  // a way to say you are finished.
+  if (pin.editing) {
+    return `${entryCard(d, { choose: true })}
+      <div class="row-actions rv-decided-out"><button class="btn" data-done="${esc(d.ref)}">Done</button></div>`;
+  }
+  const type = d.defines ? review.entities.get(d.defines)?.type : null;
+  return `
+    <div class="edit-card rv-decided" data-decided="${esc(d.ref)}">
+      <div class="rv-said-back">✓ ${esc(readingLabel(d))}<span class="rv-by">Decided by you</span></div>
+      ${type ? `<div class="rv-decided-meta">${esc(TYPE_LABEL[type] || type)} · ${esc(CATEGORY_LABEL[d.category] || d.category)}</div>` : ''}
+      <div class="row-actions">
+        <button class="btn quiet" data-reopen="${esc(d.ref)}">Change this reading</button>
+        <button class="btn" data-done="${esc(d.ref)}">Done</button>
+      </div>
+    </div>`;
 }
 
 function entryCard(d, { choose = false, hideCategory = false, hideSubject = false, compact = false, ask = null }) {
@@ -8332,6 +8401,7 @@ function onReviewClick(e) {
   const subject = e.target.closest('[data-subject]');
   if (subject) {
     const d = review.entries.get(subject.dataset.subject);
+    pinDecision(d);
     const ref = subject.dataset.entity;
     if (ref) {
       d.scope = 'entity';
@@ -8404,6 +8474,7 @@ function onReviewClick(e) {
   const use = e.target.closest('[data-use]');
   if (use) {
     const d = review.entries.get(use.dataset.use);
+    pinDecision(d);
     d.approve = true;
     d.reselected = true;   // taking a suggestion is choosing it, not editing it
     renderReview();
@@ -8457,6 +8528,12 @@ function onReviewClick(e) {
   const drop = e.target.closest('[data-drop]');
   if (drop) { review.suggestions.delete(drop.dataset.drop); renderReview(); return; }
 
+  // ---- a decision just made, still on screen where it was made
+  const reopen = e.target.closest('[data-reopen]');
+  if (reopen) { review.justDecided.editing = true; review.opened.add(reopen.dataset.reopen); renderReview(); return; }
+  const done = e.target.closest('[data-done]');
+  if (done) { review.justDecided = null; renderReview(); return; }
+
   // ---- saying an entry is what introduces something
   const defineNew = e.target.closest('[data-define-new]');
   if (defineNew) {
@@ -8491,6 +8568,7 @@ function onReviewClick(e) {
         confidence: null, nameSharedWith: [], mayBeSeveral: false,
       });
     }
+    pinDecision(d);
     setDefines(d, target);
     review.definingNew.delete(ref);
     renderReview();
@@ -8622,6 +8700,7 @@ function onReviewChange(e) {
   const other = e.target.closest('[data-subject-other]');
   if (other) {
     const d = review.entries.get(other.dataset.subjectOther);
+    pinDecision(d);
     if (other.value) {
       d.scope = 'entity';
       d.subject = other.value;
@@ -8648,6 +8727,7 @@ function onReviewChange(e) {
   const defines = e.target.closest('[data-defines]');
   if (defines) {
     const d = review.entries.get(defines.dataset.defines);
+    if (defines.value) pinDecision(d);
     if (defines.value) setDefines(d, defines.value);
     else { d.defines = null; d.proposedBy = 'manual'; d.editedContent = true; }
     renderReview();
