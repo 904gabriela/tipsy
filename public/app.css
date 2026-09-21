@@ -2472,3 +2472,6 @@ button.cast-name[data-entry-open] { text-decoration: underline; text-decoration-
 /* Tools that rewrite the entries, kept away from the tool that reads them. */
 .src-legacy { margin: 18px auto 0; max-width: 520px; }
 .src-legacy > summary { padding: 10px 0; min-height: 32px; display: flex; align-items: center; font-size: 13.5px; color: var(--ink-soft); cursor: pointer; }
+
+/* The reading a card would keep, said before the action that keeps it. */
+.rv-reading { margin: 4px 0 0; font-size: 13px; color: var(--ink-soft); }

@@ -586,6 +586,107 @@ console.log('\na name the source never establishes claims nothing');
 }
 
 
+// Reviewing a long source means working inside one entry for a while. Every
+// redraw used to throw the scrolling body away, so one change returned the
+// reader to the top of a hundred and fifty-eight entries with everything they
+// had deliberately opened shut again.
+console.log('\nediting an entry leaves you on that entry');
+{
+  await cdp('Page.navigate', { url: `http://localhost:${port}/` });
+  await sleep(2200);
+  await click('[data-tab="characters"]');
+  await click('[data-shelf="sources"]');
+  await click(`[data-lorebook="${bookId}"]`);
+  await sleep(800);
+  await click(`[data-organize="${bookId}"]`);
+  await waitFor('#sheet-body .edit-card', 90000);
+  await sleep(1800);
+  for (const id of ['sorted', 'optional']) {
+    await ev(`(() => { const s = document.querySelector('[data-section="${id}"]'); if (s && s.querySelector('.edit-body').hidden) s.querySelector('.edit-head').click(); return true; })()`);
+    await sleep(500);
+  }
+  const tall = await ev('document.getElementById("sheet-body").scrollHeight');
+  ok('the review is long enough to lose your place in', tall > 1200, `${tall}px of content`);
+  const ref = await ev(`(() => {
+    const cards = [...document.querySelectorAll('.rv-ask[data-ask="about"] .edit-card[data-entry-ref]')];
+    const c = cards[cards.length - 1];
+    if (!c) return null;
+    c.scrollIntoView({ block: 'center' });
+    if (c.querySelector('.edit-body').hidden) c.querySelector('.edit-head').click();
+    return c.getAttribute('data-entry-ref');
+  })()`);
+  await sleep(600);
+  const at = (sel) => `document.querySelector('[data-entry-ref="${ref}"] ${sel}')`;
+  const scrollTop = () => ev('document.getElementById("sheet-body").scrollTop');
+  const saveText = () => ev('(document.getElementById("rv-save")||{}).textContent');
+  const seen = () => ev(`(() => {
+    const c = document.querySelector('[data-entry-ref="${ref}"]');
+    if (!c) return null;
+    const b = document.getElementById('sheet-body').getBoundingClientRect();
+    const r = c.getBoundingClientRect();
+    const fine = c.querySelector('details[data-fold^="fine:"]');
+    return { open: !c.querySelector('.edit-body').hidden, onScreen: r.bottom > b.top && r.top < b.bottom, fine: !!(fine && fine.open) };
+  })()`);
+  const setCategory = async (value) => {
+    await ev(`(() => { const s = ${at('[data-category]')}; s.value = ${JSON.stringify(value)}; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+    await sleep(800);
+  };
+  await ev(`${at('details[data-fold^="fine:"]')}.open = true`);
+  await sleep(300);
+  const before = await scrollTop();
+  ok('we are working well down the review', before > 200, `scrollTop ${before}`);
+
+  // A — one edit
+  await setCategory('direction');
+  let now = await seen();
+  ok('the entry is still on screen after changing its kind', !!now && now.onScreen, JSON.stringify(now));
+  ok('it is still open', !!now && now.open);
+  ok('the fine detail is still open', !!now && now.fine);
+  const moved = Math.abs((await scrollTop()) - before);
+  ok('and the view did not jump to the top', moved < 150, `moved ${moved}px`);
+
+  // B — a second edit in a row
+  await setCategory('rule');
+  now = await seen();
+  ok('a second change keeps the entry, open, in place', !!now && now.onScreen && now.open && now.fine, JSON.stringify(now));
+
+  // C — a related entity, which must stay related
+  const added = await ev(`(() => {
+    const s = ${at('[data-relate]')};
+    if (!s) return 'no control';
+    const o = [...s.options].find((x) => x.value);
+    if (!o) return 'nobody to add';
+    s.value = o.value; s.dispatchEvent(new Event('change', { bubbles: true }));
+    return o.textContent.trim();
+  })()`);
+  await sleep(800);
+  now = await seen();
+  ok('adding a related entity keeps the place too', !!now && now.onScreen && now.open && now.fine, String(added).slice(0, 40));
+  const links = await ev(`(() => {
+    const c = document.querySelector('[data-entry-ref="${ref}"]');
+    return { related: [...c.querySelectorAll('[data-unrelate]')].length,
+      chosen: [...c.querySelectorAll('.rv-choice[aria-pressed="true"]')].map((b) => b.textContent.trim()) };
+  })()`);
+  ok('and it is related, never the subject', links.related > 0 && links.chosen.length === 0, JSON.stringify(links));
+
+  // I — correcting the kind must never accept the entry
+  const saveBefore = await saveText();
+  await setCategory('direction');
+  ok('changing the kind of information never accepts the entry', (await saveText()) === saveBefore, saveBefore);
+  ok('and its tick is still off', (await ev(`${at('[data-tick]')}.getAttribute('aria-pressed')`)) === 'false');
+
+  // H — a directive is acceptable without naming anybody
+  const reading = await ev(`(() => { const r = ${at('.rv-reading')}; return r ? r.textContent.replace(/\\s+/g, ' ').trim() : null; })()`);
+  ok('the card says what it would record', /Directives/.test(reading || ''), reading);
+  ok('and offers to keep it without asking who it is about', await ev(`!!${at('[data-use]')}`));
+  await ev(`${at('[data-use]')}.click()`);
+  await sleep(900);
+  ok('accepting it moves the save count once', (await saveText()) !== saveBefore, `${saveBefore} -> ${await saveText()}`);
+  const decided = await ev(`(() => { const p = document.querySelector('[data-decided="${ref}"]'); return p ? p.textContent.replace(/\\s+/g, ' ').trim() : null; })()`);
+  ok('and it is acknowledged where it was decided', !!decided && /Directives/.test(decided), (decided || '').slice(0, 80));
+  ok('with no subject invented', !/\bAbout /.test(decided || ''), (decided || '').slice(0, 80));
+}
+
 ok('the screen threw no errors while being driven', thrown.length === 0, thrown.join(' / ').slice(0, 200));
 
 try { ws.close(); } catch { /* */ }

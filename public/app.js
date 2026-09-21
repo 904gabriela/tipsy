@@ -7486,11 +7486,33 @@ const entityLike = (name, type) => [...review.entities.values()]
  * world material and the line says so, including the category it was recorded
  * under, because that choice can change it.
  */
+/**
+ * What a reading of nobody's material is, said as the thing it is.
+ *
+ * "World information" is how the database groups anything that belongs to no
+ * one; it is not what a rule about metagaming IS. Where the storage word would
+ * mislead, the kind of material leads instead. The stored scope is unchanged —
+ * only what a person is told it means.
+ */
+const WORLD_LABEL = {
+  direction: 'Directives · how the story is told',
+  reference: 'Reference · for when it comes up',
+  rule: 'World rules',
+};
+const WORLD_SAYS = {
+  direction: 'This guides how the story is told. It is not about any one person.',
+  reference: 'This is reference knowledge, kept for when it comes up.',
+  rule: 'This is a rule of the world rather than something about a person.',
+  event: 'This is something that happened, rather than something about one person.',
+  background: 'This is background about the world.',
+  item: 'This is a thing in the world.',
+};
+
 const readingLabel = (d) => {
   if (!isSettled(d)) return '';
   const cat = CATEGORY_LABEL[d.category] || d.category;
   if (d.defines) return `Describes ${entityName(d.defines)}`;
-  if (d.scope !== 'entity') return `World information · ${cat}`;
+  if (d.scope !== 'entity') return WORLD_LABEL[d.category] || `World information · ${cat}`;
   return `About ${entityName(d.subject)} · ${cat}`;
 };
 
@@ -7606,6 +7628,8 @@ async function openSourceReview(bookId) {
   // decision is waiting to be acknowledged from a previous visit.
   review.definingNew = new Set();
   review.justDecided = null;
+  // Where each entry was last drawn, so an open one does not move group mid-edit.
+  review.placedIn = new Map();
   // What needs deciding is the one thing open when the screen arrives.
   review.open = new Set(['needs']);
   review.changingRole = false;
@@ -7763,7 +7787,22 @@ function renderReview() {
   // the entry it is about, under "Why Nexus is asking", where it can be acted
   // on instead of read twice.
   const all = [...review.entries.values()];
-  const inGroup = (name) => all.filter((x) => groupOf(x) === name);
+  // An entry somebody has open does not move to another group under their
+  // hands. Correcting what something is can change which group it belongs to —
+  // a directive is no longer a question about who it is about — and the entry
+  // jumping elsewhere mid-edit is the same lost place as scrolling to the top.
+  // It takes its new place when they close it, or when they decide it, because
+  // deciding is a transition worth seeing.
+  const heldIn = (x) => {
+    const real = groupOf(x);
+    const held = review.placedIn.get(x.ref);
+    const working = review.opened.has(x.ref) && !x.approve && x.current !== 'approved';
+    if (working && held && held !== real) return held;
+    review.placedIn.set(x.ref, real);
+    return real;
+  };
+  const placed = new Map(all.map((x) => [x.ref, heldIn(x)]));
+  const inGroup = (name) => all.filter((x) => placed.get(x.ref) === name);
   const pin = review.justDecided;
   // While a decision is being shown where it was made, it is not also drawn as
   // a row in Sorted. One entry, one place on the screen.
@@ -7869,7 +7908,7 @@ function renderReview() {
       <div class="why">${esc(roleSummary())}</div>
       ${/* The scoring that produced this is evidence, not the headline. */''}
       <div class="rv-verdict-row">
-        <details class="rv-why"><summary>Why Nexus says this</summary>
+        <details class="rv-why" data-fold="role-why"><summary>Why Nexus says this</summary>
           ${d.source.proposedRole.evidence.map((v) => `<div class="fired-row"><span class="t">${esc(v.detail)}</span></div>`).join('')}
         </details>
         <button class="btn quiet" id="rv-change-role">${review.changingRole ? 'Keep this' : 'Change'}</button>
@@ -7914,10 +7953,44 @@ function renderReview() {
       <button class="btn primary" id="rv-save"${c.ready ? '' : ' disabled'}>${c.ready ? `Save ${num(c.ready)}` : 'Nothing to save yet'}</button>
     </div>`;
 
+  // Drawing the screen again must not move the person reading it.
+  //
+  // sheet() replaces the whole scrolling body, which is right when a panel
+  // opens and wrong for every redraw after that: the element that holds the
+  // scroll position is thrown away, so the view returns to the top, and every
+  // disclosure somebody opened goes with it because a <details> keeps its own
+  // state and nothing else knows it was open. On a source of a hundred and
+  // fifty-eight entries that turns one edit into a search.
+  //
+  // So the body is built once and rewritten in place afterwards. What was
+  // scrolled to, what was unfolded and what was focused are read off the old
+  // markup and put back, which needs no state of its own and stays true for
+  // controls nobody has thought of yet.
+  const body = $('#sheet-body');
+  if (body && body.dataset.review === '1') {
+    const top = body.scrollTop;
+    const unfolded = [...body.querySelectorAll('details[data-fold]')].filter((x) => x.open).map((x) => x.dataset.fold);
+    const active = document.activeElement;
+    const focused = active && body.contains(active) && active !== body ? keyOf(active) : null;
+    body.innerHTML = html;
+    for (const x of body.querySelectorAll('details[data-fold]')) if (unfolded.includes(x.dataset.fold)) x.open = true;
+    body.scrollTop = top;
+    if (focused) { const again = body.querySelector(focused); if (again) try { again.focus({ preventScroll: true }); } catch { /* */ } }
+    return;
+  }
   sheet('Understanding this source', html, (root) => {
+    root.dataset.review = '1';
     root.addEventListener('click', onReviewClick);
     root.addEventListener('change', onReviewChange);
   });
+}
+
+/** How to find one control again after the markup it lived in was rewritten. */
+function keyOf(el) {
+  for (const a of el.attributes) {
+    if (a.name.startsWith('data-') && a.value) return `${el.tagName.toLowerCase()}[${a.name}="${CSS.escape(a.value)}"]`;
+  }
+  return el.id ? `#${CSS.escape(el.id)}` : null;
 }
 
 /**
@@ -8090,11 +8163,16 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
   // state of the card and what Nexus thought before it is history — kept, and
   // kept underneath. The provenance this reads was already recorded; it is only
   // being shown.
-  const decided = isSettled(d) && (d.proposedBy === 'manual' || d.proposedBy === 'model-assist');
-  // Whether this reading is actually going to be written. Only then does a
-  // choice show as chosen; until then what Nexus read is labelled as its
-  // reading, so nothing on an unticked card looks like somebody's answer.
+  // Whose reading this is, and whether it has been accepted, are two
+  // questions. Correcting what something is makes the reading a person's, but
+  // it does not accept it: until the tick is on, nothing is being saved and
+  // the card must still offer to keep it. Saying "decided by you" over an
+  // unaccepted reading would be the screen claiming a decision nobody made.
   const accepted = d.approve || d.current === 'approved';
+  // The same flag also decides where a choice shows as chosen: until a reading
+  // is going to be written, what Nexus read is labelled as its reading, so
+  // nothing on an unticked card looks like somebody's answer.
+  const decided = accepted && isSettled(d) && (d.proposedBy === 'manual' || d.proposedBy === 'model-assist');
   const isWorld = !d.subject && !d.defines && isSettled(d);
   // Choosing general material can move a person-shaped category to background.
   // Only say so when it actually happened.
@@ -8158,7 +8236,20 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
         ${!decided && ask === 'named' ? `<div class="rv-question">This entry mentions ${esc(unknown.join(' and '))}, ${unknown.length === 1 ? 'a name' : 'names'} Nexus hasn’t established in this source yet.</div>` : ''}
         ${!decided && ask === 'confirm' ? `<div class="rv-question">${d.reviewRisk ? `${esc(d.reviewRisk)}. Tick it if you are happy with it.`
     : `This says something about ${esc(entityName(d.subject) || 'somebody')} rather than introducing them. Save it as being about them?`}</div>` : ''}
-        ${!decided && ask === 'about' ? '<div class="rv-question">What is this about?</div>' : ''}
+        ${/* Once the reading holds together, the question is no longer who it
+             belongs to — it already says. What is left is whether to keep it,
+             so that is what the card offers. Correcting the kind of thing an
+             entry is can settle it this way, and the card follows the
+             correction instead of going on asking the old question. */''}
+        ${!decided && ask === 'about' && isSettled(d) ? `
+          <div class="rv-question">${esc(d.scope !== 'entity'
+    ? (WORLD_SAYS[d.category] || 'This is not about any one person.')
+    : `This reads as ${(CATEGORY_LABEL[d.category] || d.category).toLowerCase()} about ${entityName(d.subject)}.`)}</div>
+          <div class="rv-reading">Nexus would record it as <b>${esc(readingLabel(d))}</b>.</div>
+          <div class="row-actions" style="margin-top:9px">
+            <button class="btn" data-use="${esc(d.ref)}">Use this reading</button>
+          </div>` : ''}
+        ${!decided && ask === 'about' && !isSettled(d) ? '<div class="rv-question">What is this about?</div>' : ''}
         ${bucket === 'likely' && !d.approve && !ask ? `
           <div class="rv-suggest">
             <div>Nexus suggests: <b>${esc(unknown.length ? kind : (about || kind))}</b>${unknown.length && d.subject
@@ -8177,7 +8268,7 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
              the recommended answer goes reads as the recommended answer. They
              are all still there, one tap down, for somebody who has decided
              they want one. */''}
-        ${!decided && ask !== 'named' && (choose || d.pick || d.correcting || !isSettled(d)) ? `
+        ${!decided && ask !== 'named' && !(ask === 'about' && isSettled(d)) && (choose || d.pick || d.correcting || !isSettled(d)) ? `
           <div class="chips rv-choices">
             ${choiceChip(d.ref, '', 'General world material', accepted && isWorld, !accepted && isWorld)}
             ${likelyPeople.map((p) => choiceChip(d.ref, p.ref, p.name, accepted && d.subject === p.ref, !accepted && d.subject === p.ref)).join('')}
@@ -8197,7 +8288,7 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
              deleted; it is simply not the first thing between you and a
              decision. The warnings that used to have a feed of their own are
              here, on the entry each was about, and so are the scores. */''}
-        <details><summary>${ask && !decided ? 'Why Nexus is asking' : 'Why Nexus said this'}</summary>
+        <details data-fold="why:${esc(d.ref)}"><summary>${ask && !decided ? 'Why Nexus is asking' : 'Why Nexus said this'}</summary>
           ${attentionFor(d.ref).map((a) => `<div class="fired-row"><span class="t"><b>${esc(a.title)}</b> — ${esc(a.message)}</span></div>`).join('')}
           ${d.unresolved.length ? `<div class="fired-row"><span class="t">${esc(d.unresolved.join('. '))}</span></div>` : ''}
           ${d.evidence.map((v) => `<div class="fired-row"><span class="t">${esc(v.detail)}</span></div>`).join('')}
@@ -8215,8 +8306,8 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
         ${/* Already open when somebody asked to change the reading: they have
              said what they want, and saying it twice under the same words is
              not a second question. */''}
-        <details${openFine ? ' open' : ''}><summary>${decided ? 'Change this reading' : 'Other readings, and the fine detail'}</summary>
-          ${decided || ask === 'named' ? `
+        <details data-fold="fine:${esc(d.ref)}"${openFine ? ' open' : ''}><summary>${decided ? 'Change this reading' : 'Other readings, and the fine detail'}</summary>
+          ${decided || ask === 'named' || (ask === 'about' && isSettled(d)) ? `
             <div class="field">
               <label>What is this about?</label>
               <div class="chips">
@@ -8281,7 +8372,7 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
             </select>` : ''}
           </div>
         </details>
-        <details><summary>The entry as it is stored</summary>
+        <details data-fold="stored:${esc(d.ref)}"><summary>The entry as it is stored</summary>
           <div class="fired-row"><span class="t">Stored in the original file as</span><span class="w">${esc(d.storedKind)}</span></div>
           <div class="fired-row"><span class="t">Trigger words</span><span class="w">${d.activation.keys.length ? esc(d.activation.keys.slice(0, 6).join(', ')) : 'none'}</span></div>
           <div class="fired-row"><span class="t">Always on</span><span class="w">${d.activation.constant ? 'yes' : 'no'}</span></div>
@@ -8350,7 +8441,7 @@ function entityCard(x) {
         ${(x.nameSharedWith || []).length ? `<div class="why dim">“${esc(state.name)}” is also the name of ${esc((x.nameSharedWith || []).map((t) => `a ${(TYPE_LABEL[t] || t).toLowerCase()}`).join(' and '))} in this source. Nexus keeps them separate — they are different kinds of thing. If one of them was read as the wrong kind, change its kind below.</div>` : ''}
         ${x.mayBeSeveral ? '<div class="why dim">The entries describing them have little in common. They may be one written twice, or they may not be the same at all.</div>' : ''}
         ${entityChoice(x, state)}
-        <details${editing ? ' open' : ''}><summary>Change the name or what they are</summary>
+        <details data-fold="ent-name:${esc(x.ref)}"${editing ? ' open' : ''}><summary>Change the name or what they are</summary>
           <div class="field"><label>Name</label><input data-entity-name="${esc(x.ref)}" value="${esc(state.name)}"></div>
           <div class="field">
             <label>What they are</label>
@@ -8359,7 +8450,7 @@ function entityCard(x) {
             </select>
           </div>
         </details>
-        <details><summary>Why Nexus says this</summary>
+        <details data-fold="ent-why:${esc(x.ref)}"><summary>Why Nexus says this</summary>
           ${x.evidence.map((v) => `<div class="fired-row"><span class="t">${esc(v.detail)}</span></div>`).join('')}
         </details>
       </div>
@@ -8777,8 +8868,21 @@ function onReviewChange(e) {
   if (cat) {
     const d = review.entries.get(cat.dataset.category);
     d.category = cat.value;
+    // A kind of information that is nobody's makes the reading nobody's. A
+    // directive, a rule, an event belongs to the story or the world, not to a
+    // person, and asking who it is about afterwards is asking the wrong
+    // question — it was also the only thing standing between a corrected
+    // directive and being saved at all. The opposite already happens: choosing
+    // general material moves a person-shaped category to background.
+    if (!PERSON_CATEGORY.includes(cat.value) && d.scope === 'entity') {
+      d.scope = 'world';
+      d.subject = null;
+      d.defines = null;
+    }
     d.proposedBy = 'manual';
     d.editedContent = true;
+    // Changing what something is is not accepting it. The tick is untouched.
+    renderReview();
     return;
   }
   const type = e.target.closest('[data-entity-type]');
