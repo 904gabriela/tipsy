@@ -8310,10 +8310,23 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
           ${decided || ask === 'named' || (ask === 'about' && isSettled(d)) ? `
             <div class="field">
               <label>What is this about?</label>
+              ${/* A reading that belongs to nobody says so in a sentence, not as
+                   a ticked choice. "General world material" ticked beside
+                   "Directives" reads as two decisions somebody made, and it is
+                   one: the kind of information settled who it belongs to. The
+                   chip stays where it is still an action — a way back from a
+                   person to nobody — and goes where it would only restate what
+                   the card already says. */''}
+              ${accepted && isWorld ? '<div class="rv-plainly">Not about any one person.</div>' : ''}
               <div class="chips">
-                ${choiceChip(d.ref, '', 'General world material', accepted && isWorld, !accepted && isWorld)}
+                ${accepted && isWorld ? '' : choiceChip(d.ref, '', 'General world material', false, !accepted && isWorld)}
                 ${likelyPeople.map((p) => choiceChip(d.ref, p.ref, p.name, accepted && d.subject === p.ref, !accepted && d.subject === p.ref)).join('')}
               </div>
+              ${/* People the analyser weighed as possible subjects. They are
+                   alternatives, not connections: choosing one changes what the
+                   entry is about, and none of them is related to anything until
+                   somebody says so in the field below. */''}
+              ${accepted && isWorld && likelyPeople.length ? '<div class="rv-hint">Choosing somebody would make it about them instead.</div>' : ''}
             </div>` : ''}
           ${others.length ? `
             <div class="field">

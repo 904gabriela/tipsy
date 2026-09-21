@@ -331,11 +331,12 @@ console.log('\nchoosing general world material');
   ok('the decision is what the card says', /✓ World information/.test(primary || ''));
   ok("Nexus's earlier doubt is no longer on the primary card",
     !/could not settle|isn't sure|likeliest/i.test(primary || ''), (primary || '').slice(0, 100));
-  // Now, and only now, does the choice show as chosen.
-  ok('the chosen reading shows as chosen', await ev(`(() => {
+  // Once accepted, the reading is stated rather than ticked: a chip reading
+  // "general world material" beside it would claim a second decision.
+  ok('the accepted reading is said, not offered again as a choice', await ev(`(() => {
     const c = ${find};
     const chip = [...c.querySelectorAll('.rv-choice')].find(b => /General world material/.test(b.textContent));
-    return chip ? chip.getAttribute('aria-pressed') === 'true' && !chip.classList.contains('rv-suggested') : false;
+    return !chip && /Not about any one person/.test(c.textContent);
   })()`));
   ok('and its entry is ticked to be saved',
     await ev(`${find}.querySelector('[data-tick]').getAttribute('aria-pressed')`) === 'true');
@@ -685,6 +686,48 @@ console.log('\nediting an entry leaves you on that entry');
   const decided = await ev(`(() => { const p = document.querySelector('[data-decided="${ref}"]'); return p ? p.textContent.replace(/\\s+/g, ' ').trim() : null; })()`);
   ok('and it is acknowledged where it was decided', !!decided && /Directives/.test(decided), (decided || '').slice(0, 80));
   ok('with no subject invented', !/\bAbout /.test(decided || ''), (decided || '').slice(0, 80));
+
+  // Belonging to nobody is what the category already settled. Ticking a chip
+  // called "General world material" beside it would read as a second decision
+  // somebody made, and there was only one.
+  await ev(`document.querySelector('[data-decided="${ref}"] [data-reopen]').click()`);
+  await sleep(900);
+  const panel = await ev(`(() => {
+    const c = document.querySelector('[data-entry-ref="${ref}"]');
+    if (!c) return null;
+    const fields = [...c.querySelectorAll('.field')];
+    const about = fields.find((f) => /What is this about/.test(f.querySelector('label')?.textContent || ''));
+    const conn = fields.find((f) => /Also connected to/.test(f.querySelector('label')?.textContent || ''));
+    return {
+      general: about ? [...about.querySelectorAll('.rv-choice')].some((b) => /General world material/.test(b.textContent)) : null,
+      pressed: about ? [...about.querySelectorAll('.rv-choice[aria-pressed="true"]')].map((b) => b.textContent.trim()) : [],
+      says: about ? about.textContent.replace(/\\s+/g, ' ').trim() : '',
+      candidates: about ? [...about.querySelectorAll('.rv-choice')].length : 0,
+      connected: conn ? [...conn.querySelectorAll('[data-unrelate]')].length : 0,
+      category: (c.querySelector('[data-category]') || {}).value,
+    };
+  })()`);
+  ok('changing a directive offers no ticked "general world material"', panel && panel.general === false, JSON.stringify(panel && panel.pressed));
+  ok('and nothing there claims to be a decision', panel && panel.pressed.length === 0);
+  ok('it says what the reading is, in a sentence', /Not about any one person/.test(panel?.says || ''), (panel?.says || '').slice(0, 70));
+  ok('the stored kind is still the directive', panel?.category === 'direction', panel?.category);
+  // Subject candidates and actual connections are different things in
+  // different fields. Whether this entry has either depends on what the
+  // analyser found, so the count is reported rather than demanded.
+  console.log(`  NOTE  ${panel?.candidates ?? 0} subject alternatives offered, ${panel?.connected ?? 0} entities actually connected`);
+  if (panel?.candidates) {
+    const saveNow = await saveText();
+    await ev(`(() => { const c = document.querySelector('[data-entry-ref="${ref}"]'); const chip = c.querySelector('.rv-choice[data-entity]:not([data-entity=""])'); if (chip) chip.click(); return true; })()`);
+    await sleep(900);
+    const after = await ev(`(() => {
+      const c = document.querySelector('[data-entry-ref="${ref}"]') || document.querySelector('[data-decided="${ref}"]');
+      return c ? c.textContent.replace(/\\s+/g, ' ').trim() : null;
+    })()`);
+    ok('choosing somebody still makes it about them', /About /.test(after || ''), (after || '').slice(0, 70));
+    ok('and that replaces the reading rather than adding one', (await saveText()) === saveNow, `${saveNow} -> ${await saveText()}`);
+  } else {
+    console.log('  NOTE  this entry has no subject alternatives, so changing it back is exercised against the real source instead');
+  }
 }
 
 ok('the screen threw no errors while being driven', thrown.length === 0, thrown.join(' / ').slice(0, 200));
