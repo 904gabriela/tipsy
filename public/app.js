@@ -5713,7 +5713,20 @@ function renderSource() {
     $('#src-sub').textContent = plural(group.pieceIds.length, 'piece', 'pieces');
     const ids = srcView.all ? group.pieceIds : group.pieceIds.slice(0, SRC_CAP);
     const rest = group.pieceIds.length - ids.length;
+    // How far this group has got, counted in its own pieces. A group is where
+    // an author filed things; how many of them Nexus has been told the meaning
+    // of is a different number, and both are said in the same units.
+    const read = group.pieceIds.filter((id) => {
+      const x = p.pieces.find((y) => y.pieceId === id);
+      return x && (x.reading === 'approved' || x.reading === 'recheck');
+    }).length;
     $('#src-body').innerHTML = `
+      <div class="src-lede">
+        ${read ? `${num(read)} of ${plural(group.pieceIds.length, 'piece', 'pieces')} organised.`
+    : `Nothing here has been organised yet.`}
+      </div>
+      ${srcView.group.startsWith('f:') ? `
+        <button class="btn primary" data-src-understand style="width:100%;margin-bottom:14px">Understand this group</button>` : ''}
       <div class="src-rows">
         ${ids.map((id) => {
     const x = p.pieces.find((y) => y.pieceId === id);
@@ -5847,6 +5860,30 @@ $('#src-body').addEventListener('click', async (e) => {
 
   const all = e.target.closest('[data-src-all]');
   if (all) { srcView.all = true; renderSource(); return; }
+
+  // Browsing and understanding are different things. This one leaves the
+  // reading screen and opens the review, over these pieces and no others.
+  const understand = e.target.closest('[data-src-understand]');
+  if (understand) {
+    const group = srcGroupOf(srcView.group);
+    if (!group) return;
+    const at = $('#src-scroll').scrollTop;
+    const where = srcView.group;
+    openSourceReview(srcView.id, {
+      label: group.name,
+      pieceIds: group.pieceIds,
+      // Back to the group you came from, where you left it.
+      back: async () => {
+        closeSheet();
+        srcView.group = where;
+        await openSource(srcView.id);
+        srcView.group = where;
+        renderSource();
+        requestAnimationFrame(() => { $('#src-scroll').scrollTop = at; });
+      },
+    });
+    return;
+  }
 
   // Somebody Nexus knows is one thing to open, not a list of pieces. The
   // dossier is the one that already exists; this only walks you to it.
@@ -7561,6 +7598,10 @@ function shrinkToBlob(file, maxWide = 1600) {
 
 const review = {
   bookId: null, draft: null, entries: new Map(), entities: new Map(), role: null, matches: new Map(),
+  // Which part of the source is being worked through, when it is only a part:
+  // { label, ids }. Presentation scope only — it narrows what is asked, never
+  // what anything means, and the whole source is still known either way.
+  scope: null,
   // What needs attention is open on arrival, because it is the reason to read
   // the rest slowly.
   open: new Set(['attention', 'decision']), saving: false, changingRole: false,
@@ -7931,9 +7972,31 @@ const sectionHelp = (s) => {
 };
 
 /** Open the review for one source. Reading it writes nothing. */
-async function openSourceReview(bookId) {
+/**
+ * Understanding a source, or a part of one.
+ *
+ * `scope` narrows what is put in front of you and nothing else. A source that
+ * files itself into fourteen groups can be understood a group at a time
+ * instead of a hundred and fifty-eight pieces at once — but the group is where
+ * its author put things, not what any of them mean, and it decides nothing
+ * here. The same analyser runs over the whole source, the same declarations
+ * are available, the same people can be made and reused, and Save writes the
+ * same readings it always did.
+ *
+ * Two scopes, deliberately not the same thing:
+ *
+ *   what is shown     the pieces in `scope.pieceIds`
+ *   what is known     the whole source — every entity it proposes and every
+ *                     declaration it has ever had, so identity stays safe
+ *
+ * @param {string} bookId
+ * @param {{label: string, pieceIds: string[], back: Function}} [scope]
+ */
+async function openSourceReview(bookId, scope = null) {
   review.bookId = bookId;
-  subSheet('Understanding this source', `${backRow()}<div class="empty">Reading this source…</div>`, null, () => openLorebook(bookId));
+  review.scope = scope ? { label: scope.label, ids: new Set(scope.pieceIds) } : null;
+  const goBackTo = scope?.back || (() => openLorebook(bookId));
+  subSheet('Understanding this source', `${backRow()}<div class="empty">Reading this source…</div>`, null, goBackTo);
   let draft;
   try {
     draft = await post(`/api/lorebooks/${bookId}/semantic-preview`, {});
@@ -7996,7 +8059,12 @@ async function openSourceReview(bookId) {
     return !!stored && e.proposal.scope !== 'entity';
   };
   const reclassified = new Set(draft.entries.filter((e) => e.proposal && disagrees(e)).map((e) => e.ref));
-  review.entries = new Map(draft.entries.filter((e) => e.proposal).map((e) => [e.ref, {
+  // Only what is being worked through. Everything the analyser said about the
+  // rest of the source was still read, and everything the source has ever
+  // declared is still here in `review.entities`; what narrows is the list of
+  // things asking to be decided, and so what Save can possibly write.
+  const inScope = (e) => !review.scope || review.scope.ids.has(e.entryId);
+  review.entries = new Map(draft.entries.filter((e) => e.proposal && inScope(e)).map((e) => [e.ref, {
     ...e.proposal,
     ref: e.ref, entryId: e.entryId, hash: e.hash, title: e.title, confidence: e.confidence,
     storedKind: e.storedKind, activation: e.activation, evidence: e.evidence, unresolved: e.unresolved,
@@ -8051,7 +8119,9 @@ function reviewCounts() {
   const list = [...review.entries.values()];
   const of = (name) => list.filter((d) => groupOf(d) === name).length;
   return {
-    total: review.draft.entries.length,
+    // What this review is about: the whole source, or the part of it being
+    // worked through. Pieces either way — never people, never groups.
+    total: review.scope ? list.length : review.draft.entries.length,
     sorted: of('sorted'),
     needs: of('needs'),
     optional: of('optional'),
@@ -8236,6 +8306,13 @@ function renderReview() {
     ${backRow()}
     <div class="rv-summary">
       <div class="rv-source">${esc(d.source.name)} · ${num(c.total)} entries</div>
+      ${/* Which part of the source is in front of you, said as what it is:
+           where its author filed these, and nothing about what they mean. */''}
+      ${review.scope ? `
+        <div class="rv-scope">
+          <span class="rv-scope-label">Reading ${esc(review.scope.label)} · ${plural(c.total, 'piece', 'pieces')}</span>
+          <span class="rv-scope-why">This is how the file was organised. What these are is still yours to say.</span>
+        </div>` : ''}
       <div class="rv-said">Nexus thinks this is:</div>
       <div class="rv-role"><b>${esc(ROLE_LABEL[role.role])}</b>${role.role === 'entity-material' && role.subject ? `, mostly ${esc(review.entities.get(role.subject).name)}` : ''}</div>
       <div class="why">${esc(roleSummary())}</div>
