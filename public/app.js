@@ -5403,7 +5403,11 @@ async function openLorebook(id, { keepPlace = false } = {}) {
  */
 function organiseBanner(b) {
   const o = lore.org;
-  if (!o) return '';
+  // Reading a source is always offered. It changes nothing, so it does not
+  // wait on how organised the source is, or on that answer arriving at all.
+  const view = `<button class="btn quiet" data-view-source="${esc(b.id)}">View source</button>`;
+  const alone = `<div class="organise-strip">${view}</div>`;
+  if (!o) return alone;
   const state = o.display;
   const said = {
     unorganized: {
@@ -5423,13 +5427,14 @@ function organiseBanner(b) {
       action: 'Read the changed entries again',
     },
   }[state] || null;
-  if (!said) return '';
+  if (!said) return alone;
   const bar = state === 'unorganized' ? '' : `<div class="meter-bar"><i style="width:${Math.round((o.approved / Math.max(1, o.total)) * 100)}%"></i></div>`;
   return `
     <div class="organise-strip${state === 'needs_recheck' ? ' warn' : ''}">
       <div class="organise-said">${esc(said.line)}</div>
       ${bar}
       <button class="btn${state === 'unorganized' || state === 'needs_recheck' ? ' primary' : ''}" data-organize="${esc(b.id)}">${esc(said.action)}</button>
+      ${view}
     </div>`;
 }
 
@@ -5555,7 +5560,9 @@ $('#lore-filters').addEventListener('click', (e) => {
 // filters and the entries, which is outside the list's own delegated clicks.
 $('#lore-pinned').addEventListener('click', (e) => {
   const organize = e.target.closest('[data-organize]');
-  if (organize) openSourceReview(organize.dataset.organize);
+  if (organize) { openSourceReview(organize.dataset.organize); return; }
+  const read = e.target.closest('[data-view-source]');
+  if (read) openSource(read.dataset.viewSource);
 });
 
 $('#lore-groups').addEventListener('click', async (e) => {
@@ -5590,6 +5597,256 @@ $('#lore-groups').addEventListener('click', async (e) => {
     toast('Deleted.', { kind: 'good' });
     await loadLibrary();
     show('library');
+  }
+});
+
+// ------------------------------------------------------------ reading a source
+//
+// A source is stored as a flat list of entries, and nobody thinks in entries.
+// This is the viewer over the projection the server already builds: the filing
+// its own author put in the titles, and what somebody has actually approved.
+//
+// The two are kept apart on purpose. Filing gathers material so it can be read
+// a group at a time; only an approved reading says what anything means. A
+// source with nothing approved is told it has nothing approved, rather than
+// being shown empty People and Places as if the answer were none.
+//
+// Nothing here writes and nothing here decides. Every screen is a GET and a
+// render: no analyser runs, no entity is made, and no reading is proposed.
+
+const srcView = { id: null, p: null, view: 'filing', group: null, piece: null, entry: null, at: 0, all: false };
+
+/** Has anybody approved anything about this source? */
+const srcOrganised = (p) => p.semantic.ownedPieceCount + p.semantic.ownerlessPieceCount > 0;
+
+/** The words for one entity group's two different numbers. */
+const ENTITY_NOUN = {
+  People: ['person', 'people'], Places: ['place', 'places'], Factions: ['faction', 'factions'],
+  Concepts: ['concept', 'concepts'], Things: ['thing', 'things'], Events: ['event', 'events'],
+};
+
+async function openSource(id) {
+  srcView.id = id;
+  srcView.p = await get(`/api/lorebooks/${id}/projection`);
+  srcView.group = null; srcView.piece = null; srcView.entry = null; srcView.at = 0; srcView.all = false;
+  // An organised source is read for what it means. One with nothing approved
+  // has nothing to mean yet, so its own filing is all there is to show.
+  srcView.view = srcOrganised(srcView.p) ? 'nexus' : 'filing';
+  show('source');
+  renderSource();
+  $('#src-scroll').scrollTop = 0;
+}
+
+/** A piece as this source names it: inside a filing group, without the prefix. */
+const pieceName = (piece) => (srcView.group?.startsWith('f:') && piece.filing ? piece.filing.rest : piece.title);
+
+/** The rows of one view. A row opens either a group of pieces, or one piece. */
+function srcSections() {
+  const p = srcView.p;
+  if (srcView.view === 'filing') {
+    // A file whose author filed nothing still has one group holding everything.
+    // It is not structure, so it is not named as though it were: it is all of it.
+    const bare = p.filing.filedPieceCount === 0;
+    return [{
+      heading: null,
+      units: null,
+      rows: p.filing.groups.map((g) => ({
+        key: `f:${g.name}`,
+        name: bare && g.name === 'Unfiled' ? 'All of it' : g.name,
+        n: g.pieceCount,
+        pieceIds: g.pieceIds,
+      })),
+    }];
+  }
+  const out = [];
+  for (const g of p.semantic.entityGroups) {
+    const [one, many] = ENTITY_NOUN[g.name] || ['entity', 'entities'];
+    out.push({
+      heading: g.name,
+      units: `${plural(g.entityCount, one, many)} · ${plural(g.pieceCount, 'piece', 'pieces')}`,
+      rows: g.entities.map((e) => ({ key: `e:${e.id}`, name: e.name, sub: e.type, n: e.pieceCount, pieceIds: e.pieceIds })),
+    });
+  }
+  if (p.semantic.worldGroups.length) {
+    out.push({
+      heading: 'World',
+      units: plural(p.semantic.ownerlessPieceCount, 'piece', 'pieces'),
+      rows: p.semantic.worldGroups.map((g) => ({ key: `w:${g.name}`, name: g.name, n: g.pieceCount, pieceIds: g.pieceIds })),
+    });
+  }
+  // Pieces nobody has settled are named one by one rather than counted, because
+  // the point of showing them is that somebody still has to look at each.
+  const loose = p.pieces.filter((x) => x.ownership === 'unsettled');
+  if (loose.length) {
+    out.push({
+      heading: 'Needs attention',
+      units: plural(loose.length, 'piece', 'pieces'),
+      rows: loose.map((x) => ({ key: `p:${x.pieceId}`, name: x.title, sub: x.reading === 'proposed' ? 'a reading was suggested and nobody has approved it' : 'not organised yet', pieceId: x.pieceId })),
+    });
+  }
+  return out;
+}
+
+const SRC_CAP = 50;
+
+function renderSource() {
+  const p = srcView.p;
+  if (srcView.piece) return renderSourcePiece();
+
+  const group = srcView.group ? srcGroupOf(srcView.group) : null;
+  if (group) {
+    $('#src-name').textContent = group.name;
+    $('#src-sub').textContent = plural(group.pieceIds.length, 'piece', 'pieces');
+    const ids = srcView.all ? group.pieceIds : group.pieceIds.slice(0, SRC_CAP);
+    const rest = group.pieceIds.length - ids.length;
+    $('#src-body').innerHTML = `
+      <div class="src-rows">
+        ${ids.map((id) => {
+    const x = p.pieces.find((y) => y.pieceId === id);
+    return `
+          <button class="src-row" data-src-piece="${esc(id)}">
+            <span class="src-row-main">
+              <span class="src-row-name">${esc(pieceName(x))}</span>
+              <span class="src-row-sub">${num(x.characters)} characters${x.enabled ? '' : ' · turned off'}</span>
+            </span>
+          </button>`;
+  }).join('')}
+      </div>
+      ${rest > 0 ? `<button class="btn quiet" data-src-all style="margin-top:12px;width:100%">Show the other ${num(rest)}</button>` : ''}`;
+    return;
+  }
+
+  // The source itself.
+  $('#src-name').textContent = p.source.name;
+  $('#src-sub').textContent = plural(p.source.totalPieceCount, 'piece', 'pieces');
+  const organised = srcOrganised(p);
+  const sections = srcSections();
+  const lede = srcView.view === 'filing'
+    ? (p.filing.filedPieceCount
+      ? `${plural(p.filing.filedPieceCount, 'piece', 'pieces')} of ${num(p.source.totalPieceCount)}, filed by whoever wrote this file into ${plural(p.filing.groupCount, 'group', 'groups')}. This is how the file was organised, not what Nexus knows it means.`
+      : `${plural(p.source.totalPieceCount, 'piece', 'pieces')}. This file has no structure of its own to show.`)
+    : (organised
+      ? `What somebody has approved as true about this source. ${plural(p.reading.approvedPieceCount, 'piece', 'pieces')} of ${num(p.source.totalPieceCount)} have been read.`
+      : 'Not organised yet. Nobody has told Nexus what anything in this source means, so there is nothing here to show.');
+
+  $('#src-body').innerHTML = `
+    <div class="src-views">
+      <button class="btn${srcView.view === 'filing' ? ' primary' : ' quiet'}" data-src-view="filing">How this file is organised</button>
+      <button class="btn${srcView.view === 'nexus' ? ' primary' : ' quiet'}" data-src-view="nexus">What Nexus knows</button>
+    </div>
+    <div class="src-lede">${esc(lede)}</div>
+    ${srcView.view === 'nexus' && !organised ? '' : sections.map((s) => `
+      <div class="src-sect">
+        ${s.heading ? `<div class="src-sect-head"><h3>${esc(s.heading)}</h3><span class="src-units">${esc(s.units)}</span></div>` : ''}
+        <div class="src-rows">
+          ${s.rows.map((r) => `
+            <button class="src-row" ${r.pieceId ? `data-src-piece="${esc(r.pieceId)}"` : `data-src-group="${esc(r.key)}"`}>
+              <span class="src-row-main">
+                <span class="src-row-name">${esc(r.name)}</span>
+                ${r.sub ? `<span class="src-row-sub">${esc(r.sub)}</span>` : ''}
+              </span>
+              ${r.n === undefined ? '' : `<span class="src-row-n">${num(r.n)}</span>`}
+            </button>`).join('')}
+        </div>
+      </div>`).join('')}`;
+}
+
+/** The group a key names, in whichever view holds it. */
+function srcGroupOf(key) {
+  for (const s of srcSections()) {
+    const hit = s.rows.find((r) => r.key === key && r.pieceIds);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+async function renderSourcePiece() {
+  const p = srcView.p;
+  const x = p.pieces.find((y) => y.pieceId === srcView.piece);
+  if (!x) { srcView.piece = null; renderSource(); return; }
+  $('#src-name').textContent = pieceName(x);
+  $('#src-sub').textContent = p.source.name;
+
+  const said = (() => {
+    if (x.ownership === 'entity') return `About ${x.owner.name}, who is a ${x.owner.type}. Read as ${CATEGORY_SAID[x.category] || x.category}.`;
+    if (x.ownership === 'world') return `Not about any one person. Read as ${CATEGORY_SAID[x.category] || x.category}.`;
+    if (x.reading === 'proposed') return null;
+    return 'Not organised yet.';
+  })();
+
+  $('#src-body').innerHTML = `
+    <div class="src-text">${esc(srcView.entry?.content ?? 'Reading…')}</div>
+    ${x.filing ? `<div class="src-fact"><h4>Source filing</h4><p>${esc(x.filing.group)}</p></div>` : ''}
+    <div class="src-fact">
+      <h4>Nexus organisation</h4>
+      ${said ? `<p>${esc(said)}</p>` : ''}
+      ${x.reading === 'proposed' && x.proposal ? `
+        <p class="dim">Nothing is approved. A reading was suggested — ${esc(x.proposal.category || 'no kind')}${x.proposal.subjects.length ? `, about ${esc(x.proposal.subjects.map((s) => s.name).join(', '))}` : ''} — and it is only a suggestion until somebody approves it.</p>` : ''}
+      ${x.incomplete ? '<p class="dim">This was approved as being about somebody, and nobody has been named yet.</p>' : ''}
+    </div>
+    <div class="src-fact"><h4>In this source</h4><p class="dim">${num(x.characters)} characters${x.enabled ? '' : ' · turned off'}</p></div>`;
+
+  if (!srcView.entry || srcView.entry.id !== x.pieceId) {
+    try {
+      const got = await get(`/api/entries/${x.pieceId}`);
+      if (srcView.piece !== x.pieceId) return;
+      srcView.entry = got;
+      const el = $('#src-body .src-text');
+      if (el) el.textContent = got.content || '';
+    } catch { /* the piece is still named and placed without its words */ }
+  }
+}
+
+/** The plain word for a stored category, for a screen that never says "category". */
+const CATEGORY_SAID = {
+  identity: 'who they are', appearance: 'how they look', personality: 'what they are like',
+  speech: 'how they talk', behavior: 'how they act', backstory: 'their past',
+  psychology: 'how they think', relationship: 'a relationship', secret: 'a secret',
+  goal: 'what they want', skill: 'a skill', ability: 'an ability', equipment: 'what they carry',
+  belief: 'what they believe', habit: 'a habit', profile: 'who they are',
+  background: 'background', rule: 'a rule of this world', event: 'something that happened',
+  item: 'a thing', direction: 'how to tell this story', reference: 'reference', other: 'something else',
+};
+
+$('#src-back').addEventListener('click', async () => {
+  if (srcView.piece) {
+    srcView.piece = null; srcView.entry = null;
+    renderSource();
+    requestAnimationFrame(() => { $('#src-scroll').scrollTop = srcView.at; });
+    return;
+  }
+  if (srcView.group) {
+    srcView.group = null; srcView.all = false;
+    renderSource();
+    // Back to where you were in the source, not to the top of it.
+    requestAnimationFrame(() => { $('#src-scroll').scrollTop = srcView.at; });
+    return;
+  }
+  await openLorebook(srcView.id, { keepPlace: true });
+});
+
+$('#src-body').addEventListener('click', async (e) => {
+  const v = e.target.closest('[data-src-view]');
+  if (v) { srcView.view = v.dataset.srcView; renderSource(); $('#src-scroll').scrollTop = 0; return; }
+
+  const all = e.target.closest('[data-src-all]');
+  if (all) { srcView.all = true; renderSource(); return; }
+
+  const g = e.target.closest('[data-src-group]');
+  if (g) {
+    srcView.at = $('#src-scroll').scrollTop;
+    srcView.group = g.dataset.srcGroup; srcView.all = false;
+    renderSource();
+    $('#src-scroll').scrollTop = 0;
+    return;
+  }
+
+  const piece = e.target.closest('[data-src-piece]');
+  if (piece) {
+    if (!srcView.group) srcView.at = $('#src-scroll').scrollTop;
+    srcView.piece = piece.dataset.srcPiece; srcView.entry = null;
+    await renderSourcePiece();
+    $('#src-scroll').scrollTop = 0;
   }
 });
 
