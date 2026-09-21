@@ -28,6 +28,7 @@ import { analyzeSource } from './src/conversion/analyze.js';
 import { applyReview, correctionImpact, ReviewError } from './src/conversion/apply.js';
 import { assist } from './src/conversion/assist.js';
 import { entityProfile } from './src/semantics/profile.js';
+import { sourceProjection } from './src/semantics/source-projection.js';
 import { createEntityKnowledge, updateEntityKnowledge, deleteEntityKnowledge, storyMaterialSource, AuthoringError } from './src/semantics/authoring.js';
 import { reuseState, attachPreview, attachReusable, detachReusable, promotePreview, promoteToReusable } from './src/semantics/reuse.js';
 import {
@@ -792,6 +793,12 @@ route('GET', '/api/lorebooks/:id', async (req, res, { id }) => {
   const b = db.getLorebook(id);
   if (!b) throw new HttpError(404, 'No such lorebook.');
   return b;
+});
+/** A source as a person reads it: the author's filing, and what is approved. Reads only. */
+route('GET', '/api/lorebooks/:id/projection', async (req, res, { id }) => {
+  const out = sourceProjection(db, id);
+  if (!out) throw new HttpError(404, 'No such lorebook.');
+  return out;
 });
 route('POST', '/api/lorebooks', async (req) => {
   const { name, description } = await readJson(req);

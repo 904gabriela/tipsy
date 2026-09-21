@@ -24,6 +24,7 @@
     "review-apply:check": "node scripts/check-review-apply.js",
     "assist:check": "node scripts/check-assist.js",
     "entity-profile:check": "node scripts/check-entity-profile.js",
+    "projection:check": "node scripts/check-source-projection.js",
     "authoring:check": "node scripts/check-authoring.js",
     "composition-semantics:check": "node scripts/check-composition-semantics.js",
     "entity-reconcile:check": "node scripts/check-entity-reconcile.js",
