@@ -7698,12 +7698,59 @@ const OPTIONAL_GROUP = {
  * their personality. Apply refuses an entry that both defines something and is
  * about something, so the subject goes with it.
  */
+/**
+ * The form for something this source never introduced.
+ *
+ * It is the same form wherever it stands, and it does not know what it is for.
+ * The control that opened it holds the question being answered; this only
+ * gathers a name and a kind. One is open per entry at a time, so the fields
+ * are keyed by the entry and nothing collides.
+ */
+const newEntityForm = (entryRef) => `
+  <div class="rv-newent">
+    <div class="field"><label>Name</label>
+      <input type="text" data-new-name="${esc(entryRef)}" value="" autocomplete="off" spellcheck="false"></div>
+    <div class="field"><label>Type</label>
+      <select data-new-type="${esc(entryRef)}">
+        <option value="">Choose type…</option>
+        ${Object.entries(TYPE_LABEL).map(([k, label]) => `<option value="${esc(k)}">${esc(label)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="row-actions">
+      <button class="btn" data-define-create="${esc(entryRef)}">Use this</button>
+      <button class="btn quiet" data-define-cancel="${esc(entryRef)}">Cancel</button>
+    </div>
+    <div class="why" data-new-trouble="${esc(entryRef)}"></div>
+  </div>`;
+
 function setDefines(d, ref) {
   if (d.category !== 'profile') d.categoryWas = d.category;
   d.scope = 'entity';
   d.defines = ref;
   d.subject = null;
   d.category = 'profile';
+  d.related = d.related.filter((r) => r !== ref);
+  d.proposedBy = 'manual';
+  d.editedContent = true;
+  d.approve = true;
+}
+
+/**
+ * This entry is ABOUT them.
+ *
+ * Deliberately not `setDefines`: what an entry is about and what an entry
+ * introduces are different claims, and only the second one says anything about
+ * what kind of information the entry holds. A progressive state map that turns
+ * out to be about Yuga is still psychology; saying whose it is must not quietly
+ * make it his profile.
+ *
+ * The same act whether the person was already listed, chosen from the others,
+ * or made a moment ago, so all three settle the entry identically.
+ */
+function setSubject(d, ref) {
+  d.scope = 'entity';
+  d.subject = ref;
+  d.defines = null;
   d.related = d.related.filter((r) => r !== ref);
   d.proposedBy = 'manual';
   d.editedContent = true;
@@ -7909,7 +7956,10 @@ async function openSourceReview(bookId) {
   try { declarations = await get(`/api/lorebooks/${bookId}/declarations`); } catch { declarations = []; }
   // Nothing about a new entity is being drafted when the screen opens, and no
   // decision is waiting to be acknowledged from a previous visit.
-  review.definingNew = new Set();
+  // Which entry is having something new made for it, and for which question.
+  // entryRef -> 'defines' | 'subject'. Making something and saying what an
+  // entry does with it are two acts, and only the second one is in here.
+  review.definingNew = new Map();
   review.justDecided = null;
   // Where each entry was last drawn, so an open one does not move group mid-edit.
   review.placedIn = new Map();
@@ -8610,6 +8660,15 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
                    entry is about, and none of them is related to anything until
                    somebody says so in the field below. */''}
               ${accepted && isWorld && likelyPeople.length ? '<div class="rv-hint">Choosing somebody would make it about them instead.</div>' : ''}
+              ${/* Somebody this source never introduced can still be who an
+                   entry is about. Making them here answers THIS question and
+                   no other: they are declared, and the entry is about them.
+                   What kind of information the entry holds is untouched, and
+                   nothing claims the entry introduces them. */''}
+              ${review.definingNew.get(d.ref) === 'subject' ? newEntityForm(d.ref)
+    : `<div class="row-actions" style="margin-top:6px">
+                  <button class="btn quiet" data-subject-new="${esc(d.ref)}">+ Add somebody not listed</button>
+                </div>`}
             </div>` : ''}
           ${others.length ? `
             <div class="field">
@@ -8630,22 +8689,7 @@ function entryCard(d, { choose = false, hideCategory = false, hideSubject = fals
               <option value="">Choose existing…</option>
               ${definable.map((x) => `<option value="${esc(x.ref)}"${d.defines === x.ref ? ' selected' : ''}>${esc(x.name)} — ${esc(TYPE_LABEL[x.type] || x.type)}</option>`).join('')}
             </select>
-            ${review.definingNew.has(d.ref) ? `
-              <div class="rv-newent">
-                <div class="field"><label>Name</label>
-                  <input type="text" data-new-name="${esc(d.ref)}" value="" autocomplete="off" spellcheck="false"></div>
-                <div class="field"><label>Type</label>
-                  <select data-new-type="${esc(d.ref)}">
-                    <option value="">Choose type…</option>
-                    ${Object.entries(TYPE_LABEL).map(([k, label]) => `<option value="${esc(k)}">${esc(label)}</option>`).join('')}
-                  </select>
-                </div>
-                <div class="row-actions">
-                  <button class="btn" data-define-create="${esc(d.ref)}">Use this</button>
-                  <button class="btn quiet" data-define-cancel="${esc(d.ref)}">Cancel</button>
-                </div>
-                <div class="why" data-new-trouble="${esc(d.ref)}"></div>
-              </div>`
+            ${review.definingNew.get(d.ref) === 'defines' ? newEntityForm(d.ref)
     : `<div class="row-actions" style="margin-top:6px">
                 <button class="btn quiet" data-define-new="${esc(d.ref)}">+ Add something not listed</button>
               </div>`}
@@ -8824,10 +8868,7 @@ function onReviewClick(e) {
     pinDecision(d);
     const ref = subject.dataset.entity;
     if (ref) {
-      d.scope = 'entity';
-      d.subject = ref;
-      d.defines = null;
-      d.related = d.related.filter((r) => r !== ref);
+      setSubject(d, ref);
     } else {
       d.scope = 'world';
       d.subject = null;
@@ -8966,7 +9007,15 @@ function onReviewClick(e) {
   if (defineNew) {
     // Opening the form decides nothing: no entity, no tick, no change to what
     // Save would write. It is a form, and it is empty.
-    review.definingNew.add(defineNew.dataset.defineNew);
+    review.definingNew.set(defineNew.dataset.defineNew, 'defines');
+    renderReview();
+    return;
+  }
+  // The same form, opened from the question about who an entry is about. The
+  // only difference is what will be done with what it makes.
+  const subjectNew = e.target.closest('[data-subject-new]');
+  if (subjectNew) {
+    review.definingNew.set(subjectNew.dataset.subjectNew, 'subject');
     renderReview();
     return;
   }
@@ -8996,7 +9045,12 @@ function onReviewClick(e) {
       });
     }
     pinDecision(d);
-    setDefines(d, target);
+    // Declaring that somebody exists says nothing about what this entry does
+    // with them. The question that opened the form is the question being
+    // answered, and it is the only one: an entry ABOUT them keeps the kind of
+    // information it already holds and introduces nobody.
+    if (review.definingNew.get(ref) === 'subject') setSubject(d, target);
+    else setDefines(d, target);
     review.definingNew.delete(ref);
     renderReview();
     return;
@@ -9128,15 +9182,7 @@ function onReviewChange(e) {
   if (other) {
     const d = review.entries.get(other.dataset.subjectOther);
     pinDecision(d);
-    if (other.value) {
-      d.scope = 'entity';
-      d.subject = other.value;
-      d.defines = null;
-      d.related = d.related.filter((r) => r !== other.value);
-      d.proposedBy = 'manual';
-      d.editedContent = true;
-      d.approve = true;
-    }
+    if (other.value) setSubject(d, other.value);
     renderReview();
     return;
   }
