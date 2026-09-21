@@ -5664,7 +5664,10 @@ function srcSections() {
     out.push({
       heading: g.name,
       units: `${plural(g.entityCount, one, many)} · ${plural(g.pieceCount, 'piece', 'pieces')}`,
-      rows: g.entities.map((e) => ({ key: `e:${e.id}`, name: e.name, sub: e.type, n: e.pieceCount, pieceIds: e.pieceIds })),
+      // Once Nexus knows somebody, they are one thing to open, not a number of
+      // pieces to count. How much is written about them is said once, on the
+      // heading above; the row is the person. The count stays in the read model.
+      rows: g.entities.map((e) => ({ key: `e:${e.id}`, name: e.name, sub: ENTITY_WORD[e.type] || e.type, entityId: e.id, pieceIds: e.pieceIds })),
     });
   }
   if (p.semantic.worldGroups.length) {
@@ -5689,13 +5692,24 @@ function srcSections() {
 
 const SRC_CAP = 50;
 
+// A file that numbers its own sections is telling you the order, not the name.
+// The number is kept exactly as it is stored and shown exactly where it is,
+// only quieter, so "04 CLASS 1-A" reads as CLASS 1-A without losing the 04.
+// Presentation only: nothing here is parsed, sorted, stored or sent anywhere.
+const ORDINAL = /^(\d{1,3})\s+(\S.*)$/s;
+function srcRowName(name) {
+  const m = ORDINAL.exec(String(name));
+  // The space is real, not a margin: read aloud, "04 CLASS 1-A" is still that.
+  return m ? `<span class="src-ord">${esc(m[1])}</span> ${esc(m[2])}` : esc(name);
+}
+
 function renderSource() {
   const p = srcView.p;
   if (srcView.piece) return renderSourcePiece();
 
   const group = srcView.group ? srcGroupOf(srcView.group) : null;
   if (group) {
-    $('#src-name').textContent = group.name;
+    $('#src-name').innerHTML = srcRowName(group.name);
     $('#src-sub').textContent = plural(group.pieceIds.length, 'piece', 'pieces');
     const ids = srcView.all ? group.pieceIds : group.pieceIds.slice(0, SRC_CAP);
     const rest = group.pieceIds.length - ids.length;
@@ -5740,9 +5754,11 @@ function renderSource() {
         ${s.heading ? `<div class="src-sect-head"><h3>${esc(s.heading)}</h3><span class="src-units">${esc(s.units)}</span></div>` : ''}
         <div class="src-rows">
           ${s.rows.map((r) => `
-            <button class="src-row" ${r.pieceId ? `data-src-piece="${esc(r.pieceId)}"` : `data-src-group="${esc(r.key)}"`}>
+            <button class="src-row" ${r.entityId ? `data-src-entity="${esc(r.entityId)}"`
+    : r.pieceId ? `data-src-piece="${esc(r.pieceId)}"`
+      : `data-src-group="${esc(r.key)}"`}>
               <span class="src-row-main">
-                <span class="src-row-name">${esc(r.name)}</span>
+                <span class="src-row-name">${srcRowName(r.name)}</span>
                 ${r.sub ? `<span class="src-row-sub">${esc(r.sub)}</span>` : ''}
               </span>
               ${r.n === undefined ? '' : `<span class="src-row-n">${num(r.n)}</span>`}
@@ -5831,6 +5847,16 @@ $('#src-body').addEventListener('click', async (e) => {
 
   const all = e.target.closest('[data-src-all]');
   if (all) { srcView.all = true; renderSource(); return; }
+
+  // Somebody Nexus knows is one thing to open, not a list of pieces. The
+  // dossier is the one that already exists; this only walks you to it.
+  const ent = e.target.closest('[data-src-entity]');
+  if (ent) {
+    const row = srcSections().flatMap((s) => s.rows).find((r) => r.entityId === ent.dataset.srcEntity);
+    // Closing the dossier uncovers this screen exactly where it was left.
+    await openEntityProfile(ent.dataset.srcEntity, { title: row?.name || 'Profile' });
+    return;
+  }
 
   const g = e.target.closest('[data-src-group]');
   if (g) {
@@ -9359,7 +9385,7 @@ function knowledgeItem(x, { as = null, hideKind = false } = {}) {
           <div class="fired-row"><span class="t">Reaches the story</span><span class="w">${x.activation.constant ? 'always' : x.activation.keys.length ? 'when it comes up' : 'not on its own'}</span></div>
           ${x.activation.keys.length ? `<div class="fired-row"><span class="t">Trigger words</span><span class="w">${esc(x.activation.keys.slice(0, 8).join(', '))}</span></div>` : ''}
           <div class="fired-row"><span class="t">Switched on</span><span class="w">${x.activation.enabled ? 'yes' : 'no'}</span></div>
-          <div class="why" style="margin-top:6px">Being on this page does not put it in the story. Each entry still decides that for itself.</div>
+          <div class="why" style="margin-top:6px">Being on this page does not put it in the story. Each piece still decides that for itself.</div>
         </details>
       </div>
     </div>`;
@@ -9698,7 +9724,7 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
         ${p.related.map((r) => `
           <button class="ent-near-row" data-go-entity="${esc(r.id)}">
             <span class="ent-near-name">${esc(r.name)}</span>
-            <span class="ent-near-why">${esc(ENTITY_WORD[r.type] || 'Person')} · ${esc(plural(r.entries.length, 'entry', 'entries'))}</span>
+            <span class="ent-near-why">${esc(ENTITY_WORD[r.type] || 'Person')} · ${esc(plural(r.entries.length, 'piece', 'pieces'))}</span>
           </button>`).join('')}
       </div>` : ''}
 

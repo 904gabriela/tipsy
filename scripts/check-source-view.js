@@ -222,12 +222,24 @@ else {
     .find(s => (s.querySelector('h3')||{}).textContent === 'People')
     .querySelectorAll('.src-row').length`);
   ok('four people are listed under People', people === 4, `${people}`);
-  await click(`[data-src-group="e:${await ev(`document.querySelector('#src-body .src-sect .src-row').getAttribute('data-src-group').slice(2)`)}"]`, 900)
-    || await click('#src-body .src-row', 900);
-  ok('opening the person with ten pieces shows ten', (await rows()).length === 10, await text('#src-sub'));
+  // A person is a thing to open, not a number of pieces to drill into. What
+  // opening one does is checked in check-dossier-nav.js; what matters here is
+  // that the source screen hands you the person, and that losing the number
+  // from the row did not lose it from the model.
+  const patrick = await ev(`(() => {
+    const r = [...document.querySelectorAll('#src-body .src-row[data-src-entity]')]
+      .find(x => ((x.querySelector('.src-row-name')||{}).textContent||'').trim() === 'Patrick Moretti');
+    return r ? { entity: r.getAttribute('data-src-entity'),
+                 n: ((r.querySelector('.src-row-n')||{}).textContent||'').trim() } : null;
+  })()`);
+  ok('a person is something to open, not a count to drill into',
+    !!patrick?.entity && patrick.n === '', JSON.stringify(patrick));
+  const known = await (await fetch(`http://localhost:${port}/api/lorebooks/${SAINT.id}/projection`)).json();
+  const carried = known.semantic.entityGroups.find((g) => g.name === 'People')
+    .entities.find((e) => e.name === 'Patrick Moretti').pieceCount;
+  ok('and the read model still knows he carries ten pieces', carried === 10, `${carried}`);
 
   // The file's own structure is still available, and still called that.
-  await click('#src-back', 700);
   await click('[data-src-view="filing"]', 700);
   ok('an organised source can still be read as the file it came from',
     /no structure of its own|filed by whoever wrote this file/i.test(await text('.src-lede')));

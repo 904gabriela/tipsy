@@ -673,6 +673,12 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .src-row-main { flex: 1 1 auto; min-width: 0; }
 .src-row-name { font-size: 14.5px; font-weight: 500; overflow-wrap: anywhere; }
 .src-row-sub { font-size: 12px; color: var(--ink-faint); margin-top: 2px; overflow-wrap: anywhere; }
+/* The number a file gave its own section says the order, not the name. It is
+   kept, and it steps back so the name reads first. */
+.src-ord {
+  display: inline-block; min-width: 2.1em;
+  color: var(--ink-faint); font-weight: 400; font-variant-numeric: tabular-nums;
+}
 .src-row-n { flex: 0 0 auto; font-size: 13px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
 .src-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14.5px; line-height: 1.55; }
 .src-fact { margin-top: var(--s5); }
