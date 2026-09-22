@@ -8017,6 +8017,11 @@ async function openSourceReview(bookId, scope = null) {
   // once, because reading the source again will not rediscover them.
   let declarations = [];
   try { declarations = await get(`/api/lorebooks/${bookId}/declarations`); } catch { declarations = []; }
+  // What this source has already been settled as, if anything. Read-only, and
+  // nothing to do with the analysis: an approved role is a decision somebody
+  // made, and reading the text again is not entitled to replace it.
+  let org = null;
+  try { org = await get(`/api/lorebooks/${bookId}/organization`); } catch { org = null; }
   // Nothing about a new entity is being drafted when the screen opens, and no
   // decision is waiting to be acknowledged from a previous visit.
   // Which entry is having something new made for it, and for which question.
@@ -8106,10 +8111,31 @@ async function openSourceReview(bookId, scope = null) {
   review.trouble = new Map();
   review.spent = [];
   review.opened = new Set();
+  // What this source is, in three states that are not the same thing.
+  //
+  //   approved   somebody already said so. It is shown as it stands, and
+  //              saving anything else must leave it exactly where it is.
+  //   proposed   the analyser's reading. A suggestion, and only that: opening
+  //              this screen is not agreeing with it, and neither is saving a
+  //              decision about some entry that has nothing to do with it.
+  //   decided    somebody said so here, just now. That is the only state this
+  //              screen may write.
+  //
+  // `decided` is what Save asks. Without it the question could only ever be
+  // "what does the control show", and a control shows a suggestion too.
+  const approvedRole = org?.packageRole?.state === 'approved' ? org.packageRole : null;
+  const approvedSubjectRef = approvedRole?.subjectEntityId
+    ? [...review.entities.values()].find((x) => x.entityId === approvedRole.subjectEntityId)?.ref || null
+    : null;
   review.role = {
-    role: draft.source.proposedRole.role,
-    subject: draft.source.proposedRole.subject,
-    proposedBy: 'deterministic-conversion',
+    role: approvedRole ? approvedRole.role : draft.source.proposedRole.role,
+    subject: approvedRole ? approvedSubjectRef : draft.source.proposedRole.subject,
+    proposedBy: approvedRole ? 'manual' : 'deterministic-conversion',
+    state: approvedRole ? 'approved' : 'proposed',
+    decided: false,
+    // Kept so the analyser's reading can still be offered beside an approved
+    // one without being mistaken for it.
+    proposed: draft.source.proposedRole.role,
   };
   review.matches = new Map(draft.matches.map((m, i) => [`${m.entity}:${i}`, { ...m, decision: 'later' }]));
   renderReview();
@@ -8128,6 +8154,10 @@ function reviewCounts() {
     // What Save would write, which is not the same as what Nexus sorted: an
     // entry already saved is not written again.
     ready: list.filter((d) => d.approve && d.current !== 'approved').length,
+    // Saying what a source is, is a decision about the source and must not
+    // need an unrelated entry decided alongside it to be saveable.
+    roleReady: !!(review.role?.decided
+      && !(review.role.role === 'entity-material' && !review.role.subject)),
     already: list.filter((d) => d.current === 'approved').length,
   };
 }
@@ -8313,9 +8343,17 @@ function renderReview() {
           <span class="rv-scope-label">Reading ${esc(review.scope.label)} · ${plural(c.total, 'piece', 'pieces')}</span>
           <span class="rv-scope-why">This is how the file was organised. What these are is still yours to say.</span>
         </div>` : ''}
-      <div class="rv-said">Nexus thinks this is:</div>
-      <div class="rv-role"><b>${esc(ROLE_LABEL[role.role])}</b>${role.role === 'entity-material' && role.subject ? `, mostly ${esc(review.entities.get(role.subject).name)}` : ''}</div>
-      <div class="why">${esc(roleSummary())}</div>
+      ${/* Three different sentences, because these are three different facts:
+           what somebody settled, what somebody just said, and what Nexus
+           reckons. Only the last one is a suggestion, and it has to read like
+           one — saving an entry will not turn it into any of the others. */''}
+      <div class="rv-said">${role.state === 'approved' ? 'This source was settled as:'
+    : role.state === 'decided' ? 'You have said this is:' : 'Nexus thinks this is:'}</div>
+      <div class="rv-role"><b>${esc(ROLE_LABEL[role.role])}</b>${role.role === 'entity-material' && role.subject && review.entities.get(role.subject) ? `, mostly ${esc(review.entities.get(role.subject).name)}` : ''}</div>
+      <div class="why">${role.state === 'approved'
+    ? `Saved already. Nothing you do here changes it unless you change it.${role.proposed && role.proposed !== role.role ? ` Reading the source again would have said ${esc(ROLE_LABEL[role.proposed] || role.proposed)}.` : ''}`
+    : role.state === 'decided' ? 'This will be saved with your decisions.'
+      : `${esc(roleSummary())} Nothing is saved about this unless you choose it.`}</div>
       ${/* The scoring that produced this is evidence, not the headline. */''}
       <div class="rv-verdict-row">
         <details class="rv-why" data-fold="role-why"><summary>Why Nexus says this</summary>
@@ -8360,7 +8398,8 @@ function renderReview() {
       <button class="btn quiet" data-back>Not now</button>
       ${/* What the button does, with how much it covers beside it: the exact
            breakdown belongs on the confirmation, not on a pinned bar. */''}
-      <button class="btn primary" id="rv-save"${c.ready ? '' : ' disabled'}>${c.ready ? `Save ${num(c.ready)}` : 'Nothing to save yet'}</button>
+      <button class="btn primary" id="rv-save"${c.ready || c.roleReady ? '' : ' disabled'}>${c.ready ? `Save ${num(c.ready)}`
+    : c.roleReady ? 'Save what this source is' : 'Nothing to save yet'}</button>
     </div>`;
 
   // Drawing the screen again must not move the person reading it.
@@ -9324,6 +9363,9 @@ function onReviewChange(e) {
   if (e.target.id === 'rv-role') {
     review.role.role = e.target.value;
     review.role.proposedBy = 'manual';
+    // Somebody said so. This, and only this, is what Save may write.
+    review.role.decided = true;
+    review.role.state = 'decided';
     if (review.role.role === 'entity-material') {
       // Choosing it again asks the question again, rather than reviving whoever
       // was named before.
@@ -9339,6 +9381,10 @@ function onReviewChange(e) {
   if (e.target.id === 'rv-role-subject') {
     review.role.subject = e.target.value || null;
     review.role.proposedBy = 'manual';
+    // Naming who a source is about is a decision about the source, exactly as
+    // choosing what kind of source it is.
+    review.role.decided = true;
+    review.role.state = 'decided';
     renderReview();
   }
 }
@@ -9366,9 +9412,13 @@ function confirmSave() {
     ${ents.total ? `<div class="why" style="margin-top:10px">${esc(said.charAt(0).toUpperCase() + said.slice(1))} become people and places Nexus can recognise in this source and match to others. <b>No character cards are made</b>, and nothing is added to your People shelf.</div>` : ''}
     <div class="why" style="margin-top:10px">The entries themselves are not touched: their words, their trigger words and when they fire all stay exactly as they are.</div>
     ${left ? `<div class="why" style="margin-top:10px"><b>${plural(left, 'entry', 'entries')} left for later.</b> Nothing about ${left === 1 ? 'it' : 'them'} is lost or changed, and you can come back whenever you like.</div>` : ''}
+    ${/* A decision about what the source IS goes in the list of what is about
+         to be written, because it is one — and it is the only source-level
+         thing here, so it is named rather than counted. */''}
+    ${review.role?.decided ? `<div class="why" style="margin-top:10px">This source will be saved as <b>${esc(ROLE_LABEL[review.role.role])}</b>${review.role.role === 'entity-material' && review.role.subject && review.entities.get(review.role.subject) ? `, mostly ${esc(review.entities.get(review.role.subject).name)}` : ''}.</div>` : ''}
     <div class="sheet-actions">
       <button class="btn quiet" data-back>Back</button>
-      <button class="btn primary" id="rv-confirm">Save ${num(ticked.length)}</button>
+      <button class="btn primary" id="rv-confirm">${ticked.length ? `Save ${num(ticked.length)}` : 'Save this'}</button>
     </div>`, (root) => {
     $('#rv-confirm', root).addEventListener('click', saveReview);
   }, renderReview);
@@ -9379,7 +9429,14 @@ async function saveReview() {
   if (review.saving) return;
   review.saving = true;
   const decisions = {
-    role: review.role.role === 'entity-material' && !review.role.subject ? null : review.role,
+    // Only a source-level decision somebody actually made. An approved role is
+    // left alone by saying nothing about it — Apply writes a role only when it
+    // is given one — and the analyser's reading is a suggestion that saving an
+    // entry has no business turning into truth. Entity-material still needs
+    // somebody to be about, so an unfinished one is no decision yet.
+    role: !review.role.decided || (review.role.role === 'entity-material' && !review.role.subject)
+      ? null
+      : { role: review.role.role, subject: review.role.subject, proposedBy: review.role.proposedBy },
     entities: [...review.entities.values()].map((x) => ({
       ref: x.ref, type: x.type, name: x.name, aliases: x.aliases, decision: x.decision, entityId: x.entityId,
       proposedBy: x.proposedBy,

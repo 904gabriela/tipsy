@@ -452,7 +452,20 @@ console.log('\n   and the screen clears it when the role changes');
   const handler = app.slice(app.indexOf("if (e.target.id === 'rv-role')"), app.indexOf("if (e.target.id === 'rv-role-subject')"));
   ok('choosing another role clears the person', /else\s*\{[\s\S]*review\.role\.subject = null;/.test(handler), handler.split('\n').length + ' lines');
   ok('and choosing entity-material asks again rather than reviving', /if \(!review\.role\.subject\)/.test(handler));
-  ok('the save payload sends whatever the draft now holds', /role: review\.role\.role === 'entity-material' && !review\.role\.subject \? null : review\.role,/.test(app));
+  // What a source IS, is a decision about the source. The payload used to send
+  // whatever the control happened to show, so deciding one entry also settled
+  // what the whole source was for — from a suggestion nobody looked at.
+  ok('the save payload sends a source role only once somebody decided one',
+    /role: !review\.role\.decided \|\| \(review\.role\.role === 'entity-material' && !review\.role\.subject\)/.test(app));
+  ok('and never ships the draft role wholesale',
+    !/\? null : review\.role,/.test(app));
+  ok('both role controls record that a decision was made',
+    (app.match(/review\.role\.decided = true;/g) || []).length === 2,
+    `${(app.match(/review\.role\.decided = true;/g) || []).length} places`);
+  ok('an approved role is read back rather than re-proposed',
+    /state: approvedRole \? 'approved' : 'proposed',/.test(app));
+  ok('and saying what a source is does not need an entry decided beside it',
+    /roleReady:/.test(app) && /c\.ready \|\| c\.roleReady/.test(app));
 }
 
 // ---------------------------------------------------------------- M
@@ -565,7 +578,7 @@ console.log('\n   and the screen reports both halves');
 {
   const app = readFileSync(join(here, '..', 'public', 'app.js'), 'utf8');
   ok('the source role carries its own provenance',
-    /review\.role = \{[\s\S]{0,220}proposedBy: 'deterministic-conversion',/.test(app));
+    /proposedBy: approvedRole \? 'manual' : 'deterministic-conversion',/.test(app));
   ok('and so does every entity the pass named',
     /decision: 'new', proposedBy: 'deterministic-conversion' \}\]\)\)/.test(app));
   ok('changing the role marks it a person\'s',
@@ -577,7 +590,8 @@ console.log('\n   and the screen reports both halves');
   ok('and changing its type does too',
     /state\.type = type\.value;\s*\r?\n\s*state\.proposedBy = 'manual';/.test(app));
   ok('the payload sends the role\'s provenance and each entity\'s',
-    /proposedBy: x\.proposedBy,/.test(app) && /\? null : review\.role,/.test(app));
+    /proposedBy: x\.proposedBy,/.test(app)
+    && /\{ role: review\.role\.role, subject: review\.role\.subject, proposedBy: review\.role\.proposedBy \}/.test(app));
   // The interaction: two facts recorded as they happen, and nothing read back
   // out of the tick, which cannot say whether it was ever off.
   ok('touching a tick is recorded when it happens',

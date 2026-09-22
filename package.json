@@ -37,6 +37,7 @@
     "reuse:check": "node scripts/check-reuse.js",
     "identity:check": "node scripts/check-identity.js",
     "subject-entity:check": "node scripts/check-subject-entity.js",
-    "group-review:check": "node scripts/check-group-review.js"
+    "group-review:check": "node scripts/check-group-review.js",
+    "source-role:check": "node scripts/check-source-role.js"
   }
 }
