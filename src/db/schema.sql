@@ -628,3 +628,79 @@ CREATE TABLE IF NOT EXISTS assets (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_asset_story ON assets(story_id, kind);
+
+-- ============================================================ chronology
+--
+-- WHEN a piece of knowledge is true, kept apart from WHAT it means.
+--
+-- A source can say that Bakugo is proud (semantics: about Bakugo, personality)
+-- and, separately, that this is how he stands on the first day and not after
+-- his first defeat (chronology: true from DAY_1). Those are two facts about
+-- one piece, and neither may be changed by writing the other. Nothing here is
+-- read by activation, retrieval, ownership or prompt precedence.
+--
+-- A continuity is a reusable ordered chronology — "My Hero Academia canon" —
+-- which is neither a source nor a story. Its positions are ordered by an
+-- explicit ordinal, never by comparing their names: a token like POST_USJ is
+-- the author's own stable handle, and a label is only what a person reads.
+-- Where a story currently sits in a continuity is that story's business and is
+-- not represented here yet.
+--
+-- A placement says a piece is true FROM a position onward. That is all the
+-- real material proves: a later state layers over an earlier one, and the
+-- reader orders by position; no end and no "supersedes" link is recorded
+-- because nothing in the material asserts either. Provenance and staleness are
+-- exactly the semantic model's: a placement is proposed or approved, an
+-- inference cannot be approved as it stands, and an approved placement is
+-- marked NEEDS RECHECK when the piece's words change under it.
+
+CREATE TABLE IF NOT EXISTS continuities (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  origin      TEXT NOT NULL CHECK (origin IN ('native','converted','manual','generated','inferred')),
+  status      TEXT NOT NULL CHECK (status IN ('proposed','approved')),
+  evidence    TEXT NOT NULL DEFAULT '{}',
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS continuity_positions (
+  id            TEXT PRIMARY KEY,
+  continuity_id TEXT NOT NULL REFERENCES continuities(id) ON DELETE CASCADE,
+  -- The order, and the only thing that decides it.
+  ordinal       INTEGER NOT NULL,
+  -- The author's own stable handle for the position, e.g. POST_USJ. Identity
+  -- is the id; this is how the source names it.
+  token         TEXT NOT NULL,
+  label         TEXT NOT NULL DEFAULT '',
+  origin        TEXT NOT NULL CHECK (origin IN ('native','converted','manual','generated','inferred')),
+  status        TEXT NOT NULL CHECK (status IN ('proposed','approved')),
+  evidence      TEXT NOT NULL DEFAULT '{}',
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  UNIQUE (continuity_id, ordinal),
+  UNIQUE (continuity_id, token)
+);
+CREATE INDEX IF NOT EXISTS idx_position_continuity ON continuity_positions(continuity_id, ordinal);
+
+CREATE TABLE IF NOT EXISTS entry_placements (
+  id               TEXT PRIMARY KEY,
+  entry_id         TEXT NOT NULL REFERENCES lore_entries(id) ON DELETE CASCADE,
+  continuity_id    TEXT NOT NULL REFERENCES continuities(id) ON DELETE CASCADE,
+  -- True from here onward.
+  from_position_id TEXT NOT NULL REFERENCES continuity_positions(id) ON DELETE RESTRICT,
+  origin           TEXT NOT NULL CHECK (origin IN ('native','converted','manual','generated','inferred')),
+  status           TEXT NOT NULL CHECK (status IN ('proposed','approved')),
+  confidence       TEXT CHECK (confidence IN ('high','medium','low')),
+  evidence         TEXT NOT NULL DEFAULT '{}',
+  -- Hash of the entry's words at approval; a changed entry needs a recheck.
+  content_hash     TEXT,
+  reviewed_at      INTEGER,
+  created_at       INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL,
+  -- One piece sits in one continuity once. It is not duplicated to be placed.
+  UNIQUE (entry_id, continuity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_placement_entry ON entry_placements(entry_id);
+CREATE INDEX IF NOT EXISTS idx_placement_position ON entry_placements(continuity_id, from_position_id);

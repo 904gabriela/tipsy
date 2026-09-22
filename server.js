@@ -29,6 +29,10 @@ import { applyReview, correctionImpact, ReviewError } from './src/conversion/app
 import { assist } from './src/conversion/assist.js';
 import { entityProfile } from './src/semantics/profile.js';
 import { sourceProjection } from './src/semantics/source-projection.js';
+import {
+  createContinuity, addPosition, placeEntry, unplaceEntry,
+  chronologyView, sourceChronology, entityChronology, ChronologyError,
+} from './src/chronology/store.js';
 import { createEntityKnowledge, updateEntityKnowledge, deleteEntityKnowledge, storyMaterialSource, AuthoringError } from './src/semantics/authoring.js';
 import { reuseState, attachPreview, attachReusable, detachReusable, promotePreview, promoteToReusable } from './src/semantics/reuse.js';
 import {
@@ -800,6 +804,37 @@ route('GET', '/api/lorebooks/:id/projection', async (req, res, { id }) => {
   if (!out) throw new HttpError(404, 'No such lorebook.');
   return out;
 });
+
+// ------------------------------------------------------------ chronology
+//
+// When a piece is true, kept apart from what it means. Reads run no analyser
+// and nothing here is read by retrieval; writes are additive rows that point
+// at a piece and never touch the piece or its semantics.
+const chronology = (fn) => async (...args) => {
+  try { return await fn(...args); } catch (err) {
+    if (err instanceof ChronologyError) throw new HttpError(400, err.message);
+    throw err;
+  }
+};
+route('GET', '/api/chronology', chronology(async () => chronologyView(db)));
+route('GET', '/api/lorebooks/:id/chronology', chronology(async (req, res, { id }) => {
+  if (!db.getLorebook(id)) throw new HttpError(404, 'No such lorebook.');
+  return sourceChronology(db, id);
+}));
+route('GET', '/api/entities/:id/chronology', chronology(async (req, res, { id }) => entityChronology(db, id)));
+route('POST', '/api/chronology/continuities', chronology(async (req) => {
+  const b = await readJson(req);
+  return { id: createContinuity(db, { name: b.name, description: b.description, origin: b.origin || 'manual', status: b.status || 'approved', evidence: b.evidence }) };
+}));
+route('POST', '/api/chronology/continuities/:id/positions', chronology(async (req, res, { id }) => {
+  const b = await readJson(req);
+  return { id: addPosition(db, { continuityId: id, ordinal: b.ordinal, token: b.token, label: b.label, origin: b.origin || 'manual', status: b.status || 'approved', evidence: b.evidence }) };
+}));
+route('POST', '/api/entries/:id/placement', chronology(async (req, res, { id }) => {
+  const b = await readJson(req);
+  return { id: placeEntry(db, { entryId: id, fromPositionId: b.fromPositionId, origin: b.origin || 'manual', status: b.status || 'approved', confidence: b.confidence ?? null, evidence: b.evidence }) };
+}));
+route('DELETE', '/api/entries/:id/placement/:continuityId', chronology(async (req, res, { id, continuityId }) => ({ removed: unplaceEntry(db, { entryId: id, continuityId }) })));
 route('POST', '/api/lorebooks', async (req) => {
   const { name, description } = await readJson(req);
   if (!String(name || '').trim()) throw new HttpError(400, 'Give the lorebook a name.');

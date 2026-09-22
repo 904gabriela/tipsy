@@ -38,6 +38,7 @@
     "identity:check": "node scripts/check-identity.js",
     "subject-entity:check": "node scripts/check-subject-entity.js",
     "group-review:check": "node scripts/check-group-review.js",
-    "source-role:check": "node scripts/check-source-role.js"
+    "source-role:check": "node scripts/check-source-role.js",
+    "chronology:check": "node scripts/check-chronology.js"
   }
 }
