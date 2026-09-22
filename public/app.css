@@ -679,6 +679,27 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
   display: inline-block; min-width: 2.1em;
   color: var(--ink-faint); font-weight: 400; font-variant-numeric: tabular-nums;
 }
+/* A person, read as sections. A section is a row to open, then one page of
+   pieces read as a whole; the pieces are true and are one fold away. */
+.ent-sections { display: flex; flex-direction: column; gap: var(--s2); margin-bottom: var(--s3); }
+.ent-section-row { width: 100%; text-align: left; cursor: pointer; }
+.ent-section-row .edit-head { display: flex; align-items: center; gap: var(--s3); }
+.ent-section-row .edit-head b { flex: 1 1 auto; font-size: 15px; }
+.ent-section-row .edit-head .n { font-size: 12px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.ent-sec-head { margin: var(--s2) 0 var(--s4); }
+.ent-sec-who { font-size: 12.5px; color: var(--ink-faint); letter-spacing: .03em; text-transform: uppercase; }
+.ent-sec-title { font-size: 22px; font-weight: 600; margin: 2px 0 4px; overflow-wrap: anywhere; }
+.ent-sec-origin { font-size: 12.5px; color: var(--ink-soft); }
+.ent-sec-body { display: flex; flex-direction: column; gap: var(--s5); }
+.ent-piece { min-width: 0; }
+.ent-piece-under { font-size: 12px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
+.ent-piece-title { font-size: 16px; font-weight: 600; margin: 0 0 var(--s2); overflow-wrap: anywhere; }
+.ent-piece-text { font-size: 15px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ent-piece-foot { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; margin-top: var(--s2); }
+.ent-piece-from { font-size: 12px; color: var(--ink-faint); }
+.ent-piece-detail { padding: 8px 0; border-top: 1px solid var(--line); }
+.people-known { margin-bottom: var(--s3); }
+
 /* Which part of a source a review is working through. Said as filing, because
    that is all it is: it scopes the screen and decides no meaning. */
 .rv-scope {

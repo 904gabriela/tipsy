@@ -193,6 +193,39 @@ const hasCore = (core) => !!core && CORE.some((k) => String(core[k] || '').trim(
  * @param {string} [opts.storyId]  read it as this story sees it
  * @returns {object|null}
  */
+/**
+ * Everyone Nexus knows, as a list to open from.
+ *
+ * A person here is a semantic entity — someone an approved reading names —
+ * whether or not a card or persona stands behind them. Counts are named for
+ * their unit: pieceCount is how much is written about them, not who they are.
+ *
+ * @param {object} db
+ * @param {{type?: string}} [o]  limit to one entity type, e.g. 'person'
+ */
+export function entityIndex(db, { type = null } = {}) {
+  const rows = db.raw.prepare(`SELECT id, type, canonical_name, aliases FROM lore_entities
+     WHERE merged_into_id IS NULL${type ? ' AND type = ?' : ''} ORDER BY canonical_name`).all(...(type ? [type] : []));
+  const owned = db.raw.prepare(`SELECT COUNT(DISTINCT e.id) c FROM lore_entries e
+     JOIN entry_semantics s ON s.entry_id = e.id AND s.status = 'approved'
+     LEFT JOIN entry_relations r ON r.entry_id = e.id AND r.relation = 'subject' AND r.status = 'approved'
+    WHERE s.defines_entity_id = ? OR r.entity_id = ?`);
+  const sources = db.raw.prepare('SELECT COUNT(*) c FROM source_entities WHERE entity_id = ? AND status = ?');
+  const character = db.raw.prepare('SELECT id, name, avatar FROM characters WHERE entity_id = ? ORDER BY created_at LIMIT 1');
+  const persona = db.raw.prepare('SELECT id, name, avatar FROM personas WHERE entity_id = ? ORDER BY created_at LIMIT 1');
+  const entities = rows.map((x) => ({
+    id: x.id,
+    name: x.canonical_name,
+    type: x.type,
+    aliases: parse(x.aliases, []),
+    pieceCount: owned.get(x.id, x.id).c,
+    sourceCount: sources.get(x.id, 'approved').c,
+    character: character.get(x.id) || null,
+    persona: persona.get(x.id) || null,
+  }));
+  return { entityCount: entities.length, entities };
+}
+
 export function entityProfile(db, entityId, { storyId = null } = {}) {
   const id = canonicalEntityId(db, entityId);
   if (!id) return null;

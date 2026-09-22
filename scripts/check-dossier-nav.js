@@ -111,11 +111,23 @@ const click = async (sel, wait = 800) => {
 };
 const text = (sel) => ev(`(document.querySelector(${JSON.stringify(sel)})||{}).textContent || ''`);
 /** The dossier's own first-level sections, as a reader sees them. */
+// A section is a row to open, not a box to expand. Nothing on the overview
+// holds a body, so nothing on it can be found open.
 const bands = () => ev(`[...document.querySelectorAll('#sheet-body .ent-group')].map(g => ({
   name: (g.querySelector('.edit-head b')||{}).textContent || '',
-  n: (g.querySelector('.edit-head .n')||{}).textContent || '',
-  open: !g.querySelector('.edit-body').hidden,
+  n: ((g.querySelector('.edit-head .n')||{}).textContent || '').replace(/ pieces?$/, ''),
+  open: !!(g.querySelector('.edit-body') && !g.querySelector('.edit-body').hidden),
 }))`);
+/** The pieces of one section, read on its page. */
+const openSection = async (name) => {
+  await click(`#sheet-body [data-section="${name}"]`, 900);
+  return ev(`[...document.querySelectorAll('#sheet-body .ent-piece')].map(c => ({
+    title: (c.querySelector('.ent-piece-title')||{}).textContent || '',
+    prose: (c.querySelector('.ent-piece-text')||{}).textContent || '',
+    edit: !!c.querySelector('[data-edit-knowledge]'),
+    from: (c.querySelector('.ent-piece-from')||{}).textContent || '',
+  }))`);
+};
 const openBook = async (id) => {
   await cdp('Page.navigate', { url: `http://localhost:${port}/?t=${Date.now()}` });
   await sleep(2200);
@@ -179,18 +191,7 @@ else {
     !/\bentr(y|ies)\b/i.test(await text('#sheet-body')));
 
   // ------------------------------------------------------------- Backstory
-  await ev(`[...document.querySelectorAll('#sheet-body .ent-group')]
-    .find(g => (g.querySelector('.edit-head b')||{}).textContent === 'Backstory')
-    .querySelector('.edit-head').click()`);
-  await sleep(700);
-  const inside = await ev(`(() => {
-    const g = [...document.querySelectorAll('#sheet-body .ent-group')]
-      .find(x => (x.querySelector('.edit-head b')||{}).textContent === 'Backstory');
-    return [...g.querySelectorAll('.edit-body > .edit-card')].map(c => ({
-      title: (c.querySelector('.edit-head b')||{}).textContent || '',
-      open: !c.querySelector('.edit-body').hidden,
-    }));
-  })()`);
+  const inside = await openSection('Backstory');
   console.log(`        Backstory → ${inside.map((x) => x.title).join(' · ')}`);
   ok('Backstory holds its three real titles',
     inside.map((x) => x.title).join(',') === 'Childhood,Foster System and Juvenile Detention,Recruitment',
@@ -199,26 +200,21 @@ else {
     inside.every((x) => x.title && !/^\d+$/.test(x.title)));
 
   // ------------------------------------------------- provenance, read-only
-  await ev(`(() => { const g = [...document.querySelectorAll('#sheet-body .ent-group')]
-    .find(x => (x.querySelector('.edit-head b')||{}).textContent === 'Backstory');
-    g.querySelectorAll('.edit-body > .edit-card .edit-head')[0].click(); })()`);
-  await sleep(700);
-  const piece = await ev(`(() => {
-    const g = [...document.querySelectorAll('#sheet-body .ent-group')]
-      .find(x => (x.querySelector('.edit-head b')||{}).textContent === 'Backstory');
-    const c = g.querySelectorAll('.edit-body > .edit-card')[0];
-    return {
-      prose: (c.querySelector('.prose-plain')||{}).textContent || '',
-      edit: !!c.querySelector('[data-edit-knowledge]'),
-      openSource: (c.querySelector('[data-open-source]')||{}).textContent || '',
-    };
-  })()`);
+  // The first piece as the section page shows it, and the way to its source
+  // from the fold beneath the page.
+  const piece = {
+    ...inside[0],
+    openSource: await ev(`((document.querySelector('#sheet-body details.ent-details [data-open-source]')||{}).textContent || '')`),
+  };
   ok('imported material is not offered for editing here', piece.edit === false);
   ok('it says where it came from instead',
     /Open in Patrick Moretti — The Saint/.test(piece.openSource), piece.openSource.trim());
   ok('the words themselves are there to read', piece.prose.length > 100, `${piece.prose.length} characters`);
 
   // ------------------------------------------------------------ going back
+  // From a section, Back is the dossier; from the dossier, Back is the source.
+  await click('#sheet-body [data-back]', 900);
+  ok('back from a section returns to the sections', (await bands()).length === 5 && !(await ev(`document.getElementById('sheet-host').hidden`)));
   await click('#sheet-body [data-back]', 900);
   const backTo = await ev(`document.getElementById('sheet-host').hidden`);
   ok('closing the dossier returns to the source view', backTo === true);
@@ -327,7 +323,8 @@ for (const width of [320, 375, 390, 430, 1280]) {
       name: (document.getElementById('sheet-title')||{}).getBoundingClientRect
         ? document.getElementById('sheet-title').getBoundingClientRect().width : 0,
       minTap: heads.length ? Math.min(...heads.map(h => h.getBoundingClientRect().height)) : 0,
-      closed: heads.length > 0 && heads.every(h => h.parentElement.querySelector('.edit-body').hidden),
+      // Rows, not boxes: nothing on the overview has a body to be found open.
+      closed: heads.length > 0 && !document.querySelector('#sheet-body .ent-group .edit-body'),
       groups: document.querySelectorAll('#sheet-body .ent-group').length,
       cards: document.querySelectorAll('#sheet-body .edit-card').length,
       empty: !!document.querySelector('#sheet-body .empty'),

@@ -143,6 +143,9 @@ function show(name) {
 
 async function loadLibrary() {
   state.library = await get('/api/library');
+  // Everyone Nexus knows: people an approved reading names, whether or not a
+  // card stands behind them. Read alongside the shelves, never in their place.
+  try { state.people = (await get('/api/entities?type=person')).entities || []; } catch { state.people = []; }
   renderLibrary();
 }
 
@@ -410,7 +413,30 @@ function renderCharacters() {
   // picture, and a wall of them reads at a glance the way a list never does.
   // Without one, the initial becomes the artwork rather than a apology for
   // its absence: large, centred, on its own warm ground.
-  list.innerHTML = shown.map(shelf.card).join('');
+  // On the People shelf, the people Nexus knows come first: semantic persons,
+  // each one a dossier to open, whether or not a card stands behind them. The
+  // cards keep their own grid below, exactly as they were. One search serves
+  // both, so a name typed once finds the person and the card alike.
+  const known = find.shelf === 'people'
+    ? (state.people || []).filter((x) => !words.length || words.every((w) => `${x.name} ${x.aliases.join(' ')}`.toLowerCase().includes(w)))
+    : [];
+  list.innerHTML = (known.length ? `
+    <div class="people-known" style="grid-column:1/-1">
+      <div class="band">People Nexus knows<span class="src-units" style="margin-left:8px">${plural(known.length, 'person', 'people')}</span></div>
+      <div class="src-rows">
+        ${known.map((x) => `
+          <button class="src-row" data-entity="${esc(x.id)}">
+            <span class="src-row-main">
+              <span class="src-row-name">${esc(x.name)}</span>
+              <span class="src-row-sub">${[
+    x.character ? 'character' : '', x.persona ? 'played by you' : '',
+    plural(x.pieceCount, 'piece', 'pieces'),
+  ].filter(Boolean).join(' · ')}</span>
+            </span>
+          </button>`).join('')}
+      </div>
+      ${shown.length ? '<div class="band" style="margin-top:14px">Cards</div>' : ''}
+    </div>` : '') + shown.map(shelf.card).join('');
 }
 
 // ---------------------------------------------------------------- tidying up
@@ -666,6 +692,13 @@ $('#library-scroll').addEventListener('click', async (e) => {
   }
   const s = e.target.closest('[data-story]');
   if (s) { openStory(s.dataset.story); return; }
+  // Somebody Nexus knows opens as themselves — sections, not a card.
+  const who = e.target.closest('[data-entity]');
+  if (who) {
+    const person = (state.people || []).find((x) => x.id === who.dataset.entity);
+    openEntityProfile(who.dataset.entity, { title: person?.name || 'Profile' });
+    return;
+  }
   const c = e.target.closest('[data-character]');
   if (c) { showCharacter(c.dataset.character); return; }
   const sc = e.target.closest('[data-scenario]');
@@ -9838,6 +9871,116 @@ async function reviewConnection(kind, resourceId, { back = null } = {}) {
   });
 }
 
+/**
+ * The sections of a shelf, as rows to open. A section is a heading over the
+ * pieces that read under it; the row says how many, quietly, and nothing else
+ * about them. `shelf` says which shelf the section is read from, so the page
+ * that opens knows where an added piece belongs.
+ */
+function sectionRows(groups, shelf) {
+  return `
+    <div class="ent-sections">
+      ${groups.map((g) => `
+        <button class="ent-section-row edit-card ent-group" data-section="${esc(g.name)}" data-section-shelf="${esc(shelf)}">
+          <span class="edit-head"><b>${esc(g.name)}</b><span class="n">${plural(g.count, 'piece', 'pieces')}</span></span>
+        </button>`).join('')}
+    </div>`;
+}
+
+/**
+ * One section, read whole.
+ *
+ * Backstory is Childhood, then the foster system, then recruitment — three
+ * things somebody wrote, read as one page with each piece's own title as a
+ * heading. That there are three rows behind it is true and is not the point;
+ * it is one fold away, with where each came from, for whoever wants it.
+ *
+ * A piece Nexus wrote can be changed here. A piece that came in with a source
+ * is read here and changed where it came from; that is the existing boundary
+ * and this page keeps it.
+ */
+function renderEntitySection(p, { shelf, name, storyId = null, back = null }) {
+  const groups = shelf === 'story' ? p.knowledge.story : p.knowledge.reusable;
+  const g = groups.find((x) => x.name === name);
+  if (!g) { renderEntityProfile(p, { storyId, back }); return; }
+  const items = [...g.items, ...g.sub.flatMap((s) => s.items.map((x) => ({ ...x, under: s.name })))];
+  const yours = items.filter((x) => x.written).length;
+  const from = [...new Set(items.filter((x) => !x.written).map((x) => x.provenance.sourceName))];
+  const origin = [
+    yours ? `${plural(yours, 'piece', 'pieces')} you wrote` : '',
+    from.length ? `${plural(items.length - yours, 'piece', 'pieces')} from ${from.map(esc).join(', ')}` : '',
+  ].filter(Boolean).join(' · ');
+  const at = g.items.length ? g.items[0] : items[0];
+  const addAttrs = `data-add-knowledge="${esc(at?.category || 'other')}" data-add-path="${esc((at?.displayPath || []).join('›'))}"`;
+
+  const html = `
+    ${backRow()}
+    <div class="ent-sec-head">
+      <div class="ent-sec-who">${esc(p.entity.name)}</div>
+      <h2 class="ent-sec-title">${esc(name)}</h2>
+      <div class="ent-sec-origin">${origin}</div>
+    </div>
+    <div class="ent-sec-body">
+      ${items.map((x) => `
+        <section class="ent-piece" data-piece="${esc(x.entryId)}">
+          ${x.under ? `<div class="ent-piece-under">${esc(x.under)}</div>` : ''}
+          ${sameName(x.title, name) ? '' : `<h3 class="ent-piece-title">${esc(x.title)}</h3>`}
+          <div class="prose-plain ent-piece-text">${esc(x.text)}</div>
+          <div class="ent-piece-foot">
+            ${x.needsRecheck ? '<span class="ent-flag warn">needs review</span>' : ''}
+            ${x.activation.enabled ? '' : '<span class="ent-flag">switched off</span>'}
+            ${x.written
+    ? `<button class="btn quiet" data-edit-knowledge="${esc(x.entryId)}">Edit</button>`
+    : `<span class="ent-piece-from">from ${esc(x.provenance.sourceName)}</span>`}
+          </div>
+        </section>`).join('')}
+    </div>
+    <div class="row-actions" style="margin-top:14px">
+      <button class="btn" ${addAttrs}>+ Add to ${esc(name)}</button>
+    </div>
+    ${/* Everything a piece is, for whoever wants it: never the page itself. */''}
+    <details class="ent-details" style="margin-top:16px">
+      <summary>Show the pieces</summary>
+      ${items.map((x) => `
+        <div class="ent-piece-detail">
+          <div class="fired-row"><span class="t"><b>${esc(x.title)}</b></span><span class="w">${esc(CATEGORY_PILL[x.category] || x.category)}</span></div>
+          <div class="fired-row"><span class="t">From</span><span class="w">${x.written ? 'you' : esc(x.provenance.sourceName)}</span></div>
+          <div class="fired-row"><span class="t">Reaches the story</span><span class="w">${x.activation.constant ? 'always' : x.activation.keys.length ? 'when it comes up' : 'not on its own'}</span></div>
+          ${x.activation.keys.length ? `<div class="fired-row"><span class="t">Trigger words</span><span class="w">${esc(x.activation.keys.slice(0, 8).join(', '))}</span></div>` : ''}
+          ${x.related.length ? `<div class="fired-row"><span class="t">Connected to</span><span class="w">${x.related.map((r) => `<button class="chip-tag" data-go-entity="${esc(r.id)}">${esc(r.name)}</button>`).join(' ')}</span></div>` : ''}
+          ${x.written ? '' : `<div class="row-actions" style="margin-top:6px"><button class="btn quiet" data-open-source="${esc(x.provenance.sourceId)}">Open in ${esc(x.provenance.sourceName)}</button></div>`}
+        </div>`).join('')}
+    </details>
+    <div class="sheet-actions"><button class="btn primary" data-close>Close</button></div>`;
+
+  const again = () => renderEntitySection(p, { shelf, name, storyId, back });
+  const overview = () => renderEntityProfile(p, { storyId, back });
+  // A page under the dossier: Back is the dossier, and the host's own back
+  // handling takes you there, so nothing here answers to it twice.
+  subSheet(p.entity.name, html, (root) => {
+    root.addEventListener('click', (e) => {
+      const add = e.target.closest('[data-add-knowledge]');
+      if (add) {
+        openKnowledgeForm({
+          profile: p, storyId: shelf === 'story' ? storyId : null, back: again,
+          preset: { category: add.dataset.addKnowledge, displayPath: add.dataset.addPath ? add.dataset.addPath.split('›') : null },
+        });
+        return;
+      }
+      const edit = e.target.closest('[data-edit-knowledge]');
+      if (edit) {
+        const item = items.find((x) => x.entryId === edit.dataset.editKnowledge);
+        if (item) openKnowledgeForm({ profile: p, storyId: item.written === 'story-material' ? storyId : null, entry: item, back: again });
+        return;
+      }
+      const go = e.target.closest('[data-go-entity]');
+      if (go) { openEntityProfile(go.dataset.goEntity, { storyId, back: again }); return; }
+      const source = e.target.closest('[data-open-source]');
+      if (source) { closeSheet(); openLorebook(source.dataset.openSource); }
+    });
+  }, overview);
+}
+
 function renderEntityProfile(p, { storyId = null, back = null } = {}) {
   const card = p.resources.character;
   const persona = p.resources.persona;
@@ -9881,22 +10024,32 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
          everywhere. A story reads only the sources it carries. */''}
     ${/* Two shelves, and each says where writing on it would go. Inside a story,
          the story's own shelf is the one Add belongs to. */''}
+    ${/* A person is read as sections, and only the sections that hold
+         something: Identity, Backstory, Psychology — not a list of every
+         kind of thing that could be known about somebody. Each one opens as
+         a page. How many pieces stand behind a section is said quietly, and
+         the pieces themselves are never the thing in front of you. */''}
     ${p.knowledge.reusable.length || (p.story && p.reuse?.total) ? `
-      <div class="band">Reusable knowledge${p.story ? '' : '<button class="btn quiet band-act" data-add-reusable>+ Add</button>'}</div>
+      <div class="band">Reusable knowledge</div>
       <div class="why" style="margin-bottom:10px">Knowledge that can be used across stories.</div>
       ${p.story ? reuseHere(p) : ''}
-      ${p.knowledge.reusable.map(knowledgeGroup).join('')}` : ''}
+      ${sectionRows(p.knowledge.reusable, 'reusable')}` : ''}
 
     ${p.story ? `
-      <div class="band">In ${esc(p.story.title)}<button class="btn quiet band-act" data-add-story>+ Add</button></div>
+      <div class="band">In ${esc(p.story.title)}</div>
       <div class="why" style="margin-bottom:10px">Only true in this story.</div>
-      ${p.knowledge.story.length ? p.knowledge.story.map(knowledgeGroup).join('')
+      ${p.knowledge.story.length ? sectionRows(p.knowledge.story, 'story')
     : `<div class="empty">Nothing is true of ${esc(p.entity.name.split(' ')[0])} in this story alone yet.</div>`}` : ''}
 
     ${!p.knowledge.reusable.length && !p.story ? `
-      <div class="empty">Nothing has been written about ${esc(p.entity.name)} yet.${core.length ? ' Their core profile is above.' : ''}
-        <div class="row-actions" style="margin-top:12px;justify-content:center"><button class="btn" data-add-reusable>Add what you know</button></div>
-      </div>` : ''}
+      <div class="empty">Nothing has been written about ${esc(p.entity.name)} yet.${core.length ? ' Their core profile is above.' : ''}</div>` : ''}
+
+    ${/* The one way to begin a section that does not exist yet. It is the
+         same act as adding to one that does — the same form, the same rows —
+         with the kind of knowledge left for the person to choose. */''}
+    <div class="row-actions" style="margin-top:12px">
+      <button class="btn quiet" ${p.story ? 'data-add-story' : 'data-add-reusable'}>+ Add knowledge</button>
+    </div>
 
     ${p.related.length ? `
       <div class="band">People and places around them</div>
@@ -9933,6 +10086,12 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
     const here = { profile: p, storyId, back };
     root.addEventListener('click', (e) => {
       // ---- writing
+      // ---- reading a section
+      const section = e.target.closest('[data-section]');
+      if (section) {
+        renderEntitySection(p, { shelf: section.dataset.sectionShelf, name: section.dataset.section, storyId, back });
+        return;
+      }
       const add = e.target.closest('[data-add-knowledge]');
       if (add) {
         openKnowledgeForm({

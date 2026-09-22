@@ -39,6 +39,7 @@
     "subject-entity:check": "node scripts/check-subject-entity.js",
     "group-review:check": "node scripts/check-group-review.js",
     "source-role:check": "node scripts/check-source-role.js",
-    "chronology:check": "node scripts/check-chronology.js"
+    "chronology:check": "node scripts/check-chronology.js",
+    "dossier-sections:check": "node scripts/check-dossier-sections.js"
   }
 }

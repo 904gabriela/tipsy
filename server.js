@@ -27,7 +27,7 @@ import { exportStory, exportSources } from './src/package/export.js';
 import { analyzeSource } from './src/conversion/analyze.js';
 import { applyReview, correctionImpact, ReviewError } from './src/conversion/apply.js';
 import { assist } from './src/conversion/assist.js';
-import { entityProfile } from './src/semantics/profile.js';
+import { entityProfile, entityIndex } from './src/semantics/profile.js';
 import { sourceProjection } from './src/semantics/source-projection.js';
 import {
   createContinuity, addPosition, placeEntry, unplaceEntry,
@@ -667,6 +667,12 @@ route('POST', '/api/characters', async (req) => {
  * With ?storyId, it is read as that story sees it: the story's own material,
  * and only the reusable sources that story actually carries.
  */
+/** Everyone Nexus knows, to open a dossier from. `?type=person` narrows it. Reads only. */
+route('GET', '/api/entities', async (req, res, params, url) => {
+  const type = url.searchParams.get('type') || null;
+  if (type && !['person', 'place', 'faction', 'item', 'event', 'concept'].includes(type)) throw new HttpError(400, 'That is not a kind of thing Nexus keeps.');
+  return entityIndex(db, { type });
+});
 route('GET', '/api/entities/:id/profile', async (req, res, { id }, url) => {
   const storyId = url.searchParams.get('storyId') || null;
   if (storyId && !db.getStory(storyId)) throw new HttpError(404, 'No such story.');
