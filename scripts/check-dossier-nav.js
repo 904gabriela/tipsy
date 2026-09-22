@@ -183,8 +183,11 @@ else {
   ok('the dossier shows the five real sections',
     secs.map((b) => b.name).join(',') === 'Identity,Backstory,Psychology,Relationships,Goals',
     secs.map((b) => b.name).join(','));
-  ok('the sections carry their real sizes',
-    secs.map((b) => b.n).join(',') === '2,3,3,1,1', secs.map((b) => b.n).join(','));
+  // A row is a heading to open, and says no number; the read model still does.
+  const profile = await (await fetch(`http://localhost:${port}/api/entities/${patrickRow.entity}/profile`)).json();
+  ok('the sections carry their real sizes in the read model, and no count on the row',
+    profile.knowledge.reusable.map((g) => g.count).join(',') === '2,3,3,1,1' && secs.every((b) => !/\d/.test(b.n)),
+    `model ${profile.knowledge.reusable.map((g) => g.count).join(',')} · rows "${secs.map((b) => b.n).join('')}"`);
   ok('no section is open by default, so a phone gets a list and not a wall',
     secs.every((b) => !b.open));
   ok('the dossier never calls anything an entry',
@@ -228,7 +231,8 @@ else {
   const lotus = await bands();
   console.log(`      Black Lotus → ${lotus.map((b) => `${b.name}(${b.n})`).join(' ') || '(none)'}`);
   ok('a place shows only what is actually known about it',
-    lotus.length === 1 && lotus[0].name === 'Profile' && lotus[0].n === '1',
+    lotus.length === 1 && lotus[0].name === 'Profile'
+      && (await (await fetch(`http://localhost:${port}/api/entities?type=place`)).json()).entities.find((e) => e.name === 'Black Lotus')?.pieceCount === 1,
     JSON.stringify(lotus));
   ok('no empty Geography or History is invented',
     !/Geography|History|Members/.test(await text('#sheet-body')));
@@ -240,7 +244,7 @@ else {
   ok('a faction is read the same generic way',
     fam.length === 1 && fam[0].name === 'Profile', JSON.stringify(fam));
   ok('it is named as the kind of thing it is',
-    /Group in your lore|Character|Lore-backed/.test(await text('#sheet-body .ent-kind')),
+    /^(Group|Character|Played by you)$/.test(await text('#sheet-body .ent-kind')),
     await text('#sheet-body .ent-kind'));
   await click('#sheet-body [data-back]', 900);
 }

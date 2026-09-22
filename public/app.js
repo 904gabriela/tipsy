@@ -417,26 +417,40 @@ function renderCharacters() {
   // each one a dossier to open, whether or not a card stands behind them. The
   // cards keep their own grid below, exactly as they were. One search serves
   // both, so a name typed once finds the person and the card alike.
-  const known = find.shelf === 'people'
+  // The People shelf is people: the ones Nexus knows, each a dossier to open,
+  // whether or not a card stands behind them. Cards and files are what people
+  // arrive as, and managing them — selecting, tidying copies, deleting — is
+  // a mode you step into, not the shelf itself. Nothing about cards changes;
+  // they keep their grid, one fold down, and every control they had.
+  const managing = tidy.on && tidy.shelf === 'people';
+  const known = find.shelf === 'people' && !managing
     ? (state.people || []).filter((x) => !words.length || words.every((w) => `${x.name} ${x.aliases.join(' ')}`.toLowerCase().includes(w)))
     : [];
-  list.innerHTML = (known.length ? `
-    <div class="people-known" style="grid-column:1/-1">
-      <div class="band">People Nexus knows<span class="src-units" style="margin-left:8px">${plural(known.length, 'person', 'people')}</span></div>
-      <div class="src-rows">
-        ${known.map((x) => `
-          <button class="src-row" data-entity="${esc(x.id)}">
-            <span class="src-row-main">
-              <span class="src-row-name">${esc(x.name)}</span>
-              <span class="src-row-sub">${[
+  document.body.classList.toggle('people-primary', find.shelf === 'people' && !managing);
+  const personSub = (x) => [
     x.character ? 'character' : '', x.persona ? 'played by you' : '',
-    plural(x.pieceCount, 'piece', 'pieces'),
-  ].filter(Boolean).join(' · ')}</span>
-            </span>
-          </button>`).join('')}
-      </div>
-      ${shown.length ? '<div class="band" style="margin-top:14px">Cards</div>' : ''}
-    </div>` : '') + shown.map(shelf.card).join('');
+    x.aliases.length ? `also ${x.aliases.slice(0, 3).map(esc).join(', ')}` : '',
+  ].filter(Boolean).join(' · ');
+  list.innerHTML = find.shelf === 'people' && !managing ? `
+    <div class="people-known" style="grid-column:1/-1">
+      ${known.length ? `
+        <div class="src-rows">
+          ${known.map((x) => `
+            <button class="src-row" data-entity="${esc(x.id)}">
+              <span class="src-row-main">
+                <span class="src-row-name">${esc(x.name)}</span>
+                ${personSub(x) ? `<span class="src-row-sub">${personSub(x)}</span>` : ''}
+              </span>
+            </button>`).join('')}
+        </div>`
+    : `<div class="empty">${words.length ? 'Nobody by that name yet.' : 'Nobody yet. People appear here once a source has been understood, or once you write one.'}</div>`}
+      ${shown.length ? `
+        <details class="people-cards"${known.length ? '' : ' open'}>
+          <summary>Cards &amp; files <span class="n">${num(shown.length)}</span></summary>
+          <div class="row-actions" style="margin:8px 0 10px"><button class="btn quiet" data-manage-cards>Manage cards</button></div>
+          <div class="grid">${shown.map(shelf.card).join('')}</div>
+        </details>` : ''}
+    </div>` : shown.map(shelf.card).join('');
 }
 
 // ---------------------------------------------------------------- tidying up
@@ -692,6 +706,9 @@ $('#library-scroll').addEventListener('click', async (e) => {
   }
   const s = e.target.closest('[data-story]');
   if (s) { openStory(s.dataset.story); return; }
+  // Managing cards is a mode: the shelf becomes the card grid with every
+  // control it ever had, and Done brings the people back.
+  if (e.target.closest('[data-manage-cards]')) { setTidy(true); return; }
   // Somebody Nexus knows opens as themselves — sections, not a card.
   const who = e.target.closest('[data-entity]');
   if (who) {
@@ -9882,7 +9899,7 @@ function sectionRows(groups, shelf) {
     <div class="ent-sections">
       ${groups.map((g) => `
         <button class="ent-section-row edit-card ent-group" data-section="${esc(g.name)}" data-section-shelf="${esc(shelf)}">
-          <span class="edit-head"><b>${esc(g.name)}</b><span class="n">${plural(g.count, 'piece', 'pieces')}</span></span>
+          <span class="edit-head"><b>${esc(g.name)}</b><span class="n" aria-hidden="true">›</span></span>
         </button>`).join('')}
     </div>`;
 }
@@ -9918,7 +9935,6 @@ function renderEntitySection(p, { shelf, name, storyId = null, back = null }) {
     <div class="ent-sec-head">
       <div class="ent-sec-who">${esc(p.entity.name)}</div>
       <h2 class="ent-sec-title">${esc(name)}</h2>
-      <div class="ent-sec-origin">${origin}</div>
     </div>
     <div class="ent-sec-body">
       ${items.map((x) => `
@@ -9929,9 +9945,7 @@ function renderEntitySection(p, { shelf, name, storyId = null, back = null }) {
           <div class="ent-piece-foot">
             ${x.needsRecheck ? '<span class="ent-flag warn">needs review</span>' : ''}
             ${x.activation.enabled ? '' : '<span class="ent-flag">switched off</span>'}
-            ${x.written
-    ? `<button class="btn quiet" data-edit-knowledge="${esc(x.entryId)}">Edit</button>`
-    : `<span class="ent-piece-from">from ${esc(x.provenance.sourceName)}</span>`}
+            ${x.written ? `<button class="btn quiet" data-edit-knowledge="${esc(x.entryId)}">Edit</button>` : ''}
           </div>
         </section>`).join('')}
     </div>
@@ -9940,7 +9954,8 @@ function renderEntitySection(p, { shelf, name, storyId = null, back = null }) {
     </div>
     ${/* Everything a piece is, for whoever wants it: never the page itself. */''}
     <details class="ent-details" style="margin-top:16px">
-      <summary>Show the pieces</summary>
+      <summary>Source details</summary>
+      <div class="ent-sec-origin">${origin}</div>
       ${items.map((x) => `
         <div class="ent-piece-detail">
           <div class="fired-row"><span class="t"><b>${esc(x.title)}</b></span><span class="w">${esc(CATEGORY_PILL[x.category] || x.category)}</span></div>
@@ -9988,9 +10003,13 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
   // exists only in what has been written about them.
   // What they are here, in the words a reader uses. The semantic type is only
   // worth saying when no resource stands behind them and it is not a person.
+  // What they are, in a reader's words, and only when it says something: a
+  // character, someone you play, a place. A person who is simply a person is
+  // introduced by their name and what else they are called, and nothing about
+  // how Nexus happens to hold them.
   const standing = card ? 'Character'
     : persona ? 'Played by you'
-      : p.entity.type === 'person' ? 'Lore-backed person' : `${ENTITY_WORD[p.entity.type] || 'Person'} in your lore`;
+      : p.entity.type === 'person' ? '' : (ENTITY_WORD[p.entity.type] || '');
   const face = card?.avatar || persona?.avatar || null;
   const core = p.core ? CORE_SLOTS.filter(([k]) => String(p.core[k] || '').trim()) : [];
   // An older card keeps who they are, how they look and how they talk in one
@@ -10006,7 +10025,7 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
     <div class="ent-hero">
       <span class="ent-face">${face ? `<img src="${esc(face)}" alt="">` : `<span class="letter">${esc(p.entity.name[0].toUpperCase())}</span>`}</span>
       <div class="ent-head-text">
-        <div class="ent-kind">${esc(standing)}</div>
+        ${standing ? `<div class="ent-kind">${esc(standing)}</div>` : ''}
         ${p.entity.aliases.length ? `<div class="ent-alias">Also called ${esc(p.entity.aliases.slice(0, 4).join(', '))}</div>` : ''}
         ${p.story ? `<div class="ent-where">In ${esc(p.story.title)}</div>` : ''}
       </div>
@@ -10029,15 +10048,17 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
          kind of thing that could be known about somebody. Each one opens as
          a page. How many pieces stand behind a section is said quietly, and
          the pieces themselves are never the thing in front of you. */''}
+    ${/* Outside a story the sections simply are the person. Inside one, what is
+         true of them everywhere and what is true only here are two shelves,
+         and are named as such — but the architecture that keeps them apart is
+         not the first thing said about anybody. */''}
     ${p.knowledge.reusable.length || (p.story && p.reuse?.total) ? `
-      <div class="band">Reusable knowledge</div>
-      <div class="why" style="margin-bottom:10px">Knowledge that can be used across stories.</div>
+      ${p.story ? '<div class="band">Knowledge</div>' : ''}
       ${p.story ? reuseHere(p) : ''}
       ${sectionRows(p.knowledge.reusable, 'reusable')}` : ''}
 
     ${p.story ? `
       <div class="band">In ${esc(p.story.title)}</div>
-      <div class="why" style="margin-bottom:10px">Only true in this story.</div>
       ${p.knowledge.story.length ? sectionRows(p.knowledge.story, 'story')
     : `<div class="empty">Nothing is true of ${esc(p.entity.name.split(' ')[0])} in this story alone yet.</div>`}` : ''}
 
@@ -10057,7 +10078,7 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
         ${p.related.map((r) => `
           <button class="ent-near-row" data-go-entity="${esc(r.id)}">
             <span class="ent-near-name">${esc(r.name)}</span>
-            <span class="ent-near-why">${esc(ENTITY_WORD[r.type] || 'Person')} · ${esc(plural(r.entries.length, 'piece', 'pieces'))}</span>
+            <span class="ent-near-why">${esc(ENTITY_WORD[r.type] || 'Person')}</span>
           </button>`).join('')}
       </div>` : ''}
 

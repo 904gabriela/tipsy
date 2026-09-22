@@ -141,8 +141,31 @@ console.log(`      ${known.map((k) => `${k.name} (${k.sub})`).join(' · ')}`);
 ok('the people Nexus knows are listed, four of them', known.length === 4, `${known.length}`);
 ok('someone with no card is still a person here', known.some((k) => k.name === 'Marco'));
 ok('the list is people, not places', !known.some((k) => /Black Lotus|Penthouse/.test(k.name)));
-ok('how much is written about each is said in pieces', known.every((k) => /\d+ pieces?/.test(k.sub)));
-ok('the cards are still there below', (await ev(`document.querySelectorAll('#character-list [data-character]').length`)) > 0);
+ok('a person is introduced by what else they are called, not by how they are stored',
+  known.every((k) => !/piece|entry|entity|lore/i.test(k.sub)) && known.some((k) => /also The Saint/.test(k.sub)), JSON.stringify(known.map((k) => k.sub)));
+ok('people come first, and the cards are one fold down, closed',
+  await ev(`(() => { const d = document.querySelector('#character-list details.people-cards'); return !!d && !d.open && d.querySelectorAll('[data-character]').length > 0
+    && document.querySelector('#character-list [data-entity]').getBoundingClientRect().top < d.getBoundingClientRect().top; })()`));
+ok('sorting, tags, selecting and deletion controls do not interrupt browsing people',
+  await ev(`['[data-panel="characters"] .sortrow','[data-panel="characters"] .tagrow','#shelf-pick','#pick-foot'].every(s => { const el = document.querySelector(s); return !el || getComputedStyle(el).display === 'none'; })`));
+{
+  // The search above still holds a name; a filter persists into managing, as
+  // it should, so it is cleared here to see the whole card grid.
+  await ev(`(() => { const s = document.getElementById('char-search'); s.value = ''; s.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await sleep(500);
+  await click('#character-list [data-manage-cards]', 700);
+  const mode = await ev(`({ pick: !document.getElementById('shelf-pick').hidden,
+    sort: getComputedStyle(document.querySelector('[data-panel="characters"] .sortrow')).display !== 'none',
+    // While managing, a card is a thing to pick, and says so on itself.
+    cards: document.querySelectorAll('#character-list [data-pick], #character-list [data-character]').length,
+    people: document.querySelectorAll('#character-list [data-entity]').length,
+    tidying: document.body.classList.contains('shelf-tidying') })`);
+  await click('#shelf-select', 700);
+  const backTo = await ev(`document.querySelectorAll('#character-list [data-entity]').length`);
+  ok('managing cards is a mode you step into, with every control it had',
+    mode.pick && mode.sort && mode.cards > 0 && mode.people === 0 && backTo > 0,
+    `in mode: ${JSON.stringify(mode)} · people after Done: ${backTo}`);
+}
 await ev(`(() => { const s = document.getElementById('char-search'); s.value = 'patr'; s.dispatchEvent(new Event('input', { bubbles: true })); })()`);
 await sleep(600);
 ok('search finds a person by name', (await ev(`document.querySelectorAll('#character-list [data-entity]').length`)) === 1);
@@ -154,8 +177,15 @@ const secs = await sections();
 console.log(`      ${secs.map((s) => `${s.name} · ${s.n}`).join(' | ')}`);
 ok('only the sections that hold something are shown',
   secs.map((s) => s.name).join(',') === 'Identity,Backstory,Psychology,Relationships,Goals', secs.map((s) => s.name).join(','));
-ok('with their real sizes, in pieces',
-  secs.map((s) => s.n).join(',') === '2 pieces,3 pieces,3 pieces,1 piece,1 piece', secs.map((s) => s.n).join(','));
+// How many pieces stand behind a section is true, is in the read model, and is
+// not what a row says: a row is a heading to open.
+const prof = await api(`/api/entities/${PATRICK}/profile`);
+ok('the rows carry no counts; the read model still does',
+  secs.every((s) => !/\d/.test(s.n)) && prof.knowledge.reusable.map((g) => g.count).join(',') === '2,3,3,1,1',
+  `rows "${secs.map((s) => s.n).join('')}" · model ${prof.knowledge.reusable.map((g) => g.count).join(',')}`);
+ok('the person is introduced as a person, not as how Nexus holds them',
+  !/Lore-backed|in your lore/i.test(await text('#sheet-body .ent-hero')) && /Also called The Saint/.test(await text('#sheet-body .ent-hero')));
+ok('no architecture is said before the sections', !/Reusable knowledge|across stories/i.test(await text('#sheet-body')));
 ok('nothing here is called an entry', !/\bentr(y|ies)\b/i.test(await text('#sheet-body')));
 ok('there is one way to begin a section that does not exist yet',
   (await ev(`[...document.querySelectorAll('#sheet-body [data-add-reusable]')].length`)) === 1
@@ -174,11 +204,14 @@ ok('the three pieces read as headed parts of one page',
   titles.join(',') === 'Childhood,Foster System and Juvenile Detention,Recruitment', titles.join(','));
 ok('every piece\'s full text is on the page, not an excerpt',
   bodyText.length > 900 && !/…$/.test(bodyText), `${bodyText.length} characters`);
-ok('where it came from is said once, quietly', /3 pieces from Patrick Moretti — The Saint/.test(await text('#sheet-body .ent-sec-origin')), await text('#sheet-body .ent-sec-origin'));
+ok('the reading flow says nothing about sources',
+  !/The Saint|from Patrick|pieces? from/.test(await text('#sheet-body .ent-sec-head')) && !/The Saint/.test(bodyText)
+  && (await ev(`document.querySelectorAll('#sheet-body .ent-piece-from').length`)) === 0);
 ok('imported pieces are read, not offered for editing',
-  (await ev(`document.querySelectorAll('#sheet-body [data-edit-knowledge]').length`)) === 0
-  && (await ev(`document.querySelectorAll('#sheet-body .ent-piece-from').length`)) === 3);
-ok('the pieces themselves are one fold away, closed', await ev(`(() => { const d = document.querySelector('#sheet-body details.ent-details'); return !!d && !d.open && /Show the pieces/.test(d.querySelector('summary').textContent); })()`));
+  (await ev(`document.querySelectorAll('#sheet-body [data-edit-knowledge]').length`)) === 0);
+ok('where it came from is one quiet fold away, closed',
+  await ev(`(() => { const d = document.querySelector('#sheet-body details.ent-details'); return !!d && !d.open && /Source details/.test(d.querySelector('summary').textContent)
+    && /3 pieces from Patrick Moretti — The Saint/.test((d.querySelector('.ent-sec-origin')||{}).textContent || ''); })()`));
 ok('and the fold keeps provenance: source, trigger words, a way to the source',
   await ev(`(() => { const d = document.querySelector('#sheet-body details.ent-details'); return d.querySelectorAll('[data-open-source]').length === 3 && /Trigger words/.test(d.textContent); })()`));
 ok('adding goes to this section', /\+ Add to Backstory/.test(await text('#sheet-body [data-add-knowledge]')));
@@ -232,7 +265,7 @@ d1.close();
 await openPerson('Patrick Moretti');
 const secs2 = await sections();
 console.log(`      now: ${secs2.map((s) => `${s.name} · ${s.n}`).join(' | ')}`);
-ok('a Personality section now exists because a piece does', secs2.some((s) => s.name === 'Personality' && s.n === '1 piece'));
+ok('a Personality section now exists because a piece does', secs2.some((s) => s.name === 'Personality'));
 await click('#sheet-body [data-section="Personality"]', 900);
 ok('and what you wrote can be changed here', (await ev(`document.querySelectorAll('#sheet-body [data-edit-knowledge]').length`)) === 1
   && /1 piece you wrote/.test(await text('#sheet-body .ent-sec-origin')));

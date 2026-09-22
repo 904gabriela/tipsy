@@ -699,6 +699,15 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .ent-piece-from { font-size: 12px; color: var(--ink-faint); }
 .ent-piece-detail { padding: 8px 0; border-top: 1px solid var(--line); }
 .people-known { margin-bottom: var(--s3); }
+/* On the People shelf, people are the shelf. Sorting, tags, selecting and
+   tidying are for managing cards, and belong to that mode alone. */
+body.people-primary .sortrow, body.people-primary .tagrow,
+body.people-primary .pickbar, body.people-primary .pickfoot { display: none !important; }
+.people-cards { margin-top: var(--s5); }
+.people-cards > summary { cursor: pointer; font-size: 13px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-soft); padding: 6px 0; }
+.people-cards > summary .n { font-weight: 400; color: var(--ink-faint); margin-left: 6px; }
+.ent-section-row .edit-head .n { font-size: 18px; line-height: 1; color: var(--ink-faint); }
+.ent-details .ent-sec-origin { margin: 6px 0 8px; }
 
 /* Which part of a source a review is working through. Said as filing, because
    that is all it is: it scopes the screen and decides no meaning. */
