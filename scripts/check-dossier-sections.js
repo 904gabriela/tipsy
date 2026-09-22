@@ -185,6 +185,13 @@ ok('the rows carry no counts; the read model still does',
   `rows "${secs.map((s) => s.n).join('')}" · model ${prof.knowledge.reusable.map((g) => g.count).join(',')}`);
 ok('the person is introduced as a person, not as how Nexus holds them',
   !/Lore-backed|in your lore/i.test(await text('#sheet-body .ent-hero')) && /Also called The Saint/.test(await text('#sheet-body .ent-hero')));
+// "Patrick Moretti, also called Patrick" says nothing; the stored aliases are
+// untouched, and only the name that adds something is shown.
+ok('an alias that is only a word of the name is not shown; a real other name is',
+  (await text('#sheet-body .ent-alias')) === 'Also called The Saint'
+  && (await api(`/api/entities/${PATRICK}/profile`)).entity.aliases.join(',') === 'The Saint,Patrick,Moretti',
+  await text('#sheet-body .ent-alias'));
+ok('what surrounds them is called Connections', /Connections/.test(await text('#sheet-body')) && !/People and places around them/.test(await text('#sheet-body')));
 ok('no architecture is said before the sections', !/Reusable knowledge|across stories/i.test(await text('#sheet-body')));
 ok('nothing here is called an entry', !/\bentr(y|ies)\b/i.test(await text('#sheet-body')));
 ok('there is one way to begin a section that does not exist yet',

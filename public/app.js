@@ -429,7 +429,7 @@ function renderCharacters() {
   document.body.classList.toggle('people-primary', find.shelf === 'people' && !managing);
   const personSub = (x) => [
     x.character ? 'character' : '', x.persona ? 'played by you' : '',
-    x.aliases.length ? `also ${x.aliases.slice(0, 3).map(esc).join(', ')}` : '',
+    shownAliases(x.name, x.aliases).length ? `also ${shownAliases(x.name, x.aliases).slice(0, 3).map(esc).join(', ')}` : '',
   ].filter(Boolean).join(' · ');
   list.innerHTML = find.shelf === 'people' && !managing ? `
     <div class="people-known" style="grid-column:1/-1">
@@ -9546,6 +9546,17 @@ const CATEGORY_PILL = {
   event: 'Event', item: 'Thing', direction: 'Directive', reference: 'Reference', other: 'Other',
 };
 const ENTITY_WORD = { person: 'Person', place: 'Place', faction: 'Group', item: 'Thing', event: 'Event', concept: 'Idea' };
+
+/**
+ * The other names worth saying. "Patrick Moretti, also called Patrick" tells
+ * nobody anything, so an alias that is just a word of the name — compared
+ * without regard to case — is not shown. The Saint still is. Display only:
+ * the stored aliases, matching and identity are exactly as they were.
+ */
+function shownAliases(name, aliases) {
+  const words = new Set(String(name || '').toLowerCase().split(/\s+/).filter(Boolean));
+  return (aliases || []).filter((a) => !words.has(String(a).trim().toLowerCase()));
+}
 const CORE_SLOTS = [
   ['identity', 'Who they are'], ['appearance', 'How they look'], ['personality', 'What they are like'],
   ['behavior', 'How they act'], ['speechStyle', 'How they talk'],
@@ -10026,7 +10037,7 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
       <span class="ent-face">${face ? `<img src="${esc(face)}" alt="">` : `<span class="letter">${esc(p.entity.name[0].toUpperCase())}</span>`}</span>
       <div class="ent-head-text">
         ${standing ? `<div class="ent-kind">${esc(standing)}</div>` : ''}
-        ${p.entity.aliases.length ? `<div class="ent-alias">Also called ${esc(p.entity.aliases.slice(0, 4).join(', '))}</div>` : ''}
+        ${shownAliases(p.entity.name, p.entity.aliases).length ? `<div class="ent-alias">Also called ${esc(shownAliases(p.entity.name, p.entity.aliases).slice(0, 4).join(', '))}</div>` : ''}
         ${p.story ? `<div class="ent-where">In ${esc(p.story.title)}</div>` : ''}
       </div>
     </div>
@@ -10073,7 +10084,7 @@ function renderEntityProfile(p, { storyId = null, back = null } = {}) {
     </div>
 
     ${p.related.length ? `
-      <div class="band">People and places around them</div>
+      <div class="band">Connections</div>
       <div class="ent-near">
         ${p.related.map((r) => `
           <button class="ent-near-row" data-go-entity="${esc(r.id)}">
